@@ -14,17 +14,24 @@ incendie** que vous définissez sur la carte.
 - Les **emprises des bâtiments** proviennent d'OpenStreetMap via l'API publique
   [Overpass](https://overpass-api.de/) — Google ne donne pas librement accès aux
   contours de bâtiments, OSM oui, et ça reste gratuit.
-- Les **zones à risque** sont placées à la main : vous cliquez sur la carte pour poser
-  un cercle (déplaçable et redimensionnable). Chaque bâtiment est ensuite coloré selon
-  sa distance à la zone la plus proche.
+- Les **foyers de risque** sont de deux natures, traités de la même façon :
+  - **Automatique** — les **forêts et zones boisées** (forêts, bois, garrigue, landes)
+    chargées depuis OpenStreetMap : c'est le vrai facteur de « feu de forêt »
+    (interface habitat‑forêt). La distance est calculée jusqu'au **bord** de la forêt.
+  - **Manuel** — des **zones à risque** que vous posez à la main sur la carte
+    (cercles déplaçables et redimensionnables).
+- Chaque habitat est coloré selon sa distance au foyer de risque le plus proche,
+  avec des **seuils rouge/orange réglables**.
 
 ## Utilisation
 
 1. Déplacez/zoomez la carte sur le secteur voulu.
 2. Cliquez sur **« Charger les habitats de cette zone »**.
-3. Cochez **« ajouter une zone à risque »**, réglez le rayon, puis cliquez sur la carte
-   pour placer une ou plusieurs zones.
-4. Les habitats se recolorent automatiquement. Clic droit sur une zone pour la supprimer.
+3. Cliquez sur **« Charger les forêts (risque auto) »** : les habitats se colorent
+   automatiquement selon leur distance aux zones boisées.
+4. (Optionnel) Ajustez les **seuils rouge/orange** (en mètres) avec les curseurs.
+5. (Optionnel) Cochez **« ajouter une zone à risque »** pour poser des cercles
+   supplémentaires à la main. Clic droit sur une zone pour la supprimer.
 
 ## Démarrage local
 
@@ -62,11 +69,15 @@ NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=votre_cle_ici
 
 - [Next.js 14](https://nextjs.org/) (App Router) — déploiement Vercel natif
 - Google Maps JavaScript API — fond de carte et rendu des polygones/cercles
-- OpenStreetMap / Overpass API — emprises des bâtiments
-- Calcul de distance par formule de Haversine (`lib/geo.ts`, `lib/risk.ts`)
+- OpenStreetMap / Overpass API — emprises des bâtiments et des zones boisées
+- Géométrie maison (`lib/geo.ts`) : distance de Haversine, distance point→polygone,
+  test d'appartenance, classification du risque (`lib/risk.ts`)
 
 ## Aller plus loin
 
-- Brancher un **vrai jeu de données de zones à risque** (ex. données feux de forêt / DFCI)
-  en remplaçant la saisie manuelle par un chargement automatique dans `lib/risk.ts`.
-- Affiner les seuils rouge/orange dans `classifyBuilding` (paramètre `orangeFactor`).
+- Le risque automatique s'appuie sur les zones boisées OSM (`fetchWildland` dans
+  `lib/overpass.ts`). On peut y ajouter d'autres foyers (décharges, industries à risque…)
+  ou brancher un jeu de données officiel (feux de forêt / DFCI) en le convertissant
+  en polygones passés à `classifyBuilding`.
+- Les seuils rouge/orange sont réglables dans l'interface, et par défaut dans
+  `DEFAULT_THRESHOLDS` (`lib/risk.ts`).

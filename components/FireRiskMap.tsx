@@ -2,14 +2,24 @@
 
 import { Loader } from "@googlemaps/js-api-loader";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Bounds, Building, fetchBuildings } from "@/lib/overpass";
+import {
+  Bounds,
+  Building,
+  fetchBuildings,
+  fetchWildland,
+  Wildland,
+} from "@/lib/overpass";
 import {
   classifyBuilding,
+  DEFAULT_THRESHOLDS,
   RISK_COLORS,
   RISK_LABELS,
   RiskLevel,
+  RiskThresholds,
   RiskZone,
 } from "@/lib/risk";
+
+const FOREST_COLOR = "#2f7d32";
 
 const API_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
 
@@ -30,30 +40,44 @@ export default function FireRiskMap() {
   // Cercles Google indexés par id de zone à risque.
   const circlesRef = useRef<Map<string, google.maps.Circle>>(new Map());
 
+  // Polygones Google des forêts indexés par id.
+  const forestPolysRef = useRef<Map<number, google.maps.Polygon>>(new Map());
+
   const buildingsRef = useRef<Building[]>([]);
   const zonesRef = useRef<RiskZone[]>([]);
+  const forestsRef = useRef<Wildland[]>([]);
   const addModeRef = useRef(false);
   const radiusRef = useRef(400);
+  const thresholdsRef = useRef<RiskThresholds>(DEFAULT_THRESHOLDS);
 
   const [ready, setReady] = useState(false);
   const [addMode, setAddMode] = useState(false);
   const [radius, setRadius] = useState(400);
+  const [thresholds, setThresholds] = useState<RiskThresholds>(DEFAULT_THRESHOLDS);
   const [loading, setLoading] = useState(false);
+  const [loadingForests, setLoadingForests] = useState(false);
   const [status, setStatus] = useState<Status>({
-    text: "Déplacez la carte, chargez les habitats puis cliquez pour ajouter des zones à risque.",
+    text: "Chargez les habitats, puis les forêts (risque auto) ou posez des zones à risque à la main.",
     kind: "info",
   });
   const [counts, setCounts] = useState({ total: 0, red: 0, orange: 0, blue: 0 });
   const [zoneCount, setZoneCount] = useState(0);
+  const [forestCount, setForestCount] = useState(0);
 
   addModeRef.current = addMode;
   radiusRef.current = radius;
+  thresholdsRef.current = thresholds;
 
   /** Recalcule et applique la couleur de chaque habitat. */
   const recolor = useCallback(() => {
     const tally: Record<RiskLevel, number> = { red: 0, orange: 0, blue: 0 };
     for (const b of buildingsRef.current) {
-      const { level } = classifyBuilding(b.center, zonesRef.current);
+      const { level } = classifyBuilding(
+        b.center,
+        zonesRef.current,
+        forestsRef.current,
+        thresholdsRef.current
+      );
       tally[level] += 1;
       const poly = polygonsRef.current.get(b.id);
       if (poly) {
@@ -208,6 +232,81 @@ export default function FireRiskMap() {
     }
   }, [recolor]);
 
+  /** Charge automatiquement les forêts/zones boisées (foyers de risque). */
+  const loadForests = useCallback(async () => {
+    const map = gmapRef.current;
+    if (!map) return;
+    const zoom = map.getZoom() ?? 0;
+    if (zoom < MIN_LOAD_ZOOM) {
+      setStatus({
+        text: "Zoomez davantage avant de charger les forêts (la zone est trop vaste).",
+        kind: "error",
+      });
+      return;
+    }
+    const b = map.getBounds();
+    if (!b) return;
+    const ne = b.getNorthEast();
+    const sw = b.getSouthWest();
+    const bounds: Bounds = {
+      south: sw.lat(),
+      west: sw.lng(),
+      north: ne.lat(),
+      east: ne.lng(),
+    };
+
+    setLoadingForests(true);
+    setStatus({ text: "Chargement des forêts / zones boisées…", kind: "info" });
+    try {
+      const forests = await fetchWildland(bounds);
+
+      for (const poly of forestPolysRef.current.values()) poly.setMap(null);
+      forestPolysRef.current.clear();
+
+      for (const forest of forests) {
+        const poly = new google.maps.Polygon({
+          map,
+          paths: forest.ring,
+          fillColor: FOREST_COLOR,
+          fillOpacity: 0.18,
+          strokeColor: FOREST_COLOR,
+          strokeOpacity: 0.6,
+          strokeWeight: 1,
+          clickable: false,
+          zIndex: 1,
+        });
+        forestPolysRef.current.set(forest.id, poly);
+      }
+      forestsRef.current = forests;
+      setForestCount(forests.length);
+      recolor();
+      setStatus({
+        text:
+          forests.length > 0
+            ? `${forests.length} zones boisées chargées : risque calculé automatiquement.`
+            : "Aucune forêt trouvée ici. Posez des zones à risque à la main.",
+        kind: forests.length > 0 ? "success" : "info",
+      });
+    } catch (err) {
+      setStatus({
+        text: "Échec du chargement des forêts. Réessayez dans un instant.",
+        kind: "error",
+      });
+      // eslint-disable-next-line no-console
+      console.error(err);
+    } finally {
+      setLoadingForests(false);
+    }
+  }, [recolor]);
+
+  const clearForests = useCallback(() => {
+    for (const poly of forestPolysRef.current.values()) poly.setMap(null);
+    forestPolysRef.current.clear();
+    forestsRef.current = [];
+    setForestCount(0);
+    recolor();
+  }, [recolor]);
+
   // Initialisation de la carte Google Maps.
   useEffect(() => {
     if (!API_KEY || !mapRef.current) return;
@@ -250,6 +349,11 @@ export default function FireRiskMap() {
     };
   }, [addZone]);
 
+  // Recolore les habitats dès que les seuils de danger changent.
+  useEffect(() => {
+    recolor();
+  }, [thresholds, recolor]);
+
   if (!API_KEY) {
     return <MissingKeyScreen />;
   }
@@ -266,8 +370,68 @@ export default function FireRiskMap() {
           disabled={!ready || loading}
           style={{ ...styles.button, ...styles.primaryButton }}
         >
-          {loading ? "Chargement…" : "Charger les habitats de cette zone"}
+          {loading ? "Chargement…" : "1. Charger les habitats de cette zone"}
         </button>
+
+        <button
+          onClick={loadForests}
+          disabled={!ready || loadingForests}
+          style={{ ...styles.button, ...styles.forestButton }}
+        >
+          {loadingForests
+            ? "Chargement…"
+            : "2. Charger les forêts (risque auto) 🌲"}
+        </button>
+        {forestCount > 0 && (
+          <button
+            onClick={clearForests}
+            style={{ ...styles.button, ...styles.secondaryButton }}
+          >
+            Retirer les forêts ({forestCount})
+          </button>
+        )}
+
+        <div style={styles.field}>
+          <label style={styles.fieldLabel}>
+            Seuil « risque élevé » (rouge) : <strong>≤ {thresholds.redM} m</strong>
+          </label>
+          <input
+            type="range"
+            min={0}
+            max={1000}
+            step={25}
+            value={thresholds.redM}
+            onChange={(e) => {
+              const redM = Number(e.target.value);
+              setThresholds((t) => ({
+                redM,
+                orangeM: Math.max(redM, t.orangeM),
+              }));
+            }}
+            style={{ width: "100%" }}
+          />
+          <label style={styles.fieldLabel}>
+            Seuil « risque modéré » (orange) : <strong>≤ {thresholds.orangeM} m</strong>
+          </label>
+          <input
+            type="range"
+            min={0}
+            max={2500}
+            step={25}
+            value={thresholds.orangeM}
+            onChange={(e) => {
+              const orangeM = Number(e.target.value);
+              setThresholds((t) => ({
+                orangeM,
+                redM: Math.min(orangeM, t.redM),
+              }));
+            }}
+            style={{ width: "100%" }}
+          />
+        </div>
+
+        <hr style={styles.divider} />
+        <p style={styles.sectionTitle}>Zones à risque manuelles (optionnel)</p>
 
         <label style={styles.toggle}>
           <input
@@ -423,7 +587,21 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 10,
   },
   primaryButton: { background: "#1d6fb8", color: "#fff" },
+  forestButton: { background: "#2f7d32", color: "#fff" },
   secondaryButton: { background: "#eef2f7", color: "#33475b" },
+  divider: {
+    border: "none",
+    borderTop: "1px solid #e4e8ee",
+    margin: "6px 0 10px",
+  },
+  sectionTitle: {
+    fontSize: 12,
+    fontWeight: 700,
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+    color: "#6b7785",
+    margin: "0 0 10px",
+  },
   toggle: {
     display: "flex",
     gap: 8,
