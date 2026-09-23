@@ -1,5 +1,5 @@
 """
-Petit FPS avec Ursina — ennemis humanoïdes dotés d'une IA tactique.
+Petit FPS avec Ursina — ennemis humanoïdes dotés d'une IA tactique qui progresse.
 
 Lancement :  python fps.py
 
@@ -7,20 +7,23 @@ Commandes (clavier AZERTY) :
     Z Q S D / flèches  : se déplacer
     Maj                : courir
     Espace             : sauter
-    Clic droit ou P    : tirer (maintenir pour le tir automatique)
+    Clic gauche ou P   : tirer (maintenir pour le tir automatique)
+    Clic droit         : viser (zoom avec le viseur point rouge)
     R                  : recharger
+    G                  : qualité graphique (post-traitement + herbe) on/off
     Échap              : pause (X pour quitter pendant la pause)
     Entrée             : recommencer après la mort
 
-IA des ennemis :
+IA des ennemis (de plus en plus redoutable à chaque vague) :
     - perception : champ de vision, ligne de vue (raycast), audition des tirs
     - mémoire de la dernière position connue du joueur, partage d'infos entre alliés
-    - recherche de couverture (points cachés derrière les murs), sortie de
-      couverture pour tirer puis retour à l'abri, rechargement à couvert
-    - contournement (flanc) quand le joueur disparaît, repli quand ils sont blessés
+    - recherche de couverture (murs, voitures, arbres, sacs de sable, rochers),
+      sortie de couverture pour tirer puis retour à l'abri, rechargement à couvert
+    - tirs de couverture coordonnés quand un allié se déplace
+    - contournement (flanc), prise en tenaille, repli quand ils sont blessés, esquive
+    - grenades pour déloger le joueur caché, fuite devant les grenades
     - déplacement par A* sur une grille de navigation
-    - corps articulé (bassin, torse, tête, épaules, coudes, hanches, genoux)
-      animé : marche, course, accroupi, visée, réaction aux impacts, chute
+    - corps articulé animé : marche, course, accroupi, visée, lancer, impacts, chute
 """
 
 import heapq
@@ -28,21 +31,204 @@ import math
 import random
 
 from ursina import (
-    Ursina, Entity, Text, Sky, DirectionalLight, AmbientLight, Vec2, Vec3,
+    Ursina, Entity, Text, Sky, DirectionalLight, Vec2, Vec3, Mesh, Shader, Quad,
     camera, color, mouse, held_keys, time, window, application, raycast,
-    destroy, invoke, clamp, lerp, scene,
+    destroy, invoke, clamp, lerp,
 )
-from ursina.shaders import lit_with_shadows_shader
+from ursina.color import Color
 
 
-LIT = lit_with_shadows_shader
-ARENA = 40          # l'arène va de -ARENA à +ARENA sur x et z
+ARENA = 45          # l'arène va de -ARENA à +ARENA sur x et z
 GRAVITY = 22
 PLAYER_RADIUS = 0.5
 ENEMY_RADIUS = 0.35
 EYE_STAND = 1.6     # hauteur des yeux d'un ennemi debout
 EYE_CROUCH = 1.0    # hauteur de la tête d'un ennemi accroupi
+SHADOW_RES = 4096
 
+FOG_COLOR = Color(0.72, 0.79, 0.86, 1)
+SUN_COLOR = Color(1.0, 0.94, 0.82, 1)
+
+
+# ---------------------------------------------------------------------------
+# Shaders : éclairage (soleil + ciel), ombres douces, brouillard ; post-traitement
+# ---------------------------------------------------------------------------
+
+LIT = Shader(language=Shader.GLSL, name='fps_lit', vertex='''
+#version 150
+uniform struct {
+    vec4 position;
+    vec3 color;
+    vec3 attenuation;
+    vec3 spotDirection;
+    float spotCosCutoff;
+    float spotExponent;
+    sampler2DShadow shadowMap;
+    mat4 shadowViewMatrix;
+} p3d_LightSource[1];
+
+uniform mat4 p3d_ModelViewProjectionMatrix;
+uniform mat4 p3d_ModelViewMatrix;
+uniform mat3 p3d_NormalMatrix;
+uniform mat4 p3d_ModelMatrix;
+uniform vec2 texture_scale;
+uniform vec2 texture_offset;
+
+in vec4 vertex;
+in vec3 normal;
+in vec4 p3d_Color;
+in vec2 p3d_MultiTexCoord0;
+
+out vec2 texcoords;
+out vec3 vpos;
+out vec3 norm;
+out vec3 wnorm;
+out vec4 shad;
+out vec4 vertex_color;
+
+void main() {
+    vec3 n = length(normal) > 0.01 ? normal : vec3(0.0, 1.0, 0.0);
+    gl_Position = p3d_ModelViewProjectionMatrix * vertex;
+    vpos = vec3(p3d_ModelViewMatrix * vertex);
+    norm = normalize(p3d_NormalMatrix * n);
+    wnorm = normalize(mat3(p3d_ModelMatrix) * n);
+    shad = p3d_LightSource[0].shadowViewMatrix * vec4(vpos, 1.0);
+    texcoords = p3d_MultiTexCoord0 * texture_scale + texture_offset;
+    vertex_color = p3d_Color;
+}
+''', fragment='''
+#version 150
+uniform struct {
+    vec4 position;
+    vec3 color;
+    vec3 attenuation;
+    vec3 spotDirection;
+    float spotCosCutoff;
+    float spotExponent;
+    sampler2DShadow shadowMap;
+    mat4 shadowViewMatrix;
+} p3d_LightSource[1];
+
+uniform sampler2D p3d_Texture0;
+uniform vec4 p3d_ColorScale;
+uniform vec4 sky_color;
+uniform vec4 ground_color;
+uniform vec4 fog_color;
+uniform float fog_density;
+uniform float specular;
+uniform float shadow_texel;
+uniform float sun_strength;
+uniform float flip_backface;
+
+in vec2 texcoords;
+in vec3 vpos;
+in vec3 norm;
+in vec3 wnorm;
+in vec4 shad;
+in vec4 vertex_color;
+out vec4 p3d_FragColor;
+
+void main() {
+    vec4 base = texture(p3d_Texture0, texcoords) * p3d_ColorScale * vertex_color;
+    vec3 N = normalize(norm);
+    vec3 WN = normalize(wnorm);
+    if (!gl_FrontFacing && flip_backface > 0.5) { N = -N; WN = -WN; }
+    vec3 L = normalize(p3d_LightSource[0].position.xyz);
+    float diff = clamp(dot(N, L), 0.0, 1.0);
+
+    // ombres douces (PCF 3x3)
+    float sh = 0.0;
+    if (diff > 0.0) {
+        vec4 sc = shad;
+        sc.z -= (0.0004 + 0.0015 * (1.0 - diff)) * sc.w;
+        for (int x = -1; x <= 1; x++) {
+            for (int y = -1; y <= 1; y++) {
+                sh += textureProj(p3d_LightSource[0].shadowMap,
+                                  sc + vec4(vec2(x, y) * shadow_texel * 1.3 * sc.w, 0.0, 0.0));
+            }
+        }
+        sh /= 9.0;
+    }
+
+    // lumière du ciel (hémisphérique) + soleil
+    float h = clamp(WN.y * 0.5 + 0.5, 0.0, 1.0);
+    vec3 amb = mix(ground_color.rgb, sky_color.rgb, h);
+    vec3 sun = p3d_LightSource[0].color * diff * sh * sun_strength;
+    vec3 col = base.rgb * (amb + sun);
+
+    // reflet spéculaire (carrosseries, vitres)
+    vec3 V = normalize(-vpos);
+    vec3 H = normalize(L + V);
+    col += specular * pow(max(dot(N, H), 0.0), 60.0) * sh * p3d_LightSource[0].color;
+
+    // brouillard atmosphérique
+    float d = length(vpos) * fog_density;
+    float f = 1.0 - exp(-d * d);
+    col = mix(col, fog_color.rgb, clamp(f, 0.0, 1.0));
+    p3d_FragColor = vec4(col, base.a);
+}
+''', default_input={
+    'texture_scale': Vec2(1, 1),
+    'texture_offset': Vec2(0, 0),
+    'sky_color': Color(0.50, 0.56, 0.66, 1),
+    'ground_color': Color(0.30, 0.28, 0.22, 1),
+    'fog_color': FOG_COLOR,
+    'fog_density': 0.0085,
+    'specular': 0.0,
+    'shadow_texel': 1 / SHADOW_RES,
+    'sun_strength': 0.95,
+    'flip_backface': 1.0,
+})
+
+
+POST = Shader(language=Shader.GLSL, name='fps_post', vertex='''
+#version 150
+uniform mat4 p3d_ModelViewProjectionMatrix;
+in vec4 p3d_Vertex;
+in vec2 p3d_MultiTexCoord0;
+out vec2 uv;
+void main() {
+    gl_Position = p3d_ModelViewProjectionMatrix * p3d_Vertex;
+    uv = p3d_MultiTexCoord0;
+}
+''', fragment='''
+#version 150
+uniform sampler2D tex;
+in vec2 uv;
+out vec4 out_color;
+
+void main() {
+    vec2 px = 1.0 / vec2(textureSize(tex, 0));
+    vec3 c = texture(tex, uv).rgb;
+
+    // léger bloom sur les zones lumineuses
+    vec3 b = vec3(0.0);
+    for (int i = 0; i < 8; i++) {
+        float a = float(i) * 0.785398;
+        vec2 dir = vec2(cos(a), sin(a));
+        b += max(texture(tex, uv + dir * px * 4.0).rgb - 0.72, 0.0);
+        b += max(texture(tex, uv + dir * px * 10.0).rgb - 0.72, 0.0);
+    }
+    c += b * 0.06;
+
+    // étalonnage : saturation, contraste, teinte chaude
+    float l = dot(c, vec3(0.299, 0.587, 0.114));
+    c = mix(vec3(l), c, 1.18);
+    c = (c - 0.5) * 1.07 + 0.5;
+    c *= vec3(1.03, 1.0, 0.96);
+
+    // vignettage
+    vec2 d = uv - 0.5;
+    float v = smoothstep(0.95, 0.30, length(d * vec2(1.0, 0.8)) * 1.25);
+    c *= mix(0.62, 1.0, v);
+    out_color = vec4(clamp(c, 0.0, 1.0), 1.0);
+}
+''')
+
+
+# ---------------------------------------------------------------------------
+# Outils
+# ---------------------------------------------------------------------------
 
 def flat(v):
     return Vec3(v.x, 0, v.z)
@@ -62,12 +248,200 @@ def angle_diff(a, b):
 
 
 def approach_angle(cur, target, max_step):
-    d = angle_diff(cur, target)
-    return cur + clamp(d, -max_step, max_step)
+    return cur + clamp(angle_diff(cur, target), -max_step, max_step)
+
+
+def smoothstep(t):
+    t = clamp(t, 0, 1)
+    return t * t * (3 - 2 * t)
+
+
+def rgb(r, g, b, a=255):
+    return Color(r / 255, g / 255, b / 255, a / 255)
+
+
+def shade(c, k):
+    return Color(clamp(c[0] * k, 0, 1), clamp(c[1] * k, 0, 1), clamp(c[2] * k, 0, 1), c[3])
+
+
+def value_noise(x, z, seed=0):
+    """Bruit doux (somme de sinus) pour varier les couleurs et le relief."""
+    return (math.sin(x * 0.11 + seed) * math.cos(z * 0.13 + seed * 1.7)
+            + 0.5 * math.sin(x * 0.27 + z * 0.21 + seed * 2.3)
+            + 0.25 * math.cos(x * 0.53 - z * 0.47 + seed * 0.7)) / 1.75
 
 
 # ---------------------------------------------------------------------------
-# Monde : murs, collisions, navigation, points de couverture
+# Construction de maillages statiques (un seul maillage par matériau = rapide)
+# ---------------------------------------------------------------------------
+
+class MeshBuilder:
+    MAX_VERTS = 60000
+
+    def __init__(self):
+        self.chunks = []
+        self._new_chunk()
+        self.origin = Vec3(0, 0, 0)
+        self.cos, self.sin = 1.0, 0.0
+
+    def _new_chunk(self):
+        self.v, self.c, self.u, self.n = [], [], [], []
+        self.chunks.append((self.v, self.c, self.u, self.n))
+
+    def xf(self, origin=(0, 0, 0), yaw=0):
+        """Transformation locale -> monde (translation + rotation autour de y)."""
+        self.origin = Vec3(*origin)
+        r = math.radians(yaw)
+        self.cos, self.sin = math.cos(r), math.sin(r)
+
+    def _p(self, p):
+        x, y, z = p
+        c, s = self.cos, self.sin
+        return Vec3(self.origin.x + x * c + z * s, self.origin.y + y, self.origin.z - x * s + z * c)
+
+    def _dir(self, d):
+        x, y, z = d
+        c, s = self.cos, self.sin
+        return Vec3(x * c + z * s, y, -x * s + z * c)
+
+    def tri(self, a, b, c, col, n=None, uvs=((0, 0), (0, 0), (0, 0)), normals=None, local=True):
+        if len(self.v) > self.MAX_VERTS:
+            self._new_chunk()
+        if local:
+            a, b, c = self._p(a), self._p(b), self._p(c)
+            if n is not None:
+                n = self._dir(n)
+            if normals is not None:
+                normals = [self._dir(k) for k in normals]
+        face = (b - a).cross(c - a)
+        if face.length() < 1e-9:
+            return
+        face = face.normalized()
+        if n is None:
+            n = face
+        cols = list(col) if isinstance(col, (list, tuple)) else [col, col, col]
+        normals = list(normals) if normals is not None else [n, n, n]
+        uvs = list(uvs)
+        if face.dot(n) > 0:        # ordre des sommets attendu par Panda3D (repère y-up-left)
+            b, c = c, b
+            for lst in (cols, normals, uvs):
+                lst[1], lst[2] = lst[2], lst[1]
+        self.v.extend((a, b, c))
+        self.n.extend(normals)
+        self.c.extend(cols)
+        self.u.extend(uvs)
+
+    def quad(self, a, b, c, d, col, n=None, uvs=((0, 0), (1, 0), (1, 1), (0, 1)), local=True):
+        self.tri(a, b, c, col, n, (uvs[0], uvs[1], uvs[2]), local=local)
+        self.tri(a, c, d, col, n, (uvs[0], uvs[2], uvs[3]), local=local)
+
+    def box(self, center, size, col, tile=None, jitter=0.0, top=True, bottom=False):
+        cx, cy, cz = center
+        hx, hy, hz = size[0] / 2, size[1] / 2, size[2] / 2
+        faces = [
+            (Vec3(1, 0, 0), [(hx, -hy, -hz), (hx, -hy, hz), (hx, hy, hz), (hx, hy, -hz)], (2, 1)),
+            (Vec3(-1, 0, 0), [(-hx, -hy, hz), (-hx, -hy, -hz), (-hx, hy, -hz), (-hx, hy, hz)], (2, 1)),
+            (Vec3(0, 0, 1), [(hx, -hy, hz), (-hx, -hy, hz), (-hx, hy, hz), (hx, hy, hz)], (0, 1)),
+            (Vec3(0, 0, -1), [(-hx, -hy, -hz), (hx, -hy, -hz), (hx, hy, -hz), (-hx, hy, -hz)], (0, 1)),
+        ]
+        if top:
+            faces.append((Vec3(0, 1, 0), [(-hx, hy, -hz), (hx, hy, -hz), (hx, hy, hz), (-hx, hy, hz)], (0, 2)))
+        if bottom:
+            faces.append((Vec3(0, -1, 0), [(-hx, -hy, hz), (hx, -hy, hz), (hx, -hy, -hz), (-hx, -hy, -hz)], (0, 2)))
+        for n, corners, axes in faces:
+            pts = [Vec3(cx + x, cy + y, cz + z) for x, y, z in corners]
+            fc = shade(col, 1 + random.uniform(-jitter, jitter)) if jitter else col
+            if tile:   # coordonnées de texture en mètres (briques continues d'un mur à l'autre)
+                wp = [self._p(p) for p in pts]
+                uvs = [(p[axes[0]] / tile, p[axes[1]] / tile) for p in wp]
+                self.quad(*pts, fc, n, uvs)
+            else:
+                self.quad(*pts, fc, n)
+
+    def cylinder(self, base, r, h, col, seg=10, axis='y', caps=True, col_cap=None):
+        bx, by, bz = base
+
+        def pt(ang, t, rr=r):
+            ca, sa = math.cos(ang) * rr, math.sin(ang) * rr
+            if axis == 'y':
+                return Vec3(bx + ca, by + t, bz + sa), Vec3(math.cos(ang), 0, math.sin(ang))
+            if axis == 'x':
+                return Vec3(bx + t, by + ca, bz + sa), Vec3(0, math.cos(ang), math.sin(ang))
+            return Vec3(bx + ca, by + sa, bz + t), Vec3(math.cos(ang), math.sin(ang), 0)
+
+        axis_v = {'y': Vec3(0, 1, 0), 'x': Vec3(1, 0, 0), 'z': Vec3(0, 0, 1)}[axis]
+        c0 = pt(0, 0, 0)[0]
+        c1 = pt(0, h, 0)[0]
+        for i in range(seg):
+            a0, a1 = 2 * math.pi * i / seg, 2 * math.pi * (i + 1) / seg
+            p00, n0 = pt(a0, 0)
+            p01, _ = pt(a0, h)
+            p10, n1 = pt(a1, 0)
+            p11, _ = pt(a1, h)
+            mid = (n0 + n1).normalized()
+            self.tri(p00, p10, p11, col, mid, normals=[n0, n1, n1])
+            self.tri(p00, p11, p01, col, mid, normals=[n0, n1, n0])
+            if caps:
+                self.tri(c1, p01, p11, col_cap or col, axis_v)
+                self.tri(c0, p00, p10, col_cap or col, -axis_v)
+
+    def cone(self, base, r, h, col, seg=8, jitter=0.0):
+        bx, by, bz = base
+        apex = Vec3(bx, by + h, bz)
+        for i in range(seg):
+            a0, a1 = 2 * math.pi * i / seg, 2 * math.pi * (i + 1) / seg
+            p0 = Vec3(bx + math.cos(a0) * r, by, bz + math.sin(a0) * r)
+            p1 = Vec3(bx + math.cos(a1) * r, by, bz + math.sin(a1) * r)
+            am = (a0 + a1) / 2
+            n = Vec3(math.cos(am) * h, r, math.sin(am) * h).normalized()
+            fc = shade(col, 1 + random.uniform(-jitter, jitter)) if jitter else col
+            self.tri(p0, p1, apex, fc, n)
+            self.tri(p0, Vec3(bx, by, bz), p1, shade(col, 0.6), Vec3(0, -1, 0))
+
+    def blob(self, center, radii, col, seg=7, rings=5, jitter=0.1, rough=0.12, rng=random):
+        """Ellipsoïde à facettes irrégulières (feuillage, rochers, sacs de sable)."""
+        cx, cy, cz = center
+        rx, ry, rz = radii
+        grid = []
+        for j in range(rings + 1):
+            phi = math.pi * j / rings
+            row = []
+            for i in range(seg):
+                th = 2 * math.pi * i / seg
+                k = 1 + (rng.uniform(-rough, rough) if 0 < j < rings else 0)
+                row.append(Vec3(cx + math.sin(phi) * math.cos(th) * rx * k,
+                                cy + math.cos(phi) * ry * k,
+                                cz + math.sin(phi) * math.sin(th) * rz * k))
+            grid.append(row)
+        cen = Vec3(cx, cy, cz)
+        for j in range(rings):
+            for i in range(seg):
+                a, b = grid[j][i], grid[j][(i + 1) % seg]
+                c, d = grid[j + 1][(i + 1) % seg], grid[j + 1][i]
+                for t in ((a, b, c), (a, c, d)):
+                    out = (t[0] + t[1] + t[2]) / 3 - cen
+                    if out.length() < 1e-6:
+                        continue
+                    self.tri(t[0], t[1], t[2], shade(col, 1 + rng.uniform(-jitter, jitter)), out.normalized())
+
+    def build(self, parent=None, texture=None, specular=0.0, double_sided=False, cast_shadows=True):
+        ents = []
+        for v, c, u, n in self.chunks:
+            if not v:
+                continue
+            m = Mesh(vertices=v, triangles=list(range(len(v))), colors=c, uvs=u, normals=n, mode='triangle')
+            e = Entity(parent=parent, model=m, texture=texture, shader=LIT, double_sided=double_sided)
+            e.set_shader_input('specular', specular)
+            if double_sided and not cast_shadows:
+                e.set_shader_input('flip_backface', 0.0)   # herbe : même éclairage des deux côtés
+            if not cast_shadows:
+                e.hide(0b0001)
+            ents.append(e)
+        return ents
+
+
+# ---------------------------------------------------------------------------
+# Monde : décor, collisions, navigation, points de couverture
 # ---------------------------------------------------------------------------
 
 class Box:
@@ -88,74 +462,317 @@ class World:
 
     def __init__(self):
         self.boxes = []
-        self.level = Entity()   # parent de tous les éléments qui bloquent la vue / les balles
+        self.level = Entity()   # parent de tout ce qui bloque la vue / les balles
+        self.rng = random.Random(1234)
+        self.brick = MeshBuilder()
+        self.plain = MeshBuilder()
+        self.shiny = MeshBuilder()
+        self.foliage = MeshBuilder()
         self.build()
+        self.brick.build(self.level, texture='brick')
+        self.plain.build(self.level)
+        self.shiny.build(self.level, specular=0.7)
+        self.foliage.build(self.level)
         self.build_nav()
         self.build_cover()
+        self.grass = self.build_grass()
 
-    # -- construction ------------------------------------------------------
-    def add_wall(self, cx, cz, sx, sz, h, texture='brick', col=color.white, tex_scale=None):
+    # -- collisions pour le décor --------------------------------------------
+    def add_box(self, cx, cz, sx, sz, h, collider=True):
         self.boxes.append(Box(cx, cz, sx, sz, h))
-        if tex_scale is None:
-            tex_scale = (max(sx, sz) / 2, h / 2)
-        Entity(parent=self.level, model='cube', texture=texture, color=col,
-               position=(cx, h / 2, cz), scale=(sx, h, sz), collider='box',
-               texture_scale=tex_scale, shader=LIT)
+        if collider:
+            Entity(parent=self.level, model='cube', position=(cx, h / 2, cz), scale=(sx, h, sz),
+                   collider='box', visible=False)
 
-    def add_crate(self, cx, cz, size=1.3):
-        self.boxes.append(Box(cx, cz, size, size, size))
-        Entity(parent=self.level, model='cube', texture='white_cube',
-               color=color.rgb32(150, 105, 60), position=(cx, size / 2, cz),
-               scale=size, collider='box', shader=LIT)
+    def area_free(self, cx, cz, sx, sz, margin=1.2):
+        probe = Box(cx, cz, sx + 2 * margin, sz + 2 * margin, 1)
+        for b in self.boxes:
+            if not (probe.x1 < b.x0 or probe.x0 > b.x1 or probe.z1 < b.z0 or probe.z0 > b.z1):
+                return False
+        return abs(cx) + sx / 2 < ARENA - 1.5 and abs(cz) + sz / 2 < ARENA - 1.5
+
+    # -- éléments --------------------------------------------------------------
+    def wall(self, cx, cz, sx, sz, h, tint=None, low=False):
+        tint = tint or (rgb(205, 190, 175) if not low else rgb(175, 172, 168))
+        self.add_box(cx, cz, sx, sz, h)
+        self.brick.xf()
+        self.brick.box((cx, h / 2, cz), (sx, h, sz), tint, tile=2.0, top=False)
+        self.plain.xf()
+        cap = rgb(200, 198, 192) if not low else rgb(185, 183, 178)
+        self.plain.box((cx, h + 0.06, cz), (sx + 0.14, 0.12, sz + 0.14), cap, jitter=0.03)
+        self.plain.box((cx, 0.1, cz), (sx + 0.08, 0.2, sz + 0.08), rgb(120, 118, 112))
+
+    def crate(self, cx, cz, size=1.3):
+        self.add_box(cx, cz, size, size, size)
+        b = self.plain
+        b.xf((cx, 0, cz), 0)
+        b.box((0, size / 2, 0), (size, size, size), rgb(160, 115, 65), jitter=0.06)
+        dark = rgb(115, 80, 45)
+        e = size / 2 + 0.01
+        for sgn in (-1, 1):   # renforts
+            b.box((0, size / 2, sgn * e), (size, 0.12, 0.03), dark)
+            b.box((sgn * e, size / 2, 0), (0.03, 0.12, size), dark)
+            b.box((0, size - 0.06, sgn * e), (size, 0.12, 0.03), dark)
+            b.box((0, 0.06, sgn * e), (size, 0.12, 0.03), dark)
+        b.xf()
+
+    def tree(self, x, z, collide=True, scale=1.0, y=0.0):
+        rng = self.rng
+        pine = rng.random() < 0.45
+        h = rng.uniform(2.4, 3.3) * scale
+        r = 0.27 * scale
+        self.plain.xf()
+        self.plain.cylinder((x, y - 0.2, z), r, h + 1.2, rgb(95, 68, 45), seg=8, caps=False)
+        f = self.foliage
+        f.xf()
+        if pine:
+            greens = [rgb(40, 85, 50), rgb(50, 100, 55), rgb(35, 75, 45)]
+            base = y + h * 0.45
+            for k in range(4):
+                f.cone((x, base + k * 1.05 * scale, z), (2.0 - k * 0.42) * scale, 1.9 * scale,
+                       rng.choice(greens), seg=9, jitter=0.12)
+        else:
+            greens = [rgb(70, 125, 50), rgb(85, 140, 55), rgb(60, 110, 45), rgb(95, 145, 60)]
+            top = y + h + 0.5 * scale
+            f.blob((x, top, z), (1.5 * scale, 1.25 * scale, 1.5 * scale), rng.choice(greens), rng=rng)
+            for _ in range(rng.randint(3, 5)):
+                a = rng.uniform(0, 6.28)
+                d = rng.uniform(0.7, 1.2) * scale
+                rad = rng.uniform(0.9, 1.25) * scale
+                f.blob((x + math.cos(a) * d, top + rng.uniform(-0.5, 0.7) * scale, z + math.sin(a) * d),
+                       (rad, rad * 0.85, rad), rng.choice(greens), seg=6, rings=4, rng=rng)
+        if collide:
+            self.add_box(x, z, 0.7 * scale, 0.7 * scale, 6)
+
+    def car(self, x, z, yaw, paint):
+        sx, sz = (2.0, 4.4) if yaw % 180 == 0 else (4.4, 2.0)
+        self.add_box(x, z, sx, sz, 1.5)
+        s, p = self.shiny, self.plain
+        s.xf((x, 0, z), yaw)
+        p.xf((x, 0, z), yaw)
+        s.box((0, 0.68, 0), (1.86, 0.62, 4.3), paint)
+        s.box((0, 1.02, 1.35), (1.8, 0.08, 1.5), shade(paint, 0.95))         # capot
+        s.box((0, 1.22, -0.25), (1.62, 0.55, 2.15), shade(paint, 0.97))      # habitacle
+        s.box((0, 1.24, -0.25), (1.66, 0.4, 2.2), rgb(40, 55, 70))           # vitres
+        dark = rgb(30, 30, 32)
+        p.box((0, 0.45, 2.17), (1.9, 0.24, 0.1), dark)                       # pare-chocs
+        p.box((0, 0.45, -2.17), (1.9, 0.24, 0.1), dark)
+        p.box((0, 0.72, 2.16), (1.2, 0.16, 0.04), rgb(60, 60, 64))            # calandre
+        for sgn in (-1, 1):
+            p.box((sgn * 0.68, 0.78, 2.16), (0.34, 0.14, 0.05), rgb(255, 250, 225))
+            p.box((sgn * 0.7, 0.78, -2.16), (0.3, 0.12, 0.05), rgb(200, 30, 30))
+            for wz in (1.35, -1.35):
+                p.cylinder((sgn * 0.84 - 0.13, 0.38, wz), 0.38, 0.26, dark, seg=12, axis='x',
+                           col_cap=rgb(150, 150, 155))
+        p.xf()
+        s.xf()
+
+    def sandbags(self, cx, cz, length, along_x=True):
+        sx, sz = (length, 0.8) if along_x else (0.8, length)
+        self.add_box(cx, cz, sx, sz, 1.12)
+        n = int(length / 0.62)
+        khaki = rgb(160, 145, 105)
+        self.plain.xf()
+        for layer in range(3):
+            off = 0.31 if layer % 2 else 0
+            for i in range(n - (1 if layer % 2 else 0)):
+                t = -length / 2 + 0.31 + i * 0.62 + off
+                px, pz = (cx + t, cz) if along_x else (cx, cz + t)
+                rx, rz = (0.33, 0.24) if along_x else (0.24, 0.33)
+                self.plain.blob((px, 0.19 + layer * 0.35, pz), (rx, 0.19, rz), khaki, seg=7, rings=4,
+                                jitter=0.08, rough=0.05, rng=self.rng)
+
+    def barrels(self, cx, cz):
+        cols = [rgb(170, 45, 35), rgb(40, 80, 150), rgb(120, 90, 50), rgb(60, 110, 70)]
+        offs = [(0, 0), (0.65, 0.1), (0.3, 0.6)][:self.rng.randint(2, 3)]
+        self.plain.xf()
+        for ox, oz in offs:
+            c = self.rng.choice(cols)
+            self.plain.cylinder((cx + ox, 0, cz + oz), 0.3, 0.95, c, seg=12, col_cap=shade(c, 0.8))
+            for ry in (0.3, 0.65):
+                self.plain.cylinder((cx + ox, ry, cz + oz), 0.315, 0.04, shade(c, 0.7), seg=12, caps=False)
+        self.add_box(cx + 0.3, cz + 0.3, 1.3, 1.3, 0.95)
+
+    def rock(self, cx, cz, size=1.0):
+        self.plain.xf()
+        self.plain.blob((cx, 0.35 * size, cz), (1.2 * size, 0.95 * size, 1.0 * size), rgb(125, 122, 115),
+                        seg=7, rings=5, jitter=0.12, rough=0.18, rng=self.rng)
+        self.add_box(cx, cz, 2.0 * size, 1.7 * size, 1.25 * size)
+
+    # -- terrain -------------------------------------------------------------
+    @staticmethod
+    def terrain_height(x, z):
+        """Plat dans l'arène, collines tout autour."""
+        d = max(abs(x), abs(z))
+        if d < ARENA + 6:
+            return 0.0
+        ramp = smoothstep((d - ARENA - 6) / 40)
+        return ramp * (6 + 10 * (value_noise(x * 0.6, z * 0.6, 3) * 0.5 + 0.5)) \
+            + ramp * ramp * 12 * (value_noise(x * 0.25, z * 0.25, 9) * 0.5 + 0.5)
+
+    def build_ground(self):
+        size, n = 420, 140
+        step = size / n
+        h = self.terrain_height
+        b = MeshBuilder()
+        up = Vec3(0, 1, 0)
+        cache = {}
+
+        def vert(i, j):
+            if (i, j) not in cache:
+                x, z = -size / 2 + i * step, -size / 2 + j * step
+                y = h(x, z)
+                e = 0.8
+                nor = Vec3(h(x - e, z) - h(x + e, z), 2 * e, h(x, z - e) - h(x, z + e)).normalized()
+                nz = value_noise(x, z, 1) * 0.5 + 0.5
+                dry = value_noise(x * 1.7, z * 1.7, 5) * 0.5 + 0.5
+                col = Color(lerp(0.42, 0.6, nz) + dry * 0.14, lerp(0.7, 0.85, nz), lerp(0.42, 0.55, nz), 1)
+                cache[(i, j)] = (Vec3(x, y, z), nor, col, (x / 3, z / 3))
+            return cache[(i, j)]
+
+        for i in range(n):
+            for j in range(n):
+                q = [vert(i, j), vert(i + 1, j), vert(i + 1, j + 1), vert(i, j + 1)]
+                for a, bb, c in ((0, 1, 2), (0, 2, 3)):
+                    b.tri(q[a][0], q[bb][0], q[c][0], [q[a][2], q[bb][2], q[c][2]], up,
+                          (q[a][3], q[bb][3], q[c][3]), [q[a][1], q[bb][1], q[c][1]], local=False)
+        b.build(self.level, texture='grass')
+        # collisionneur plat pour les impacts de balles
+        Entity(parent=self.level, model='plane', scale=(ARENA * 2 + 4, 1, ARENA * 2 + 4),
+               collider='box', visible=False)
+
+    def road(self, z0, z1):
+        b = self.plain
+        b.xf()
+        up = Vec3(0, 1, 0)
+        x0, x1 = -ARENA + 0.6, ARENA - 0.6
+        k = 0
+        x = x0
+        while x < x1:
+            nx = min(x + 3, x1)
+            c = shade(rgb(62, 62, 66), 1 + 0.06 * value_noise(x, z0, 2))
+            b.quad(Vec3(x, 0.02, z0), Vec3(nx, 0.02, z0), Vec3(nx, 0.02, z1), Vec3(x, 0.02, z1), c, up)
+            if k % 2 == 0:
+                zc = (z0 + z1) / 2
+                b.quad(Vec3(x + 0.3, 0.03, zc - 0.08), Vec3(nx - 0.3, 0.03, zc - 0.08),
+                       Vec3(nx - 0.3, 0.03, zc + 0.08), Vec3(x + 0.3, 0.03, zc + 0.08), rgb(230, 225, 200), up)
+            k += 1
+            x = nx
+        for zz in (z0 - 0.12, z1 + 0.12):   # bordures
+            b.box(((x0 + x1) / 2, 0.06, zz), (x1 - x0, 0.12, 0.24), rgb(170, 168, 160))
 
     def build(self):
-        ground = Entity(parent=self.level, model='plane', texture='grass',
-                        scale=(ARENA * 2 + 20, 1, ARENA * 2 + 20),
-                        texture_scale=(40, 40), collider='box', shader=LIT)
-        ground.is_ground = True
-
-        stone = color.rgb32(200, 190, 180)
-        # enceinte
+        self.build_ground()
+        # enceinte avec piliers
         L = ARENA * 2
-        self.add_wall(0, ARENA, L + 1, 1, 4, col=stone)
-        self.add_wall(0, -ARENA, L + 1, 1, 4, col=stone)
-        self.add_wall(ARENA, 0, 1, L + 1, 4, col=stone)
-        self.add_wall(-ARENA, 0, 1, L + 1, 4, col=stone)
+        for cx, cz, sx, sz in [(0, ARENA, L + 1, 1), (0, -ARENA, L + 1, 1), (ARENA, 0, 1, L + 1), (-ARENA, 0, 1, L + 1)]:
+            self.wall(cx, cz, sx, sz, 4, tint=rgb(190, 180, 168))
+        self.plain.xf()
+        for k in range(-5, 6):
+            t = k * 9
+            for px, pz in [(t, ARENA), (t, -ARENA), (ARENA, t), (-ARENA, t)]:
+                self.plain.box((px, 2.2, pz), (1.3, 4.4, 1.3), rgb(165, 160, 150), jitter=0.04)
 
-        # grands murs (on ne voit pas par-dessus)
-        self.add_wall(-12, 8, 10, 1, 3)
-        self.add_wall(12, 8, 10, 1, 3)
-        self.add_wall(0, 18, 1, 10, 3)
-        self.add_wall(-22, -5, 1, 12, 3)
-        self.add_wall(22, -5, 1, 12, 3)
-        self.add_wall(-8, -14, 8, 1, 3)
-        self.add_wall(8, -14, 8, 1, 3)
-        self.add_wall(-28, 22, 12, 1, 3)
-        self.add_wall(28, 22, 12, 1, 3)
-        self.add_wall(-30, -24, 1, 10, 3)
-        self.add_wall(30, -24, 1, 10, 3)
-        # bâtiment ouvert au centre-nord
-        self.add_wall(-6, 28, 1, 8, 3)
-        self.add_wall(6, 28, 1, 8, 3)
-        self.add_wall(-3.5, 32, 6, 1, 3)
-        self.add_wall(3.5, 32, 6, 1, 3)
+        self.road(12.5, 16.5)
 
-        # murets bas (on peut tirer par-dessus debout, se cacher accroupi)
-        low = color.rgb32(170, 170, 170)
-        self.add_wall(0, 0, 6, 0.8, 1.3, col=low)
-        self.add_wall(-16, 20, 5, 0.8, 1.3, col=low)
-        self.add_wall(16, 20, 5, 0.8, 1.3, col=low)
-        self.add_wall(-14, -26, 0.8, 5, 1.3, col=low)
-        self.add_wall(14, -26, 0.8, 5, 1.3, col=low)
-        self.add_wall(-32, 6, 5, 0.8, 1.3, col=low)
-        self.add_wall(32, 6, 5, 0.8, 1.3, col=low)
-        self.add_wall(0, -24, 6, 0.8, 1.3, col=low)
+        # grands murs
+        for cx, cz, sx, sz in [(-13, 9, 11, 1), (13, 9, 11, 1), (0, 22, 1, 7), (-25, -6, 1, 13), (25, -6, 1, 13),
+                               (-9, -16, 9, 1), (9, -16, 9, 1), (-31, 25, 13, 1), (31, 25, 13, 1),
+                               (-34, -27, 1, 11), (34, -27, 1, 11),
+                               (-7, 32, 1, 9), (7, 32, 1, 9), (-4.75, 36.5, 5.5, 1), (4.75, 36.5, 5.5, 1)]:
+            self.wall(cx, cz, sx, sz, 3)
+        # toit de la maison du nord (au-dessus des têtes)
+        self.plain.xf()
+        self.plain.box((0, 3.2, 32), (15.2, 0.25, 10), rgb(140, 70, 55), jitter=0.02, bottom=True)
+
+        # murets bas
+        for cx, cz, sx, sz in [(0, 0, 7, 0.8), (-18, 22, 5, 0.8), (18, 22, 5, 0.8), (-16, -29, 0.8, 5),
+                               (16, -29, 0.8, 5), (-37, 7, 5, 0.8), (37, 7, 5, 0.8), (0, -27, 6, 0.8)]:
+            self.wall(cx, cz, sx, sz, 1.3, low=True)
+
+        # voitures
+        paints = [rgb(180, 30, 35), rgb(30, 70, 150), rgb(220, 220, 215), rgb(40, 40, 45),
+                  rgb(200, 150, 30), rgb(60, 120, 80), rgb(120, 125, 135)]
+        for x, z, yaw in [(-30, 14.3, 90), (-12, 15, 90), (6, 13.8, 90), (22, 15.5, 90), (38, 14.5, 90),
+                          (28, -39, 0), (31.5, -38.5, 0), (-28, -38, 0), (-22, -8, 0), (18, -7, 0),
+                          (-39, 33, 90), (40, 38, 0)]:
+            if self.area_free(x, z, 4.4, 4.4, margin=0.3):
+                self.car(x, z, yaw, self.rng.choice(paints))
 
         # caisses
-        for x, z in [(-4, 10), (4, 10.2), (-18, 0), (18, 0), (-26, 14), (26, 14),
-                     (-10, -22), (10, -22), (-24, -32), (24, -32), (0, 36), (-34, -10),
-                     (34, -10), (-12, 30), (12, 30)]:
-            self.add_crate(x, z)
+        for x, z in [(-4, 10.3), (4, 10.3), (-18, 0), (18, 0), (-26, 18), (26, 18), (-10, -22), (10, -22),
+                     (-24, -34), (24, -34), (0, 40), (-38, -10), (38, -10), (-13, 30), (13, 30), (-1.2, 10.3)]:
+            if self.area_free(x, z, 1.3, 1.3, margin=0.2):
+                self.crate(x, z)
+
+        # sacs de sable
+        for x, z, l, ax in [(-6, -8, 4, True), (7, -7.5, 4, True), (-39, -15, 4, False), (39, -18, 4, False),
+                            (-20, 34, 4, True), (20, 34, 4, True), (0, -35, 3, True)]:
+            if self.area_free(x, z, 4.2, 4.2, margin=0.2):
+                self.sandbags(x, z, l, ax)
+
+        # rochers, tonneaux
+        for x, z, s in [(-15, -38, 1.0), (14, 3, 0.9), (-30, 3, 1.1), (35, 30, 1.0), (-8, 20, 0.8)]:
+            if self.area_free(x, z, 2.5 * s, 2.5 * s, margin=0.4):
+                self.rock(x, z, s)
+        for x, z in [(-20, -20), (20, -21), (-36, 38), (5, 26), (-3, -20), (30, 5)]:
+            if self.area_free(x, z, 1.4, 1.4, margin=0.4):
+                self.barrels(x, z)
+
+        # arbres dans l'arène (couverture fine)
+        placed = tries = 0
+        while placed < 26 and tries < 800:
+            tries += 1
+            x = self.rng.uniform(-ARENA + 3, ARENA - 3)
+            z = self.rng.uniform(-ARENA + 3, ARENA - 3)
+            if 11.5 < z < 17.5:              # pas sur la route
+                continue
+            if abs(x) < 9 and z < -30:       # zone de départ et cibles dégagées
+                continue
+            if not self.area_free(x, z, 0.7, 0.7, margin=1.8):
+                continue
+            self.tree(x, z, scale=self.rng.uniform(0.9, 1.25))
+            placed += 1
+
+        # forêt sur les collines extérieures (décor seulement)
+        for _ in range(170):
+            a = self.rng.uniform(0, 6.283)
+            d = self.rng.uniform(ARENA + 8, 150)
+            x, z = math.cos(a) * d, math.sin(a) * d
+            if max(abs(x), abs(z)) < ARENA + 5:
+                continue
+            self.tree(x, z, collide=False, scale=self.rng.uniform(1.2, 2.2), y=self.terrain_height(x, z))
+
+    def build_grass(self):
+        """Touffes d'herbe et fleurs : un seul maillage, sans ombre portée."""
+        b = MeshBuilder()
+        rng = random.Random(99)
+        flowers = [rgb(250, 230, 80), rgb(245, 245, 245), rgb(190, 120, 220), rgb(240, 120, 60)]
+        up = Vec3(0, 1, 0)
+        count = 0
+        while count < 14000:
+            x = rng.uniform(-ARENA + 1, ARENA - 1)
+            z = rng.uniform(-ARENA + 1, ARENA - 1)
+            if 12.2 < z < 16.8 or not self.is_free(Vec3(x, 0, z)):
+                continue
+            count += 1
+            nz = value_noise(x, z, 1) * 0.5 + 0.5
+            base = Color(0.26 + 0.06 * nz, 0.38 + 0.06 * nz, 0.14, 1)
+            tip = Color(0.44 + 0.14 * nz, 0.60 + 0.08 * nz, 0.24, 1)
+            flower = rng.random() < 0.05
+            for _ in range(4):
+                a = rng.uniform(0, 3.1416)
+                w = rng.uniform(0.025, 0.045)
+                hgt = rng.uniform(0.15, 0.38) * (0.7 + 0.6 * nz)
+                dx, dz = math.cos(a) * w, math.sin(a) * w
+                ox, oz = x + rng.uniform(-0.2, 0.2), z + rng.uniform(-0.2, 0.2)
+                p0 = Vec3(ox - dx, 0, oz - dz)
+                p1 = Vec3(ox + dx, 0, oz + dz)
+                p2 = Vec3(ox + rng.uniform(-0.12, 0.12), hgt, oz + rng.uniform(-0.12, 0.12))
+                top = rng.choice(flowers) if flower else tip
+                side = (p1 - p0).cross(p2 - p0).normalized()
+                b.tri(p0, p1, p2, [base, base, top], side, normals=[up, up, up], local=False)
+        return b.build(self.level, double_sided=True, cast_shadows=False)
 
     # -- collisions --------------------------------------------------------
     def floor_height(self, x, z, r, y):
@@ -167,7 +784,7 @@ class World:
         return h
 
     def resolve(self, pos, r, y=0.0):
-        """Repousse un cercle (x,z) hors des murs dont le haut est au-dessus de ses pieds."""
+        """Repousse un cercle (x,z) hors des obstacles dont le haut est au-dessus de ses pieds."""
         x, z = pos.x, pos.z
         for b in self.boxes:
             if b.h <= y + 0.35:
@@ -196,8 +813,7 @@ class World:
         dist = d.length()
         if dist < 0.01:
             return True
-        hit = raycast(a, d / dist, dist, traverse_target=self.level)
-        return not hit.hit
+        return not raycast(a, d / dist, dist, traverse_target=self.level).hit
 
     # -- navigation (A* sur grille) -----------------------------------------
     def build_nav(self):
@@ -208,11 +824,14 @@ class World:
                 x, z = self.cell_center(i, j)
                 if abs(x) > ARENA - 1 or abs(z) > ARENA - 1:
                     self.blocked[i][j] = True
-                    continue
-                for b in self.boxes:
+        for b in self.boxes:
+            i0, j0 = self.cell_of(Vec3(b.x0 - 1, 0, b.z0 - 1))
+            i1, j1 = self.cell_of(Vec3(b.x1 + 1, 0, b.z1 + 1))
+            for i in range(i0, i1 + 1):
+                for j in range(j0, j1 + 1):
+                    x, z = self.cell_center(i, j)
                     if b.circle_overlap(x, z, 0.55):
                         self.blocked[i][j] = True
-                        break
         self.free_cells = [(i, j) for i in range(self.n) for j in range(self.n) if not self.blocked[i][j]]
 
     def cell_center(self, i, j):
@@ -243,12 +862,11 @@ class World:
         steps = max(1, int(d / 0.3))
         for k in range(steps + 1):
             t = k / steps
-            p = Vec3(lerp(a.x, b.x, t), 0, lerp(a.z, b.z, t))
-            if not self.is_free(p):
+            if not self.is_free(Vec3(lerp(a.x, b.x, t), 0, lerp(a.z, b.z, t))):
                 return False
         return True
 
-    def find_path(self, start, goal, max_nodes=5000):
+    def find_path(self, start, goal, max_nodes=6000):
         s = self.nearest_free(self.cell_of(start))
         g = self.nearest_free(self.cell_of(goal))
         if s is None or g is None:
@@ -283,8 +901,7 @@ class World:
                     cost[(ni, nj)] = nc
                     came[(ni, nj)] = cur
                     dx, dz = abs(ni - g[0]), abs(nj - g[1])
-                    h = (dx + dz) + (SQ2 - 2) * min(dx, dz)
-                    heapq.heappush(openq, (nc + h, nc, (ni, nj)))
+                    heapq.heappush(openq, (nc + (dx + dz) + (SQ2 - 2) * min(dx, dz), nc, (ni, nj)))
         if not found:
             return []
         cells = []
@@ -325,17 +942,14 @@ class World:
 
     # -- couvertures -------------------------------------------------------
     def build_cover(self):
-        """Points au pied de chaque mur / caisse, avec leur normale et la direction du mur."""
+        """Points au pied de chaque obstacle assez haut, avec leur normale."""
         self.covers = []
         off = 0.85
         for b in self.boxes:
-            if b.h < 1.2:
+            if b.h < 1.1:
                 continue
             sx, sz = b.x1 - b.x0, b.z1 - b.z0
-            if sx > 70 or sz > 70:     # murs d'enceinte : on garde quand même quelques points
-                step = 6
-            else:
-                step = 1.5
+            step = 6 if (sx > 70 or sz > 70) else 1.5
             sides = [
                 ((b.x0, b.z0 - off), (b.x1, b.z0 - off), Vec3(0, 0, -1)),
                 ((b.x0, b.z1 + off), (b.x1, b.z1 + off), Vec3(0, 0, 1)),
@@ -379,39 +993,57 @@ def tracer(start, end, col=color.yellow, thickness=0.025, life=0.06):
 
 
 def muzzle_flash(parent, pos=(0, 0, 0), scale=0.25):
-    f = Entity(parent=parent, model='quad', texture='circle', color=color.rgb32(255, 220, 120),
-               position=pos, scale=scale, billboard=True, unlit=True)
-    destroy(f, 0.05)
+    for k in range(2):
+        f = Entity(parent=parent, model='quad', texture='circle',
+                   color=rgb(255, 215, 120) if k else rgb(255, 250, 220),
+                   position=pos, scale=scale * (1 if k else 0.5), billboard=True, unlit=True,
+                   rotation_z=random.uniform(0, 90))
+        destroy(f, 0.05)
 
 
 _impacts = []
 
 
-def impact(point, normal=None, col=color.rgb32(60, 50, 40)):
+def impact(point, normal=None, col=rgb(40, 35, 30)):
     e = Entity(model='quad', texture='circle', color=col,
                position=point + (normal * 0.01 if normal is not None else Vec3(0, 0, 0)),
-               scale=0.12, unlit=True)
+               scale=0.1, unlit=True)
     if normal is not None:
         e.look_at(point - normal)
     else:
         e.billboard = True
     _impacts.append(e)
-    if len(_impacts) > 60:
+    if len(_impacts) > 80:
         destroy(_impacts.pop(0))
-    # petites particules
-    for _ in range(4):
-        p = Entity(model='cube', color=color.rgb32(140, 120, 90), position=point, scale=0.04, unlit=True)
-        target = point + Vec3(random.uniform(-.3, .3), random.uniform(0, .4), random.uniform(-.3, .3))
-        p.animate_position(target, duration=0.25)
+    out = normal if normal is not None else Vec3(0, 1, 0)
+    for _ in range(5):
+        p = Entity(model='cube', color=rgb(150, 130, 100), position=point, scale=0.04, unlit=True)
+        p.animate_position(point + out * 0.2 + Vec3(random.uniform(-.3, .3), random.uniform(0, .4), random.uniform(-.3, .3)),
+                           duration=0.25)
         destroy(p, 0.25)
+    dust = Entity(model='sphere', color=rgb(170, 160, 140, 140), position=point, scale=0.1, unlit=True)
+    dust.animate_scale(0.6, duration=0.4)
+    dust.animate_color(rgb(170, 160, 140, 0), duration=0.4)
+    destroy(dust, 0.4)
 
 
 def blood(point):
-    for _ in range(6):
-        p = Entity(model='cube', color=color.rgb32(150, 0, 0), position=point, scale=0.05, unlit=True)
-        target = point + Vec3(random.uniform(-.4, .4), random.uniform(-.3, .4), random.uniform(-.4, .4))
-        p.animate_position(target, duration=0.3)
+    for _ in range(7):
+        p = Entity(model='cube', color=rgb(140, 0, 0), position=point, scale=0.05, unlit=True)
+        p.animate_position(point + Vec3(random.uniform(-.4, .4), random.uniform(-.3, .4), random.uniform(-.4, .4)),
+                           duration=0.3)
         destroy(p, 0.3)
+    mist = Entity(model='sphere', color=rgb(150, 10, 10, 150), position=point, scale=0.15, unlit=True)
+    mist.animate_scale(0.5, duration=0.25)
+    mist.animate_color(rgb(150, 10, 10, 0), duration=0.25)
+    destroy(mist, 0.25)
+
+
+def shell_casing(origin, right):
+    c = Entity(model='cube', color=rgb(200, 160, 60), position=origin, scale=(0.012, 0.012, 0.03), unlit=True)
+    c.animate_position(origin + right * random.uniform(0.25, 0.4) + Vec3(0, random.uniform(-0.2, 0.05), 0), duration=0.3)
+    c.animate_rotation((random.uniform(0, 720), random.uniform(0, 720), 0), duration=0.3)
+    destroy(c, 0.3)
 
 
 # ---------------------------------------------------------------------------
@@ -422,13 +1054,16 @@ class Target(Entity):
     def __init__(self, game, position, yaw=0):
         super().__init__(position=position, rotation_y=yaw)
         self.game = game
-        Entity(parent=self, model='cube', color=color.rgb32(90, 60, 30), scale=(0.12, 1.2, 0.12),
-               y=0.6, shader=LIT)
+        Entity(parent=self, model='cube', color=rgb(100, 70, 40), scale=(0.1, 1.2, 0.1), y=0.6, shader=LIT)
+        Entity(parent=self, model='cube', color=rgb(90, 90, 95), scale=(0.6, 0.08, 0.6), y=0.04, shader=LIT)
         self.board = Entity(parent=self, y=1.2)
-        rings = [(0.9, color.white), (0.7, color.red), (0.5, color.white), (0.3, color.red), (0.12, color.white)]
+        Entity(parent=self.board, model='cube', color=rgb(120, 85, 50), scale=(0.95, 0.95, 0.04), y=0.5, z=0.03,
+               shader=LIT)
+        rings = [(0.9, color.white), (0.7, rgb(210, 30, 30)), (0.5, color.white), (0.3, rgb(210, 30, 30)),
+                 (0.12, color.white)]
         for k, (s, c) in enumerate(rings):
-            Entity(parent=self.board, model='circle', color=c, scale=s, y=0.5, z=-0.02 - k * 0.004,
-                   shader=LIT, double_sided=True)
+            Entity(parent=self.board, model='circle', color=c, scale=s, y=0.5, z=-0.03 - k * 0.012,
+                   unlit=True, double_sided=True)
         self.hitbox = Entity(parent=self.board, model='cube', scale=(0.9, 0.9, 0.05), y=0.5,
                              collider='box', visible=False)
         self.hitbox.target = self
@@ -448,22 +1083,122 @@ class Target(Entity):
 
 
 # ---------------------------------------------------------------------------
+# Grenades
+# ---------------------------------------------------------------------------
+
+class Grenade(Entity):
+    def __init__(self, game, start, target):
+        super().__init__(model='sphere', color=rgb(55, 70, 40), scale=0.16, position=start, shader=LIT)
+        self.game = game
+        self.world = game.world
+        T = clamp(flat_dist(start, target) / 13, 0.6, 1.6)
+        self.vel = Vec3((target.x - start.x) / T, 0, (target.z - start.z) / T)
+        self.vel.y = (target.y + 0.1 - start.y + 0.5 * GRAVITY * T * T) / T
+        self.fuse = 2.8
+        self.landed = False
+        self.blink = Entity(parent=self, model='sphere', color=color.red, scale=0.5, y=0.5, unlit=True)
+        game.grenades.append(self)
+
+    def update(self):
+        if self.game.paused:
+            return
+        dt = time.dt
+        self.fuse -= dt
+        self.blink.visible = int(self.fuse * (8 if self.fuse < 1 else 4)) % 2 == 0
+        self.vel.y -= GRAVITY * dt
+        new = self.position + self.vel * dt
+        res = self.world.resolve(new, 0.12, new.y)
+        if abs(res.x - new.x) > 1e-4:
+            self.vel.x *= -0.4
+        if abs(res.z - new.z) > 1e-4:
+            self.vel.z *= -0.4
+        new = res
+        floor = self.world.floor_height(new.x, new.z, 0.1, self.y) + 0.08
+        if new.y <= floor:
+            new.y = floor
+            self.vel.y = -self.vel.y * 0.3 if abs(self.vel.y) > 1.5 else 0
+            self.vel.x *= 0.55
+            self.vel.z *= 0.55
+            if not self.landed:
+                self.landed = True
+                for e in self.game.enemies:        # les ennemis proches s'écartent
+                    if not e.dead and flat_dist(e.position, new) < 7:
+                        invoke(e.evade_grenade, Vec3(new), delay=random.uniform(0.15, 0.5) * (1.3 - e.skill))
+        self.position = new
+        self.rotation_x += 400 * dt
+        if self.fuse <= 0:
+            self.explode()
+
+    def explode(self):
+        g = self.game
+        pos = Vec3(self.position)
+        if self in g.grenades:
+            g.grenades.remove(self)
+        destroy(self)
+        flash = Entity(model='sphere', color=rgb(255, 200, 90), position=pos, scale=0.5, unlit=True)
+        flash.animate_scale(5, duration=0.18)
+        flash.animate_color(rgb(255, 120, 30, 0), duration=0.3)
+        destroy(flash, 0.3)
+        for _ in range(9):
+            s = Entity(model='sphere', color=rgb(90, 85, 80, 200), unlit=True,
+                       position=pos + Vec3(random.uniform(-.8, .8), random.uniform(0, .5), random.uniform(-.8, .8)),
+                       scale=random.uniform(0.6, 1.2))
+            s.animate_position(s.position + Vec3(random.uniform(-1, 1), random.uniform(1.5, 3), random.uniform(-1, 1)),
+                               duration=1.8)
+            s.animate_scale(s.scale_x * 2.5, duration=1.8)
+            s.animate_color(rgb(120, 115, 110, 0), duration=1.8)
+            destroy(s, 1.8)
+        scorch = Entity(model='circle', color=rgb(25, 22, 20, 200), position=(pos.x, 0.035, pos.z),
+                        rotation_x=90, scale=2.4, unlit=True, double_sided=True)
+        destroy(scorch, 20)
+        for _ in range(12):
+            p = Entity(model='cube', color=rgb(70, 60, 50), position=pos, scale=0.06, unlit=True)
+            p.animate_position(pos + Vec3(random.uniform(-3, 3), random.uniform(0.2, 2.5), random.uniform(-3, 3)),
+                               duration=0.4)
+            destroy(p, 0.4)
+        radius = 6.0
+        pl = g.player
+        center = pos + Vec3(0, 0.3, 0)
+        d = (pl.position + Vec3(0, 0.9, 0) - center).length()
+        if not pl.dead and d < radius and (self.world.los(center, pl.eye)
+                                           or self.world.los(center, pl.position + Vec3(0, 0.5, 0))):
+            pl.take_damage(int(105 * (1 - d / radius) ** 1.1) + 5, pos)
+        if d < 16:
+            pl.shake = max(pl.shake, 0.6 * (1 - d / 16))
+        for e in list(g.enemies):
+            if e.dead:
+                continue
+            de = (e.position + Vec3(0, 0.9, 0) - center).length()
+            if de < radius and self.world.los(center, e.eye):
+                e.take_hit(int(100 * (1 - de / radius)), 'body', e.position + Vec3(0, 1, 0), explosive=True)
+
+
+# ---------------------------------------------------------------------------
 # Ennemi humanoïde
 # ---------------------------------------------------------------------------
 
-class Enemy(Entity):
-    SKIN = color.rgb32(224, 172, 130)
-    UNIFORM = color.rgb32(85, 95, 60)
-    UNIFORM_DARK = color.rgb32(60, 68, 42)
-    BOOT = color.rgb32(40, 32, 25)
-    HELMET = color.rgb32(70, 80, 50)
-    GUN = color.rgb32(35, 35, 38)
+TIERS = [
+    dict(name='Recrues', uniform=rgb(85, 100, 60), dark=rgb(60, 70, 42), helmet=rgb(70, 82, 50), visor=None),
+    dict(name='Soldats', uniform=rgb(175, 155, 115), dark=rgb(135, 115, 82), helmet=rgb(150, 130, 95), visor=None),
+    dict(name='Commandos', uniform=rgb(80, 92, 108), dark=rgb(55, 62, 76), helmet=rgb(60, 66, 80),
+         visor=rgb(40, 180, 220)),
+    dict(name='Élite', uniform=rgb(38, 38, 44), dark=rgb(24, 24, 28), helmet=rgb(30, 30, 34), visor=rgb(230, 40, 40)),
+]
 
-    def __init__(self, game, position):
+
+class Enemy(Entity):
+    SKIN = rgb(224, 172, 130)
+    BOOT = rgb(40, 32, 25)
+    GUN = rgb(35, 35, 38)
+
+    def __init__(self, game, position, skill=0.0, tier=0):
         super().__init__(position=position)
         self.game = game
         self.world = game.world
-        self.hp = 100
+        self.skill = skill
+        self.tier = TIERS[tier]
+        self.max_hp = 100 + int(70 * skill)
+        self.hp = self.max_hp
         self.dead = False
         self.parts = []
 
@@ -480,14 +1215,25 @@ class Enemy(Entity):
         self.last_seen = -99
         self.cover = None
         self.peek_pos = None
+        self.last_peek_off = None
         self.mag = 8
         self.burst = 0
         self.shot_t = 0
-        self.look_yaw = None         # angle que l'ennemi veut regarder (sinon direction du mouvement)
+        self.look_yaw = None
         self.retreated = False
         self.flinch = 0.0
-        self.hit_recently = 0
-        self.alerted_by = None
+        self.cover_fire = False
+        self.grenades = 1 + int(skill * 2)
+        self.last_grenade = -99
+        self.thrown = False
+        self.real_speed = 0.0
+
+        # paramètres qui dépendent du niveau d'IA
+        self.fov = 65 + 20 * skill            # demi-angle du champ de vision
+        self.view_range = 32 + 15 * skill
+        self.hear_radius = 32 + 20 * skill
+        self.accuracy = 0.55 + 0.35 * skill
+        self.reaction = 1.0 - 0.55 * skill    # multiplie les temps de réaction
 
         # animation
         self.vel = Vec3(0, 0, 0)
@@ -500,50 +1246,69 @@ class Enemy(Entity):
         self.death_t = 0
 
         self.build_body()
-        self.icon = Text(parent=self, text='', y=2.25, scale=18, billboard=True,
+        self.icon = Text(parent=self, text='', y=2.3, scale=18, billboard=True,
                          origin=(0, 0), color=color.yellow)
 
     # -- corps articulé ----------------------------------------------------
-    def part(self, parent, pos, scale, col, zone, model='cube'):
-        p = Entity(parent=parent, model=model, color=col, position=pos, scale=scale,
-                   collider='box', shader=LIT)
+    def part(self, parent, pos, scale, col, zone, collide=True, lit=True):
+        p = Entity(parent=parent, model='cube', color=col, position=pos, scale=scale,
+                   collider='box' if collide else None)
+        if lit:
+            p.shader = LIT
+        else:
+            p.unlit = True
         p.owner = self
         p.zone = zone
         self.parts.append(p)
         return p
 
     def build_body(self):
-        U, UD, S = self.UNIFORM, self.UNIFORM_DARK, self.SKIN
+        t = self.tier
+        U, UD, S = t['uniform'], t['dark'], self.SKIN
+        glove = rgb(35, 32, 30)
         # bassin : pivot principal (hauteur des hanches)
         self.hips = Entity(parent=self, y=0.95)
         self.part(self.hips, (0, 0.02, 0), (0.36, 0.2, 0.22), UD, 'body')
+        self.part(self.hips, (0, 0.1, 0), (0.39, 0.06, 0.25), rgb(45, 40, 32), 'body', collide=False)   # ceinture
         # torse : pivote au bassin
         self.torso = Entity(parent=self.hips, y=0.08)
         self.part(self.torso, (0, 0.28, 0), (0.42, 0.5, 0.25), U, 'body')
-        self.part(self.torso, (0, 0.3, 0.13), (0.34, 0.34, 0.06), UD, 'body')   # gilet
-        self.part(self.torso, (0, 0.58, 0), (0.1, 0.08, 0.1), S, 'body')        # cou
+        self.part(self.torso, (0, 0.3, 0.12), (0.36, 0.36, 0.06), UD, 'body', collide=False)    # gilet
+        for px in (-0.1, 0.02, 0.14):                                                          # poches
+            self.part(self.torso, (px, 0.2, 0.16), (0.09, 0.11, 0.05), shade(UD, 0.85), 'body', collide=False)
+        self.part(self.torso, (0, 0.3, -0.19), (0.3, 0.38, 0.14), shade(UD, 0.9), 'body')       # sac à dos
+        self.part(self.torso, (0, 0.52, -0.19), (0.26, 0.08, 0.13), shade(UD, 0.75), 'body', collide=False)
+        self.part(self.torso, (0, 0.58, 0), (0.11, 0.08, 0.11), S, 'body', collide=False)        # cou
         # tête
         self.neck = Entity(parent=self.torso, y=0.6)
         self.head = self.part(self.neck, (0, 0.14, 0), (0.22, 0.26, 0.24), S, 'head')
-        self.part(self.neck, (0, 0.25, -0.01), (0.26, 0.1, 0.28), self.HELMET, 'head')   # casque
-        self.part(self.neck, (-0.055, 0.17, 0.12), (0.04, 0.03, 0.01), color.black, 'head')  # yeux
-        self.part(self.neck, (0.055, 0.17, 0.12), (0.04, 0.03, 0.01), color.black, 'head')
+        self.part(self.neck, (0, 0.26, -0.01), (0.27, 0.1, 0.29), t['helmet'], 'head')              # casque
+        self.part(self.neck, (0, 0.22, 0), (0.28, 0.04, 0.3), shade(t['helmet'], 0.8), 'head', collide=False)
+        self.part(self.neck, (0, 0.07, 0.12), (0.06, 0.05, 0.02), shade(S, 0.9), 'head', collide=False)  # nez
+        if t['visor'] is not None:
+            self.part(self.neck, (0, 0.17, 0.125), (0.2, 0.06, 0.02), t['visor'], 'head', collide=False, lit=False)
+        else:
+            for ex in (-0.055, 0.055):
+                self.part(self.neck, (ex, 0.17, 0.12), (0.045, 0.03, 0.01), color.black, 'head', collide=False)
+            self.part(self.neck, (0, 0.23, 0.13), (0.2, 0.025, 0.02), shade(S, 0.7), 'head', collide=False)
 
         # bras : épaule -> bras -> coude -> avant-bras -> main
         self.shoulders, self.elbows = [], []
         for side in (-1, 1):
             sh = Entity(parent=self.torso, position=(0.27 * side, 0.48, 0))
+            self.part(sh, (0, 0, 0), (0.15, 0.12, 0.15), UD, 'limb', collide=False)            # épaulière
             self.part(sh, (0, -0.15, 0), (0.12, 0.32, 0.12), U, 'limb')
             el = Entity(parent=sh, y=-0.3)
             self.part(el, (0, -0.14, 0), (0.1, 0.28, 0.1), U, 'limb')
-            self.part(el, (0, -0.31, 0), (0.09, 0.09, 0.09), S, 'limb')          # main
+            self.part(el, (0, -0.31, 0), (0.09, 0.1, 0.09), glove, 'limb')                   # main
             self.shoulders.append(sh)
             self.elbows.append(el)
         # fusil tenu dans la main droite (orienté comme l'avant-bras)
         self.gun = Entity(parent=self.elbows[1], y=-0.31, rotation_x=90)
-        g = self.part(self.gun, (0, 0.02, 0.2), (0.06, 0.1, 0.62), self.GUN, 'limb')
-        g.zone = 'gun'
-        self.part(self.gun, (0, -0.06, 0.1), (0.05, 0.14, 0.06), self.GUN, 'gun')
+        self.part(self.gun, (0, 0.02, 0.2), (0.06, 0.1, 0.62), self.GUN, 'gun')
+        self.part(self.gun, (0, -0.06, 0.1), (0.05, 0.14, 0.06), self.GUN, 'gun', collide=False)
+        self.part(self.gun, (0, -0.07, 0.3), (0.05, 0.16, 0.07), self.GUN, 'gun', collide=False)    # chargeur
+        self.part(self.gun, (0, 0.0, -0.13), (0.06, 0.12, 0.2), rgb(90, 65, 40), 'gun', collide=False)
         self.muzzle = Entity(parent=self.gun, z=0.55, y=0.02)
 
         # jambes : hanche -> cuisse -> genou -> tibia -> pied
@@ -551,9 +1316,11 @@ class Enemy(Entity):
         for side in (-1, 1):
             hj = Entity(parent=self.hips, position=(0.1 * side, -0.05, 0))
             self.part(hj, (0, -0.22, 0), (0.15, 0.45, 0.16), UD, 'limb')
+            self.part(hj, (0.08 * side, -0.25, 0.02), (0.05, 0.12, 0.1), shade(UD, 0.85), 'limb', collide=False)
             kn = Entity(parent=hj, y=-0.44)
             self.part(kn, (0, -0.2, 0), (0.13, 0.42, 0.14), UD, 'limb')
-            self.part(kn, (0, -0.43, 0.06), (0.14, 0.08, 0.26), self.BOOT, 'limb')
+            self.part(kn, (0, -0.03, 0.07), (0.12, 0.1, 0.04), rgb(40, 40, 40), 'limb', collide=False)  # genouillère
+            self.part(kn, (0, -0.43, 0.05), (0.14, 0.09, 0.27), self.BOOT, 'limb')
             self.hip_joints.append(hj)
             self.knees.append(kn)
 
@@ -561,9 +1328,6 @@ class Enemy(Entity):
     @property
     def eye(self):
         return self.position + Vec3(0, lerp(EYE_STAND, EYE_CROUCH, self.crouch), 0)
-
-    def player_eye(self):
-        return self.game.player.eye
 
     def set_path_to(self, target):
         self.path = self.world.find_path(self.position, target)
@@ -586,8 +1350,8 @@ class Enemy(Entity):
         facing = self.forward
         cosang = (to_p.x * facing.x + to_p.z * facing.z) / max(dist, 0.01)
         in_combat = self.state == 'combat'
-        fov_ok = cosang > (math.cos(math.radians(70)) if not in_combat else -1)
-        max_range = 45 if in_combat else 32
+        fov_ok = in_combat or cosang > math.cos(math.radians(self.fov))
+        max_range = self.view_range + (12 if in_combat else 0)
         self.sees = False
         if dist < max_range and (fov_ok or dist < 3):
             if self.world.los(self.eye, pl.eye):
@@ -600,8 +1364,8 @@ class Enemy(Entity):
         """Le joueur a tiré : on connaît approximativement sa position."""
         if self.dead or self.game.player.dead:
             return
-        noisy = pos + Vec3(random.uniform(-3, 3), 0, random.uniform(-3, 3))
-        self.last_known = noisy
+        err = 3.5 - 2.5 * self.skill
+        self.last_known = pos + Vec3(random.uniform(-err, err), 0, random.uniform(-err, err))
         if self.state != 'combat':
             self.enter_combat(heard=True)
 
@@ -619,9 +1383,8 @@ class Enemy(Entity):
         invoke(self.clear_icon, '!', delay=1.5)
         if not heard:
             self.last_seen = self.game.t
-        # prévenir les alliés proches
         if self.last_known is not None:
-            for a in self.allies(25):
+            for a in self.allies(25 + 15 * self.skill):
                 if a.state != 'combat':
                     invoke(a.receive_alert, self.last_known, delay=random.uniform(0.3, 0.9))
         self.go_to_cover()
@@ -636,40 +1399,41 @@ class Enemy(Entity):
         return base + Vec3(0, 1.6, 0)
 
     def cover_is_safe(self, cp, threat):
-        head = cp.pos + Vec3(0, EYE_CROUCH, 0)
-        return not self.world.los(head, threat)
+        return not self.world.los(cp.pos + Vec3(0, EYE_CROUCH, 0), threat)
 
-    def choose_cover(self, far=False):
+    def choose_cover(self, far=False, avoid=None):
         threat = self.threat_eye()
         tpos = flat(threat)
         best, best_score = None, -1e9
         candidates = [c for c in self.world.covers
                       if (c.owner is None or c.owner is self)
-                      and flat_dist(c.pos, self.position) < (30 if far else 20)]
+                      and flat_dist(c.pos, self.position) < (30 if far else 22)]
         candidates.sort(key=lambda c: flat_dist(c.pos, self.position))
         others = [e.position for e in self.game.enemies if e is not self and not e.dead]
-        for c in candidates[:45]:
+        ideal = 14 - 3 * self.skill
+        for c in candidates[:50]:
             d_threat = flat_dist(c.pos, tpos)
             if d_threat < 5:
                 continue
-            # le mur doit être entre la couverture et la menace
-            to_t = (tpos - c.pos)
-            if (to_t.x * c.normal.x + to_t.z * c.normal.z) > 0:
+            if avoid is not None and flat_dist(c.pos, avoid) < 7:
+                continue
+            to_t = tpos - c.pos
+            if (to_t.x * c.normal.x + to_t.z * c.normal.z) > 0:   # l'obstacle doit être entre nous et la menace
                 continue
             if not self.cover_is_safe(c, threat):
                 continue
-            score = -flat_dist(c.pos, self.position) * 1.0
-            if far:
-                score += d_threat * 1.5
-            else:
-                score -= abs(d_threat - 14) * 0.6
-            for o in others:  # on s'écarte des alliés pour ne pas s'agglutiner
+            score = -flat_dist(c.pos, self.position)
+            score += d_threat * 1.5 if far else -abs(d_threat - ideal) * 0.6
+            for o in others:
                 if flat_dist(o, c.pos) < 4:
                     score -= 8
-            # ne pas traverser la ligne de tir : pénalité si le chemin passe près du joueur
-            mid = (c.pos + self.position) / 2
-            if flat_dist(mid, tpos) < 6:
-                score -= 15
+            if self.skill > 0.3:      # les plus malins cherchent à prendre le joueur en tenaille
+                my_ang = yaw_to(tpos, c.pos)
+                for o in others:
+                    if flat_dist(o, tpos) < 30:
+                        score += min(abs(angle_diff(my_ang, yaw_to(tpos, o))), 90) * 0.05 * self.skill
+            if flat_dist((c.pos + self.position) / 2, tpos) < 6:
+                score -= 15           # ne pas traverser la ligne de tir du joueur
             score += random.uniform(0, 2)
             if score > best_score:
                 best, best_score = c, score
@@ -680,8 +1444,8 @@ class Enemy(Entity):
             self.cover.owner = None
         self.cover = None
 
-    def go_to_cover(self, far=False):
-        c = self.choose_cover(far)
+    def go_to_cover(self, far=False, avoid=None):
+        c = self.choose_cover(far, avoid)
         if c is None:
             self.release_cover()
             self.sub = 'skirmish'
@@ -694,7 +1458,19 @@ class Enemy(Entity):
         self.set_path_to(c.pos)
         self.sub = 'move_cover'
         self.timer = 8
+        if self.state == 'combat' and flat_dist(c.pos, self.position) > 3:
+            self.request_cover_fire()
         return True
+
+    def request_cover_fire(self):
+        """Demande à un allié à couvert de tirer pendant qu'on se déplace."""
+        if self.skill < 0.2:
+            return
+        for a in sorted(self.allies(24), key=lambda a: flat_dist(a.position, self.position)):
+            if a.state == 'combat' and a.sub == 'hide' and a.mag > 0 and random.random() < a.skill + 0.2:
+                a.cover_fire = True
+                a.timer = min(a.timer, 0.05)
+                break
 
     def find_peek_spot(self):
         """Position proche de la couverture d'où l'on voit la menace en étant debout."""
@@ -703,17 +1479,24 @@ class Enemy(Entity):
         cands = [Vec3(0, 0, 0)]
         for d in (1.0, 1.6, 2.3, 3.0):
             cands += [self.cover.tangent * d, self.cover.tangent * -d]
-        cands.sort(key=lambda v: v.length())
+
+        def key(v):
+            k = v.length()
+            if self.skill > 0.3 and self.last_peek_off is not None and (v - self.last_peek_off).length() < 0.5:
+                k += 3       # ne pas ressortir toujours au même endroit
+            return k
+        cands.sort(key=key)
         for off in cands:
             p = base + off
             if not self.world.is_free(p):
                 continue
             if self.world.los(p + Vec3(0, EYE_STAND, 0), threat):
+                self.last_peek_off = off
                 return p
         return None
 
     def find_flank_spot(self):
-        """Point à distance moyenne du joueur, avec vue sur lui, sous un angle différent des alliés."""
+        """Point avec vue sur le joueur, sous un angle différent de celui des alliés."""
         target = self.last_known
         if target is None:
             return None
@@ -734,6 +1517,60 @@ class Enemy(Entity):
                 best, best_score = p, score
         return best
 
+    def can_grenade(self, lost):
+        g = self.game
+        if g.wave < 3 or self.grenades <= 0 or self.last_known is None:
+            return False
+        if g.t - self.last_grenade < 12 or g.t - g.last_grenade < 6 - 2 * self.skill:
+            return False
+        if not 7 < flat_dist(self.position, self.last_known) < 24:
+            return False
+        if any(flat_dist(a.position, self.last_known) < 5 for a in self.allies(80)):
+            return False      # pas de grenade sur un allié
+        want = 0.25 + 0.45 * self.skill
+        return (lost > 1.5 and random.random() < want) or random.random() < want * 0.25
+
+    def start_throw(self):
+        self.sub = 'throw'
+        self.timer = 0.75
+        self.thrown = False
+        self.path = []
+        self.want_crouch = 0
+        self.want_aim = 0
+        self.grenades -= 1
+        self.last_grenade = self.game.t
+        self.game.last_grenade = self.game.t
+
+    def throw_grenade(self):
+        err = 2.8 - 2.2 * self.skill
+        target = self.last_known + Vec3(random.uniform(-err, err), 0, random.uniform(-err, err))
+        Grenade(self.game, self.elbows[0].world_position + Vec3(0, 0.1, 0), target)
+
+    def evade_grenade(self, gpos):
+        if self.dead or flat_dist(self.position, gpos) > 7.5:
+            return
+        away = flat(self.position - gpos)
+        if away.length() < 0.1:
+            away = Vec3(random.uniform(-1, 1), 0, random.uniform(-1, 1))
+        best = None
+        for k in range(8):
+            ang = math.atan2(away.x, away.z) + math.radians((k // 2) * 35 * (1 if k % 2 else -1))
+            p = self.position + Vec3(math.sin(ang), 0, math.cos(ang)) * 8
+            if self.world.is_free(p):
+                best = p
+                break
+        if best is None:
+            return
+        self.release_cover()
+        self.set_path_to(best)
+        self.state = 'combat'
+        self.sub = 'evade'
+        self.timer = 2.5
+        self.burst = 0
+        self.icon.text = '!!'
+        self.icon.color = color.orange
+        invoke(self.clear_icon, '!!', delay=1.5)
+
     # -- cerveau -----------------------------------------------------------
     def think(self):
         self.perceive()
@@ -745,7 +1582,8 @@ class Enemy(Entity):
             self.look_yaw = None
             if self.sees:
                 d = flat_dist(self.position, g.player.position)
-                self.suspicion += (0.25 if d > 15 else 0.6) * (1.6 if g.player.sprinting else 1)
+                rate = (0.25 if d > 15 else 0.6) * (1.6 if g.player.sprinting else 1) * (1 + 1.5 * self.skill)
+                self.suspicion += rate
                 self.icon.text = '?'
                 self.icon.color = color.yellow
                 self.path = []
@@ -756,20 +1594,17 @@ class Enemy(Entity):
                 self.suspicion = max(0, self.suspicion - 0.05)
                 if self.suspicion == 0 and self.icon.text == '?':
                     self.icon.text = ''
-                if self.arrived():
-                    self.timer -= 0.2
-                    if self.timer <= 0:
-                        self.set_path_to(self.world.random_free_point(self.position, 18))
-                        self.timer = random.uniform(1, 4)
+                if self.arrived() and self.timer <= 0:
+                    self.set_path_to(self.world.random_free_point(self.position, 18))
+                    self.timer = random.uniform(1, 4)
         elif self.state == 'investigate':
             self.move_speed = 2.6
-            self.want_aim = 0.5
-            self.want_crouch = 0
+            self.want_aim = 0.6
+            self.want_crouch = 0.15 * self.skill
             if self.sees:
                 self.enter_combat()
                 return
             if self.arrived():
-                self.timer -= 0.2
                 self.look_yaw = (self.look_yaw or self.rotation_y) + random.choice((-60, 60))
                 if self.timer <= 0:
                     self.state = 'patrol'
@@ -787,19 +1622,32 @@ class Enemy(Entity):
             self.burst = 0
             self.release_cover()
             return
-        if self.last_known is not None and self.sub not in ('flank', 'move_cover', 'retreat'):
+        if self.last_known is not None and self.sub not in ('flank', 'move_cover', 'retreat', 'evade', 'dodge'):
             self.look_yaw = yaw_to(self.position, self.last_known)
 
+        if self.sub in ('evade', 'dodge'):
+            self.move_speed = 5.8
+            self.want_crouch = 0.1
+            self.want_aim = 0.2
+            if self.arrived() or self.timer <= 0:
+                if self.sub == 'evade':
+                    self.go_to_cover()
+                else:
+                    self.back_to_cover()
+            return
+
+        if self.sub == 'throw':
+            return    # géré dans update()
+
         # blessé : on se replie loin
-        if self.hp < 40 and not self.retreated:
+        if self.hp < self.max_hp * 0.4 and not self.retreated:
             self.retreated = True
             if self.go_to_cover(far=True):
                 self.sub = 'retreat'
-                self.move_speed = 5.2
                 return
 
         # joueur perdu depuis longtemps : on part le chercher
-        if lost > 12 and self.sub not in ('flank',):
+        if lost > 12 - 4 * self.skill and self.sub != 'flank':
             self.state = 'investigate'
             self.sub = ''
             self.burst = 0
@@ -815,21 +1663,23 @@ class Enemy(Entity):
         if sub in ('move_cover', 'retreat'):
             self.move_speed = 5.0
             self.want_crouch = 0.25
-            self.want_aim = 0.3
+            self.want_aim = 0.3 + 0.4 * self.skill
             self.look_yaw = None
-            # la couverture visée est-elle toujours sûre ?
             if self.cover and not self.cover_is_safe(self.cover, self.threat_eye()) and random.random() < 0.3:
                 self.go_to_cover(far=(sub == 'retreat'))
                 return
+            # les plus aguerris tirent en courant vers l'abri
+            if self.sees and self.skill > 0.5 and self.mag > 2 and self.burst <= 0 and random.random() < 0.15 * self.skill:
+                self.burst = 2
+                self.shot_t = 0.1
             if self.arrived() or self.timer <= 0:
                 self.sub = 'hide'
-                self.timer = random.uniform(0.8, 2.0) + (2 if sub == 'retreat' else 0)
+                self.timer = random.uniform(0.8, 2.0) * self.reaction + (2 if sub == 'retreat' else 0)
         elif sub == 'hide':
             self.want_crouch = 1
             self.want_aim = 0
             self.move_speed = 2
             if self.cover and not self.cover_is_safe(self.cover, self.threat_eye()):
-                # repéré : le joueur nous voit derrière ce mur
                 if self.sees and self.mag > 0 and random.random() < 0.5:
                     self.start_aim()
                 else:
@@ -837,17 +1687,23 @@ class Enemy(Entity):
                 return
             if self.mag <= 0:
                 self.sub = 'reload'
-                self.timer = 2.2
+                self.timer = 2.2 - 0.6 * self.skill
                 return
             if self.timer <= 0:
-                if lost > 4:
-                    spot = self.find_flank_spot()
-                    if spot is not None and random.random() < 0.6:
-                        self.release_cover()
-                        self.set_path_to(spot)
-                        self.sub = 'flank'
-                        self.timer = 10
+                cover_fire, self.cover_fire = self.cover_fire, False
+                if not cover_fire:
+                    if self.can_grenade(lost):
+                        self.start_throw()
                         return
+                    if lost > 5 - 2.5 * self.skill:
+                        spot = self.find_flank_spot()
+                        if spot is not None and random.random() < 0.35 + 0.5 * self.skill:
+                            self.release_cover()
+                            self.set_path_to(spot)
+                            self.sub = 'flank'
+                            self.timer = 10
+                            self.request_cover_fire()
+                            return
                 spot = self.find_peek_spot() if self.cover else None
                 if spot is not None:
                     self.peek_pos = spot
@@ -864,10 +1720,10 @@ class Enemy(Entity):
             if self.timer <= 0:
                 self.mag = 8
                 self.sub = 'hide'
-                self.timer = random.uniform(0.3, 1.0)
+                self.timer = random.uniform(0.3, 1.0) * self.reaction
         elif sub == 'peek_move':
             self.want_crouch = 0
-            self.want_aim = 0.6
+            self.want_aim = 0.6 + 0.4 * self.skill
             self.move_speed = 2.8
             if self.sees and self.mag > 0:
                 self.path = []
@@ -902,19 +1758,17 @@ class Enemy(Entity):
             elif self.arrived() or self.timer <= 0:
                 self.go_to_cover()
         elif sub == 'skirmish':
-            # pas de couverture disponible : on se déplace latéralement en tirant
             self.want_aim = 1
             self.move_speed = 2.5
             self.want_crouch = 0.4 if random.random() < 0.3 else 0
             if self.sees and self.burst <= 0 and self.mag > 0 and random.random() < 0.5:
                 self.burst = min(self.mag, random.randint(2, 4))
-                self.shot_t = 0.3
+                self.shot_t = 0.3 * self.reaction
             if self.mag <= 0:
-                self.mag = 8     # recharge debout, en se déplaçant
+                self.mag = 8
                 self.timer = 0
             if self.timer <= 0:
-                side = self.right * random.choice((-1, 1)) * random.uniform(2, 4)
-                p = self.position + side
+                p = self.position + self.right * random.choice((-1, 1)) * random.uniform(2, 4)
                 if self.world.is_free(p):
                     self.set_path_to(p)
                 self.timer = random.uniform(1.0, 2.0)
@@ -925,7 +1779,8 @@ class Enemy(Entity):
 
     def start_aim(self, short=False):
         self.sub = 'aim'
-        self.timer = random.uniform(0.15, 0.3) if short else random.uniform(0.35, 0.7)
+        base = random.uniform(0.15, 0.3) if short else random.uniform(0.35, 0.7)
+        self.timer = base * self.reaction
 
     def back_to_cover(self):
         if self.cover:
@@ -943,49 +1798,68 @@ class Enemy(Entity):
         muzzle_flash(self.muzzle, scale=0.3)
         target = pl.eye - Vec3(0, 0.35, 0)
         dist = flat_dist(self.position, pl.position)
-        chance = clamp(0.8 - dist / 45, 0.15, 0.75)
-        if pl.speed_now > 5:
-            chance *= 0.55
+        chance = clamp(self.accuracy - dist / (45 + 25 * self.skill), 0.12, 0.85)
+        if pl.speed_now > 5:        # les meilleurs anticipent vos déplacements
+            chance *= lerp(0.55, 0.85, self.skill)
         elif pl.speed_now > 1:
-            chance *= 0.8
-        if self.sub == 'skirmish':
-            chance *= 0.7
+            chance *= lerp(0.8, 0.95, self.skill)
+        if pl.ads > 0.5 and pl.speed_now < 1:
+            chance *= 1.1           # immobile en train de viser : cible facile
+        if self.sub in ('skirmish', 'move_cover'):
+            chance *= 0.6
         if not self.world.los(muzzle, pl.eye) and not self.world.los(self.eye, pl.eye):
             chance = 0
         if random.random() < chance:
-            tracer(muzzle, target, color.rgb32(255, 200, 80))
+            tracer(muzzle, target, rgb(255, 200, 80))
             pl.take_damage(random.randint(6, 10), self.position)
         else:
             miss = target + Vec3(random.uniform(-1.2, 1.2), random.uniform(-0.6, 1.0), random.uniform(-1.2, 1.2))
             d = (miss - muzzle).normalized()
             hit = raycast(muzzle, d, 80, traverse_target=self.world.level)
             end = hit.world_point if hit.hit else muzzle + d * 60
-            tracer(muzzle, end, color.rgb32(255, 200, 80))
+            tracer(muzzle, end, rgb(255, 200, 80))
             if hit.hit:
                 impact(hit.world_point, hit.world_normal)
             self.game.flyby(end)
 
     # -- dégâts ------------------------------------------------------------
-    def take_hit(self, dmg, zone, point):
+    def take_hit(self, dmg, zone, point, explosive=False):
         if self.dead:
             return
         self.hp -= dmg
         blood(point)
         self.flinch = 1.0
-        self.hit_recently = 1.0
-        self.last_known = Vec3(self.game.player.position)
-        self.last_seen = self.game.t
+        if not explosive:
+            self.last_known = Vec3(self.game.player.position)
+            self.last_seen = self.game.t
         if self.hp <= 0:
             self.die(zone)
             return
         if self.state != 'combat':
             self.enter_combat()
-        elif self.sub in ('aim', 'shoot', 'peek_move', 'skirmish') and random.random() < 0.7:
-            self.burst = 0
-            self.back_to_cover() if (self.cover and self.cover_is_safe(self.cover, self.threat_eye())) \
-                else self.go_to_cover()
+        elif self.sub in ('aim', 'shoot', 'peek_move', 'skirmish'):
+            if self.skill > 0.35 and random.random() < self.skill:
+                self.dodge()
+            elif random.random() < 0.7:
+                self.burst = 0
+                if self.cover and self.cover_is_safe(self.cover, self.threat_eye()):
+                    self.back_to_cover()
+                else:
+                    self.go_to_cover()
         elif self.sub == 'hide':
             self.go_to_cover()
+
+    def dodge(self):
+        """Esquive latérale rapide (ennemis expérimentés)."""
+        for sgn in random.sample((-1, 1), 2):
+            p = self.position + self.right * sgn * 2.5
+            if self.world.is_free(p) and self.world.line_free(self.position, p):
+                self.path = [p]
+                self.sub = 'dodge'
+                self.timer = 0.7
+                self.burst = 0
+                return
+        self.go_to_cover()
 
     def die(self, zone):
         self.dead = True
@@ -999,8 +1873,8 @@ class Enemy(Entity):
         self.game.on_enemy_killed(self, zone == 'head')
         for a in self.allies(20):
             a.receive_alert(self.game.player.position)
-            if a.state == 'combat' and a.sub in ('hide',):
-                a.timer += 1.0  # les alliés restent prudents un instant
+            if a.state == 'combat' and a.sub == 'hide':
+                a.timer += 1.0 * a.reaction
         destroy(self, 8)
 
     # -- mise à jour -------------------------------------------------------
@@ -1015,11 +1889,20 @@ class Enemy(Entity):
         self.timer -= dt
         self.think_t -= dt
         if self.think_t <= 0:
-            self.think_t = 0.2
+            self.think_t = 0.25 - 0.1 * self.skill
             self.think()
 
+        if self.sub == 'throw':
+            if self.last_known is not None:
+                self.look_yaw = yaw_to(self.position, self.last_known)
+            if not self.thrown and self.timer <= 0.3:
+                self.thrown = True
+                self.throw_grenade()
+            if self.timer <= 0:
+                self.back_to_cover()
+
         # tir en rafale
-        if self.burst > 0 and self.sub in ('shoot', 'skirmish'):
+        if self.burst > 0 and self.sub in ('shoot', 'skirmish', 'move_cover'):
             self.shot_t -= dt
             if self.shot_t <= 0:
                 if self.sees and self.mag > 0:
@@ -1034,7 +1917,7 @@ class Enemy(Entity):
 
     def move(self, dt):
         desired = Vec3(0, 0, 0)
-        speed = self.move_speed * (1 - 0.45 * self.crouch)
+        speed = self.move_speed * (1 - 0.45 * self.crouch) * (1 + 0.15 * self.skill)
         if self.path:
             target = self.path[0]
             to = flat(target - self.position)
@@ -1045,24 +1928,21 @@ class Enemy(Entity):
                 desired = to / d * speed
                 if len(self.path) == 1 and d < 1.0:
                     desired *= max(0.3, d)
-        # séparation entre ennemis
-        for e in self.game.enemies:
+        for e in self.game.enemies:        # séparation entre ennemis
             if e is self or e.dead:
                 continue
             d = flat_dist(e.position, self.position)
             if 0.01 < d < 0.9:
-                push = flat(self.position - e.position) / d
-                desired += push * (0.9 - d) * 4
+                desired += flat(self.position - e.position) / d * (0.9 - d) * 4
         self.vel = lerp(self.vel, desired, min(1, dt * 8))
-        new = self.position + self.vel * dt
-        new = self.world.resolve(new, ENEMY_RADIUS)
+        new = self.world.resolve(self.position + self.vel * dt, ENEMY_RADIUS)
         new.y = 0
-        real = (new - self.position) / max(dt, 1e-4)
+        self.real_speed = flat(new - self.position).length() / max(dt, 1e-4)
         self.position = new
-        self.real_speed = flat(real).length()
 
         # orientation
-        if self.look_yaw is not None and self.state == 'combat' and self.sub in ('aim', 'shoot', 'hide', 'reload', 'peek_move', 'skirmish'):
+        facing_subs = ('aim', 'shoot', 'hide', 'reload', 'peek_move', 'skirmish', 'throw')
+        if self.look_yaw is not None and self.state == 'combat' and self.sub in facing_subs:
             target_yaw = yaw_to(self.position, self.last_known) if self.last_known is not None else self.look_yaw
         elif self.look_yaw is not None and (self.real_speed < 0.3 or self.state == 'patrol'):
             target_yaw = self.look_yaw
@@ -1070,7 +1950,7 @@ class Enemy(Entity):
             target_yaw = math.degrees(math.atan2(self.vel.x, self.vel.z))
         else:
             target_yaw = self.rotation_y
-        self.rotation_y = approach_angle(self.rotation_y, target_yaw, 400 * dt)
+        self.rotation_y = approach_angle(self.rotation_y, target_yaw, (400 + 300 * self.skill) * dt)
 
     def animate(self, dt):
         self.crouch = lerp(self.crouch, self.want_crouch, min(1, dt * 6))
@@ -1083,8 +1963,7 @@ class Enemy(Entity):
         if a > 0.5 and self.last_known is not None:
             pe = self.game.player.eye - Vec3(0, 0.3, 0)
             src = self.position + Vec3(0, lerp(1.45, 0.95, c), 0)
-            horiz = max(flat_dist(pe, src), 0.1)
-            pitch = -math.degrees(math.atan2(pe.y - src.y, horiz))
+            pitch = -math.degrees(math.atan2(pe.y - src.y, max(flat_dist(pe, src), 0.1)))
         self.aim_pitch = lerp(self.aim_pitch, pitch, min(1, dt * 8))
 
         # cycle de marche
@@ -1097,17 +1976,14 @@ class Enemy(Entity):
         bob = abs(math.cos(self.phase)) * 0.05 * amp
 
         self.hips.y = lerp(0.95, 0.56, c) + bob - 0.03 * running
-        # jambes (rotation_x négative = jambe vers l'avant)
         base_hip = lerp(0, -72, c)
         base_knee = lerp(0, 112, c)
         for k, side in enumerate((1, -1)):
-            ss = s * side
-            self.hip_joints[k].rotation_x = base_hip - ss * stride
-            lift = max(0, math.sin(self.phase * 1 + (0 if side > 0 else math.pi) + 1.2))
+            self.hip_joints[k].rotation_x = base_hip - s * side * stride
+            lift = max(0, math.sin(self.phase + (0 if side > 0 else math.pi) + 1.2))
             self.knees[k].rotation_x = base_knee + lift * (25 + 45 * running) * amp
             self.hip_joints[k].rotation_z = side * lerp(2, 8, c)
 
-        # torse : penché en courant / accroupi, rotation de visée, recul à l'impact
         lean = lerp(3, 28, c) + 12 * running
         self.torso.rotation_x = lerp(lean, self.aim_pitch + lerp(0, 10, c), a) - self.flinch * 20
         self.torso.rotation_y = s * 6 * amp * (1 - a) + a * -8
@@ -1115,20 +1991,30 @@ class Enemy(Entity):
         self.neck.rotation_x = -lean * 0.5 * (1 - a) + lerp(0, 5, a)
         self.neck.rotation_y = a * 8
 
-        # bras : position « prêt » (arme basse) mélangée à la position de visée
         swing = s * 10 * amp * (1 - a)
-        # bras droit (index 1) tient la crosse
         self.shoulders[1].rotation_x = lerp(-25 + swing, -80, a)
         self.shoulders[1].rotation_y = lerp(0, 10, a)
         self.shoulders[1].rotation_z = lerp(-10, -5, a)
         self.elbows[1].rotation_x = lerp(-65, -10, a)
-        # bras gauche (index 0) soutient le canon
         self.shoulders[0].rotation_x = lerp(-45 - swing, -75, a)
         self.shoulders[0].rotation_y = lerp(35, 40, a)
         self.shoulders[0].rotation_z = lerp(10, 5, a)
         self.elbows[0].rotation_x = lerp(-70, -40, a)
-        # l'arme reste parallèle au sol / pointée vers la cible
         self.gun.rotation_x = lerp(150, 100, a)
+
+        if self.sub == 'throw':      # lancer de grenade : bras gauche armé derrière la tête puis projeté
+            p = clamp(1 - self.timer / 0.75, 0, 1)
+            if p < 0.55:
+                w = smoothstep(p / 0.55)
+                self.shoulders[0].rotation_x = lerp(-45, -200, w)
+                self.elbows[0].rotation_x = lerp(-70, -60, w)
+            else:
+                w = smoothstep((p - 0.55) / 0.45)
+                self.shoulders[0].rotation_x = lerp(-200, -50, w)
+                self.elbows[0].rotation_x = lerp(-60, -5, w)
+            self.shoulders[0].rotation_y = 0
+            self.torso.rotation_y = lerp(20, -25, p)
+            self.torso.rotation_x = lerp(-5, 15, p)
 
     def animate_death(self, dt):
         self.death_t += dt
@@ -1155,8 +2041,13 @@ class Enemy(Entity):
 # ---------------------------------------------------------------------------
 
 class Player(Entity):
+    GUN_SCALE = 0.42
+    DOT = Vec3(0, 0.16, 0.1)                     # point rouge (repère local de l'arme)
+    HIP_POS = Vec3(0.15, -0.14, 0.2)
+    ADS_POS = Vec3(0, -0.16 * 0.42, 0.17)       # le point rouge tombe au centre de l'écran
+
     def __init__(self, game):
-        super().__init__(position=(0, 0, -34))
+        super().__init__(position=(0, 0, -40))
         self.game = game
         self.world = game.world
         self.pivot = Entity(parent=self, y=1.65)
@@ -1164,7 +2055,8 @@ class Player(Entity):
         camera.position = (0, 0, 0)
         camera.rotation = (0, 0, 0)
         camera.fov = 90
-        camera.clip_plane_near = 0.03
+        camera.clip_plane_near = 0.05
+        camera.clip_plane_far = 350
         self.sensitivity = Vec2(40, 40)
         self.vel = Vec3(0, 0, 0)
         self.vy = 0
@@ -1179,6 +2071,10 @@ class Player(Entity):
         self.sprinting = False
         self.recoil = 0
         self.recoil_pitch = 0   # recul de visée, récupéré progressivement
+        self.ads = 0.0          # 0 = arme à la hanche, 1 = visée
+        self.shake = 0.0
+        self.bob_t = 0.0
+        self.land_dip = 0.0
         self.build_gun()
 
     @property
@@ -1186,21 +2082,37 @@ class Player(Entity):
         return self.position + Vec3(0, 1.65, 0)
 
     def build_gun(self):
-        self.gun = Entity(parent=camera, position=(0.15, -0.14, 0.2), scale=0.42)
-        dark = color.rgb32(40, 40, 45)
-        Entity(parent=self.gun, model='cube', color=dark, scale=(0.08, 0.1, 0.6))
-        Entity(parent=self.gun, model='cube', color=color.rgb32(110, 75, 45), scale=(0.07, 0.14, 0.2), position=(0, -0.08, -0.25))
-        Entity(parent=self.gun, model='cube', color=dark, scale=(0.06, 0.15, 0.06), position=(0, -0.1, 0.02))
-        Entity(parent=self.gun, model='cube', color=dark, scale=(0.03, 0.03, 0.3), position=(0, 0.02, 0.4))
-        Entity(parent=self.gun, model='cube', color=color.rgb32(20, 20, 20), scale=(0.03, 0.05, 0.08), position=(0, 0.08, -0.05))
-        self.muzzle = Entity(parent=self.gun, z=0.58, y=0.02)
-        self.gun_base = Vec3(self.gun.position)
+        self.gun = Entity(parent=camera, position=self.HIP_POS, scale=self.GUN_SCALE)
+        dark = rgb(38, 38, 42)
+        mid = rgb(60, 62, 66)
+        tan = rgb(150, 125, 90)
+
+        def p(pos, sc, col):
+            return Entity(parent=self.gun, model='cube', color=col, position=pos, scale=sc, shader=LIT)
+        p((0, 0, 0), (0.09, 0.12, 0.55), dark)                 # boîtier
+        p((0, 0.02, 0.42), (0.075, 0.09, 0.32), tan)             # garde-main
+        p((0, 0.03, 0.66), (0.035, 0.035, 0.22), dark)           # canon
+        p((0, 0.03, 0.78), (0.05, 0.05, 0.05), mid)              # cache-flamme
+        p((0, -0.13, 0.12), (0.07, 0.2, 0.1), mid)               # chargeur
+        p((0, -0.1, -0.1), (0.06, 0.15, 0.07), dark)             # poignée
+        p((0, -0.02, -0.38), (0.07, 0.13, 0.25), tan)            # crosse
+        p((0, 0.075, 0.05), (0.03, 0.03, 0.4), mid)              # rail
+        # viseur point rouge
+        p((0, 0.1, 0.08), (0.07, 0.02, 0.1), dark)
+        p((0.035, 0.16, 0.08), (0.01, 0.1, 0.05), dark)
+        p((-0.035, 0.16, 0.08), (0.01, 0.1, 0.05), dark)
+        p((0, 0.215, 0.08), (0.08, 0.012, 0.05), dark)
+        self.dot = Entity(parent=self.gun, model='quad', texture='circle', color=rgb(255, 40, 40),
+                          position=self.DOT, scale=0.012, unlit=True)
+        self.muzzle = Entity(parent=self.gun, z=0.82, y=0.03)
+        self.eject = Entity(parent=self.gun, x=0.05, y=0.03, z=0.05)
 
     def take_damage(self, dmg, from_pos):
         if self.dead or self.game.paused:
             return
         self.hp -= dmg
         self.last_hurt = self.game.t
+        self.shake = max(self.shake, 0.15)
         self.game.hud.flash_damage(from_pos)
         if self.hp <= 0:
             self.hp = 0
@@ -1211,10 +2123,14 @@ class Player(Entity):
         if self.game.paused or self.dead:
             return
         dt = time.dt
-        # regard à la souris
+        aiming = held_keys['right mouse'] and self.reload_t <= 0 and not self.sprinting
+        self.ads = lerp(self.ads, 1.0 if aiming else 0.0, min(1, dt * 14))
+
+        # regard à la souris (plus précis en visée)
         if mouse.locked:
-            self.rotation_y += mouse.velocity[0] * self.sensitivity[1]
-            self.pivot.rotation_x -= mouse.velocity[1] * self.sensitivity[0]
+            sens = lerp(1.0, 0.55, self.ads)
+            self.rotation_y += mouse.velocity[0] * self.sensitivity[1] * sens
+            self.pivot.rotation_x -= mouse.velocity[1] * self.sensitivity[0] * sens
             self.pivot.rotation_x = clamp(self.pivot.rotation_x, -89, 89)
 
         # déplacement ZQSD (+ flèches)
@@ -1223,18 +2139,20 @@ class Player(Entity):
         direction = flat(self.forward) * fwd + flat(self.right) * side
         if direction.length() > 0:
             direction = direction.normalized()
-        self.sprinting = held_keys['shift'] and fwd > 0
-        speed = 9 if self.sprinting else 5.5
+        self.sprinting = bool(held_keys['shift']) and fwd > 0 and self.ads < 0.3
+        speed = (9 if self.sprinting else 5.5) * lerp(1, 0.6, self.ads)
         accel = 12 if self.grounded else 3
         self.vel = lerp(self.vel, direction * speed, min(1, dt * accel))
-        new = self.position + self.vel * dt
-        new = self.world.resolve(new, PLAYER_RADIUS, self.y)
+        new = self.world.resolve(self.position + self.vel * dt, PLAYER_RADIUS, self.y)
 
         # gravité et saut
         floor_h = self.world.floor_height(new.x, new.z, PLAYER_RADIUS, self.y)
         self.vy -= GRAVITY * dt
         new.y = self.y + self.vy * dt
+        was_air = not self.grounded
         if new.y <= floor_h:
+            if was_air and self.vy < -5:
+                self.land_dip = min(0.12, -self.vy * 0.012)
             new.y = floor_h
             self.vy = 0
             self.grounded = True
@@ -1243,29 +2161,46 @@ class Player(Entity):
         self.speed_now = flat(new - self.position).length() / max(dt, 1e-4)
         self.position = new
 
-        # régénération lente
         if self.game.t - self.last_hurt > 5 and self.hp < 100:
             self.hp = min(100, self.hp + 8 * dt)
 
-        # arme : balancement, recul, tir auto
+        # caméra : zoom, balancement de tête, secousses
+        camera.fov = lerp(90, 52, self.ads)
+        move = min(1, self.speed_now / 5) if self.grounded else 0
+        self.bob_t += dt * (13 if self.sprinting else 9) * move
+        self.land_dip = max(0, self.land_dip - dt * 0.5)
+        self.shake = max(0, self.shake - dt * 1.2)
+        head = Vec3(math.sin(self.bob_t * 0.5) * 0.03, abs(math.cos(self.bob_t * 0.5)) * 0.04, 0) \
+            * move * (1 - self.ads * 0.8)
+        head.y -= self.land_dip
+        if self.shake > 0:
+            head += Vec3(random.uniform(-1, 1), random.uniform(-1, 1), 0) * self.shake * 0.12
+        camera.position = head
+
+        # arme : visée, balancement, recul
         self.recoil = max(0, self.recoil - dt * 6)
         if self.recoil_pitch > 0 and self.cooldown < -0.05:
             back = min(self.recoil_pitch, dt * 6)
             self.recoil_pitch -= back
             self.pivot.rotation_x += back
-        bob_t = self.game.t * (12 if self.sprinting else 8)
-        bob = min(1, self.speed_now / 5) if self.grounded else 0
-        self.gun.position = self.gun_base + Vec3(math.sin(bob_t) * 0.012 * bob,
-                                                 abs(math.cos(bob_t)) * 0.012 * bob - self.recoil * 0.03,
-                                                 -self.recoil * 0.08)
-        self.gun.rotation_x = -self.recoil * 6
+        sway = Vec3(math.sin(self.bob_t) * 0.012, abs(math.cos(self.bob_t)) * 0.01, 0) * move * (1 - self.ads * 0.85)
+        base = lerp(self.HIP_POS, self.ADS_POS, self.ads)
+        if self.sprinting:
+            base += Vec3(0.02, -0.03, -0.03)
+        self.gun.position = base + sway + Vec3(0, -self.recoil * 0.012, -self.recoil * 0.05)
+        self.gun.rotation = Vec3(-self.recoil * 5 * (1 - 0.6 * self.ads), 18 if self.sprinting else 0, 0)
+        self.dot.visible = self.ads > 0.6
+        self.game.hud.crosshair_visible(self.ads < 0.5)
+
         self.cooldown -= dt
         if self.reload_t > 0:
             self.reload_t -= dt
-            self.gun.rotation_x = 30 * math.sin(clamp(self.reload_t / 1.6, 0, 1) * math.pi)
+            k = math.sin(clamp(self.reload_t / 1.6, 0, 1) * math.pi)
+            self.gun.rotation_x = 30 * k
+            self.gun.rotation_z = 20 * k
             if self.reload_t <= 0:
                 self.mag = 30
-        elif (held_keys['right mouse'] or held_keys['p']) and self.cooldown <= 0:
+        elif (held_keys['left mouse'] or held_keys['p']) and self.cooldown <= 0 and mouse.locked:
             self.shoot()
 
     def jump(self):
@@ -1284,36 +2219,36 @@ class Player(Entity):
         self.mag -= 1
         self.cooldown = 0.1
         self.recoil = min(1.5, self.recoil + 0.5)
-        muzzle_flash(self.muzzle, scale=0.35)
-        spread = 0.004 + 0.02 * min(1, self.speed_now / 9) + (0.02 if not self.grounded else 0)
+        muzzle_flash(self.muzzle, scale=0.45)
+        shell_casing(self.eject.world_position, camera.right)
+        spread = (0.004 + 0.02 * min(1, self.speed_now / 9) + (0.02 if not self.grounded else 0)) * lerp(1, 0.25, self.ads)
         d = camera.forward + camera.right * random.uniform(-spread, spread) + camera.up * random.uniform(-spread, spread)
         d = d.normalized()
         origin = camera.world_position
-        hit = raycast(origin, d, 150, ignore=[self])
-        end = hit.world_point if hit.hit else origin + d * 150
-        tracer(self.muzzle.world_position, end, color.rgb32(255, 240, 160), thickness=0.015, life=0.04)
-        # petit recul de visée
-        self.pivot.rotation_x -= 0.35
-        self.recoil_pitch = min(self.recoil_pitch + 0.35 * 0.8, 6)
+        hit = raycast(origin, d, 200, ignore=[self])
+        end = hit.world_point if hit.hit else origin + d * 200
+        tracer(self.muzzle.world_position, end, rgb(255, 240, 160), thickness=0.015, life=0.04)
+        kick = 0.35 * lerp(1, 0.6, self.ads)
+        self.pivot.rotation_x -= kick
+        self.recoil_pitch = min(self.recoil_pitch + kick * 0.8, 6)
         self.rotation_y += random.uniform(-0.15, 0.15)
         if hit.hit:
             ent = hit.entity
             owner = getattr(ent, 'owner', None)
             if isinstance(owner, Enemy):
                 zone = ent.zone
-                dmg = {'head': 100, 'body': 34, 'limb': 22, 'gun': 15}.get(zone, 25)
+                dmg = {'head': 250, 'body': 34, 'limb': 22, 'gun': 15}.get(zone, 25)
                 owner.take_hit(dmg, zone, hit.world_point)
-                self.game.hud.hitmarker(zone == 'head')
+                self.game.hud.hitmarker(zone == 'head' or owner.dead)
             elif hasattr(ent, 'target'):
                 ent.target.hit()
-                impact(hit.world_point, hit.world_normal, color.rgb32(40, 40, 40))
+                impact(hit.world_point, hit.world_normal, rgb(40, 40, 40))
                 self.game.hud.hitmarker(False)
             else:
                 impact(hit.world_point, hit.world_normal)
-        # les ennemis entendent le tir
-        for e in self.game.enemies:
-            if not e.dead and flat_dist(e.position, self.position) < 35:
-                invoke(e.hear_shot, Vec3(self.position), delay=random.uniform(0.1, 0.5))
+        for e in self.game.enemies:        # les ennemis entendent le tir
+            if not e.dead and flat_dist(e.position, self.position) < e.hear_radius:
+                invoke(e.hear_shot, Vec3(self.position), delay=random.uniform(0.1, 0.5) * e.reaction)
 
 
 # ---------------------------------------------------------------------------
@@ -1324,57 +2259,111 @@ class HUD:
     def __init__(self, game):
         self.game = game
         ui = camera.ui
-        c = color.rgba(1, 1, 1, 0.9)
-        for pos, sc in [((0.012, 0), (0.012, 0.002)), ((-0.012, 0), (0.012, 0.002)),
-                        ((0, 0.012), (0.002, 0.012)), ((0, -0.012), (0.002, 0.012))]:
-            Entity(parent=ui, model='quad', color=c, position=pos, scale=sc)
-        self.hit = Entity(parent=ui, model='quad', texture='circle_outlined', color=color.clear, scale=0.03)
-        self.hp_bg = Entity(parent=ui, model='quad', color=color.rgba(0, 0, 0, 0.5), origin=(-0.5, 0),
-                            position=(-0.85, -0.44), scale=(0.4, 0.03))
-        self.hp_bar = Entity(parent=ui, model='quad', color=color.rgb32(80, 220, 90), origin=(-0.5, 0),
-                             position=(-0.85, -0.44, -0.01), scale=(0.4, 0.03))
-        self.hp_text = Text(parent=ui, text='', position=(-0.85, -0.4), scale=1)
-        self.ammo = Text(parent=ui, text='', position=(0.62, -0.42), scale=1.6)
-        self.info = Text(parent=ui, text='', position=(-0.85, 0.47), scale=1)
-        self.msg = Text(parent=ui, text='', origin=(0, 0), y=0.15, scale=2, color=color.white)
-        self.feed = Text(parent=ui, text='', origin=(0.5, 0.5), position=(0.86, 0.47), scale=1)
-        self.damage = Entity(parent=ui, model='quad', color=color.rgba(0.8, 0, 0, 0), scale=(3, 2), z=1)
-        self.dir_ind = Entity(parent=ui, model='quad', color=color.rgba(1, 0.1, 0.1, 0), scale=(0.04, 0.012))
+        ar = camera.aspect_ratio / 2
+        panel = color.rgba(0, 0, 0, 0.42)
+        self.cross = []
+        for pos, sc in [((0.014, 0), (0.012, 0.0025)), ((-0.014, 0), (0.012, 0.0025)),
+                        ((0, 0.014), (0.0025, 0.012)), ((0, -0.014), (0.0025, 0.012))]:
+            self.cross.append(Entity(parent=ui, model='quad', color=color.rgba(1, 1, 1, 0.9), position=pos, scale=sc))
+        self.cross.append(Entity(parent=ui, model='quad', texture='circle', color=color.rgba(1, 1, 1, 0.9), scale=0.004))
+        self.hits = []
+        for ang in (45, 135, 225, 315):
+            r = math.radians(ang)
+            self.hits.append(Entity(parent=ui, model='quad', color=color.clear, rotation_z=-ang,
+                                    position=(math.cos(r) * 0.022, math.sin(r) * 0.022), scale=(0.016, 0.003)))
+
+        # panneaux
+        Entity(parent=ui, model=Quad(radius=0.2), color=panel, origin=(-0.5, -0.5),
+               position=(-ar + 0.02, -0.49), scale=(0.46, 0.11))
+        Entity(parent=ui, model=Quad(radius=0.2), color=panel, origin=(0.5, -0.5),
+               position=(ar - 0.02, -0.49), scale=(0.3, 0.11))
+        Entity(parent=ui, model=Quad(radius=0.2), color=panel, origin=(-0.5, 0.5),
+               position=(-ar + 0.02, 0.49), scale=(1.0, 0.055))
+        Entity(parent=ui, model='quad', color=color.rgba(1, 1, 1, 0.15), origin=(-0.5, 0),
+               position=(-ar + 0.05, -0.455), scale=(0.4, 0.022))
+        self.hp_bar = Entity(parent=ui, model='quad', color=rgb(80, 220, 90), origin=(-0.5, 0),
+                             position=(-ar + 0.05, -0.455, -0.01), scale=(0.4, 0.022))
+        self.hp_text = Text(parent=ui, text='', position=(-ar + 0.05, -0.415), scale=1)
+        self.ammo = Text(parent=ui, text='', origin=(0.5, 0), position=(ar - 0.05, -0.445), scale=1.8)
+        Text(parent=ui, text='MUNITIONS', origin=(0.5, 0), position=(ar - 0.05, -0.4), scale=0.75,
+             color=color.rgba(1, 1, 1, 0.6))
+        self.info = Text(parent=ui, text='', position=(-ar + 0.04, 0.477), scale=1)
+        self.msg = Text(parent=ui, text='', origin=(0, 0), y=0.17, scale=2, color=color.white)
+        self.sub_msg = Text(parent=ui, text='', origin=(0, 0), y=0.1, scale=1.1, color=color.rgba(1, 1, 1, 0.85))
+        self.warn = Text(parent=ui, text='', origin=(0, 0), y=-0.12, scale=1.4, color=rgb(255, 90, 60))
+        self.feed = Text(parent=ui, text='', origin=(0.5, 0.5), position=(ar - 0.03, 0.4), scale=1)
+        # compteur de FPS à droite de l'écran
+        Entity(parent=ui, model=Quad(radius=0.25), color=panel, origin=(0.5, 0.5),
+               position=(ar - 0.02, 0.49), scale=(0.14, 0.045))
+        self.fps = Text(parent=ui, text='FPS --', origin=(0.5, 0), position=(ar - 0.035, 0.4675), scale=1.1,
+                        color=rgb(120, 255, 120))
+        self.damage = Entity(parent=ui, model='quad', texture='vignette', color=color.rgba(0.8, 0, 0, 0),
+                             scale=(ar * 2, 1), z=1)
+        self.dir_ind = Entity(parent=ui, model='quad', color=color.rgba(1, 0.1, 0.1, 0), scale=(0.05, 0.012))
         self.feed_lines = []
-        Text(parent=ui, text='ZQSD: bouger  Maj: courir  Espace: sauter  Clic droit / P: tirer  R: recharger  Échap: pause',
-             position=(-0.85, -0.47), scale=0.75, color=color.rgba(1, 1, 1, 0.6))
+        self._fps_frames = 0
+        self._fps_time = 0.0
+        Text(parent=ui, text='ZQSD bouger · Maj courir · Espace sauter · Clic gauche/P tirer · Clic droit viser'
+                             ' · R recharger · G graphismes · Échap pause',
+             origin=(0, 0), position=(0, -0.475), scale=0.7, color=color.rgba(1, 1, 1, 0.55))
+
+    def crosshair_visible(self, v):
+        for c in self.cross:
+            c.visible = v
 
     def update(self):
         g = self.game
         p = g.player
         self.hp_bar.scale_x = 0.4 * max(0, p.hp) / 100
-        self.hp_bar.color = color.rgb32(80, 220, 90) if p.hp > 50 else (color.orange if p.hp > 25 else color.red)
-        self.hp_text.text = f'Santé {int(p.hp)}'
-        self.ammo.text = 'Rechargement...' if p.reload_t > 0 else f'{p.mag} / 30'
+        self.hp_bar.color = rgb(80, 220, 90) if p.hp > 50 else (color.orange if p.hp > 25 else color.red)
+        self.hp_text.text = f'SANTÉ  {int(p.hp)}'
+        self.ammo.text = '...' if p.reload_t > 0 else f'{p.mag} / 30'
         alive = sum(1 for e in g.enemies if not e.dead)
-        self.info.text = f'Vague {g.wave}    Ennemis restants {alive}    Score {g.score}    Éliminations {g.kills}'
+        tier = TIERS[g.tier_index()]['name']
+        self.info.text = (f'Vague {g.wave}   ·   {tier} (IA niv. {max(g.wave, 1)})   ·   Ennemis {alive}'
+                          f'   ·   Score {g.score}   ·   Éliminations {g.kills}')
+
+        # images par seconde, moyenne sur une demi-seconde
+        self._fps_frames += 1
+        self._fps_time += time.dt
+        if self._fps_time >= 0.5:
+            fps = self._fps_frames / self._fps_time
+            self.fps.text = f'FPS {fps:.0f}'
+            self.fps.color = rgb(120, 255, 120) if fps >= 50 else (rgb(255, 200, 80) if fps >= 30 else rgb(255, 90, 80))
+            self._fps_frames = 0
+            self._fps_time = 0.0
+
+        # alerte grenade
+        near = [gr for gr in g.grenades if flat_dist(gr.position, p.position) < 9]
+        if near and not p.dead:
+            d = min(flat_dist(gr.position, p.position) for gr in near)
+            self.warn.text = f'!  GRENADE  ({d:.0f} m)  !'
+        else:
+            self.warn.text = ''
+
         a = self.damage.color.a
         if a > 0:
             self.damage.color = color.rgba(0.8, 0, 0, max(0, a - time.dt * 0.8))
         da = self.dir_ind.color.a
         if da > 0:
             self.dir_ind.color = color.rgba(1, 0.1, 0.1, max(0, da - time.dt * 1.2))
-        ha = self.hit.color.a
-        if ha > 0:
-            self.hit.color = color.rgba(self.hit.color.r, self.hit.color.g, self.hit.color.b, max(0, ha - time.dt * 5))
+        for h in self.hits:
+            ha = h.color.a
+            if ha > 0:
+                h.color = color.rgba(h.color.r, h.color.g, h.color.b, max(0, ha - time.dt * 5))
 
     def flash_damage(self, from_pos):
-        self.damage.color = color.rgba(0.8, 0, 0, min(0.45, self.damage.color.a + 0.25))
-        # indicateur de direction du tir
+        self.damage.color = color.rgba(0.8, 0, 0, min(0.7, self.damage.color.a + 0.3))
         p = self.game.player
         ang = angle_diff(p.rotation_y, yaw_to(p.position, from_pos))
         r = math.radians(ang)
-        self.dir_ind.position = (math.sin(r) * 0.12, math.cos(r) * 0.12)
+        self.dir_ind.position = (math.sin(r) * 0.13, math.cos(r) * 0.13)
         self.dir_ind.rotation_z = ang
         self.dir_ind.color = color.rgba(1, 0.1, 0.1, 0.9)
 
-    def hitmarker(self, head):
-        self.hit.color = color.rgba(1, 0.2, 0.2, 1) if head else color.rgba(1, 1, 1, 1)
+    def hitmarker(self, strong):
+        for h in self.hits:
+            h.color = color.rgba(1, 0.2, 0.2, 1) if strong else color.rgba(1, 1, 1, 1)
 
     def add_feed(self, line):
         self.feed_lines.append(line)
@@ -1387,23 +2376,21 @@ class HUD:
             self.feed_lines.remove(line)
             self.feed.text = '\n'.join(self.feed_lines)
 
-    def message(self, text, duration=2.5):
+    def message(self, text, duration=2.5, sub=''):
         self.msg.text = text
+        self.sub_msg.text = sub
         if duration:
             invoke(self._clear_msg, text, delay=duration)
 
     def _clear_msg(self, text):
         if self.msg.text == text:
             self.msg.text = ''
+            self.sub_msg.text = ''
 
 
 # ---------------------------------------------------------------------------
 # Jeu
 # ---------------------------------------------------------------------------
-
-SPAWNS = [Vec3(-30, 0, 32), Vec3(30, 0, 32), Vec3(0, 0, 25), Vec3(-20, 0, 12), Vec3(20, 0, 12),
-          Vec3(-34, 0, -2), Vec3(34, 0, -2), Vec3(-10, 0, 36), Vec3(10, 0, 36), Vec3(0, 0, 14)]
-
 
 class Game(Entity):
     def __init__(self):
@@ -1415,43 +2402,99 @@ class Game(Entity):
         self.kills = 0
         self.wave = 0
         self.enemies = []
+        self.grenades = []
+        self.last_grenade = -99
+        self.high_quality = True
 
-        Sky(texture='sky_default')
+        Sky(texture='sky_default', color=Color(0.95, 0.97, 1.0, 1))
         self.world = World()
-        self.sun = DirectionalLight(shadow_map_resolution=Vec2(4096, 4096))
-        self.sun.look_at(Vec3(0.6, -1, 0.45))
-        invoke(self.sun.update_bounds, self.world.level, delay=0.1)
-        AmbientLight(color=color.rgba(0.55, 0.55, 0.6, 1))
+        self.sun = DirectionalLight(shadow_map_resolution=Vec2(SHADOW_RES, SHADOW_RES), color=SUN_COLOR)
+        self.sun.look_at(Vec3(0.55, -0.75, 0.4))
+        self.shadow_bounds = Entity(model='cube', scale=(ARENA * 2 + 4, 9, ARENA * 2 + 4), y=4, visible=False)
+        invoke(self.fit_shadows, delay=0.1)
 
         self.player = Player(self)
         self.hud = HUD(self)
-        for pos, yaw in [(-6, -30), (-3, -30), (0, -30), (3, -30), (6, -30)]:
-            Target(self, Vec3(pos, 0, yaw), yaw=0)
-        self.targets_note = True
+        for x in (-6, -3, 0, 3, 6):
+            Target(self, Vec3(x, 0, -35))
         mouse.locked = True
-        self.hud.message('Éliminez les ennemis !\nLes cibles devant vous servent à s\'entraîner', 4)
+        self.set_quality(True)
+        self.hud.message('Éliminez les ennemis !', 4,
+                         "Les cibles devant vous servent à s'entraîner — clic droit pour viser")
         invoke(self.next_wave, delay=2)
 
+    def fit_shadows(self):
+        """La carte d'ombres couvre uniquement l'arène (ombres plus nettes)."""
+        self.shadow_bounds.visible = True
+        self.sun.update_bounds(self.shadow_bounds)
+        self.shadow_bounds.visible = False
+
+    def set_quality(self, high):
+        self.high_quality = high
+        try:
+            if high:
+                camera.shader = POST
+            elif camera.shader is not None:
+                camera.shader = None
+                camera.filter_quad = None    # sinon Ursina plante au redimensionnement de la fenêtre
+        except Exception as ex:      # carte graphique incompatible : on reste sans post-traitement
+            print('Post-traitement indisponible :', ex)
+        camera.clip_plane_near = 0.05    # Ursina le remet à 1 quand on change le shader de caméra
+        for g in self.world.grass:
+            g.enabled = high
+
     # -- vagues ------------------------------------------------------------
+    def skill(self):
+        return clamp((self.wave - 1) / 7, 0, 1)
+
+    def tier_index(self):
+        return min(3, max(0, (self.wave - 1) // 2))
+
+    def spawn_points(self, n):
+        pl = self.player.position
+        pts = []
+        tries = 0
+        while len(pts) < n and tries < 600:
+            tries += 1
+            p = self.world.random_free_point()
+            if flat_dist(p, pl) < 30 - min(tries / 60, 8):
+                continue
+            if any(flat_dist(p, q) < 3 for q in pts):
+                continue
+            if tries < 300 and self.world.los(p + Vec3(0, 1.6, 0), self.player.eye):
+                continue      # on préfère des apparitions hors de vue
+            pts.append(p)
+        return pts
+
     def next_wave(self):
         if self.over:
             return
         self.wave += 1
-        n = min(2 + self.wave, 9)
-        spawns = sorted(SPAWNS, key=lambda s: -flat_dist(s, self.player.position))[:max(n + 2, 6)]
-        random.shuffle(spawns)
-        for s in spawns[:n]:
-            e = Enemy(self, s + Vec3(random.uniform(-1, 1), 0, random.uniform(-1, 1)))
+        sk = self.skill()
+        n = min(3 + self.wave, 14)
+        tier = self.tier_index()
+        for s in self.spawn_points(n):
+            e = Enemy(self, s, skill=sk, tier=tier)
             e.rotation_y = random.uniform(0, 360)
             self.enemies.append(e)
-        self.hud.message(f'Vague {self.wave}', 2)
+        extra = ['', 'Ils se couvrent mutuellement', 'Ils lancent des grenades',
+                 'Ils vous prennent en tenaille', 'Ils esquivent et visent plus vite']
+        detail = extra[min(self.wave - 1, len(extra) - 1)]
+        self.hud.message(f'Vague {self.wave}', 3,
+                         f'{n} ennemis · {TIERS[tier]["name"]} · IA niveau {self.wave}'
+                         + (f' — {detail}' if detail else ''))
 
     def on_enemy_killed(self, enemy, headshot):
         self.kills += 1
-        self.add_score(150 if headshot else 100, 'Tir à la tête ! +150' if headshot else 'Ennemi éliminé +100')
+        bonus = self.wave * 10
+        if headshot:
+            self.add_score(150 + bonus, f'Tir à la tête ! +{150 + bonus}')
+        else:
+            self.add_score(100 + bonus, f'Ennemi éliminé +{100 + bonus}')
         if all(e.dead for e in self.enemies):
-            self.hud.message('Vague terminée !', 2.5)
-            invoke(self.cleanup_and_next, delay=4)
+            self.hud.message('Vague terminée !', 3, 'Santé restaurée — la prochaine sera plus coriace')
+            self.player.hp = min(100, self.player.hp + 50)
+            invoke(self.cleanup_and_next, delay=4.5)
 
     def cleanup_and_next(self):
         self.enemies = [e for e in self.enemies if not e.dead]
@@ -1463,12 +2506,13 @@ class Game(Entity):
 
     def flyby(self, point):
         if flat_dist(point, self.player.position) < 2.5:
-            self.hud.damage.color = color.rgba(0.8, 0, 0, max(self.hud.damage.color.a, 0.06))
+            self.hud.damage.color = color.rgba(0.8, 0, 0, max(self.hud.damage.color.a, 0.08))
 
     # -- états -------------------------------------------------------------
     def game_over(self):
         self.over = True
-        self.hud.message(f'Vous êtes mort !\nScore : {self.score}   Vague : {self.wave}\n\nEntrée pour recommencer', 0)
+        self.hud.message('Vous êtes mort !', 0,
+                         f'Score : {self.score}   ·   Vague : {self.wave}\n\nEntrée pour recommencer')
         self.player.pivot.animate_position((0, 0.3, 0), duration=0.6)
         self.player.pivot.animate_rotation_z(40, duration=0.6)
 
@@ -1479,10 +2523,13 @@ class Game(Entity):
                 e.release_cover()
                 destroy(e)
         self.enemies = []
+        for gr in list(self.grenades):
+            destroy(gr)
+        self.grenades = []
         for c in self.world.covers:
             c.owner = None
         p = self.player
-        p.position = Vec3(0, 0, -34)
+        p.position = Vec3(0, 0, -40)
         p.rotation_y = 0
         p.pivot.position = (0, 1.65, 0)
         p.pivot.rotation = (0, 0, 0)
@@ -1490,6 +2537,7 @@ class Game(Entity):
         self.over = False
         self.score = self.kills = self.wave = 0
         self.hud.msg.text = ''
+        self.hud.sub_msg.text = ''
         invoke(self.next_wave, delay=1.5)
 
     def toggle_pause(self):
@@ -1497,10 +2545,11 @@ class Game(Entity):
         mouse.locked = not self.paused
         if self.paused:
             application.pause()
-            self.hud.message('PAUSE\nÉchap : reprendre    X : quitter', 0)
+            self.hud.message('PAUSE', 0, 'Échap : reprendre    ·    X : quitter    ·    G : graphismes')
         else:
             application.resume()
             self.hud.msg.text = ''
+            self.hud.sub_msg.text = ''
 
     def update(self):
         if not self.paused:
@@ -1513,6 +2562,9 @@ class Game(Entity):
                 self.toggle_pause()
         elif key == 'x' and self.paused:
             application.quit()
+        elif key == 'g':
+            self.set_quality(not self.high_quality)
+            self.hud.add_feed('Graphismes : ' + ('élevés' if self.high_quality else 'rapides'))
         elif self.paused:
             return
         elif key == 'space':
@@ -1527,8 +2579,8 @@ class Game(Entity):
 
 if __name__ == '__main__':
     app = Ursina(title='FPS Ursina', borderless=False, development_mode=False)
-    window.color = color.rgb32(140, 180, 230)
-    window.fps_counter.enabled = True
+    window.color = FOG_COLOR
+    window.fps_counter.enabled = False
     window.exit_button.visible = False
     game = Game()
     app.run()
