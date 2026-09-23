@@ -22,8 +22,9 @@ Commandes (clavier AZERTY) :
     Échap              : pause (X pour quitter pendant la pause)
     Entrée             : recommencer après la mort
 
-Manette PS5 (DualSense, USB ou Bluetooth) — installer une fois :  pip install pygame
-    Stick gauche       : se déplacer (analogique) ; L3 (clic du stick) : courir
+Manette PS5 (DualSense, USB ou Bluetooth) — lue avec pygame (Ursina reste le moteur du jeu).
+Installer une fois :  pip install pygame      (sans pygame, le jeu se joue au clavier / à la souris)
+    Stick gauche       : se déplacer (analogique, zone morte PAD_DEADZONE) ; L3 (clic du stick) : courir
     Stick droit        : regarder (légère aide à la visée sur les ennemis)
     R2 / L2            : tirer / viser
     Croix              : sauter ; valider dans le menu ; recommencer après la mort
@@ -2587,24 +2588,23 @@ class Player(Entity):
 # Manette (PS5 DualSense, et la plupart des manettes)
 # ---------------------------------------------------------------------------
 
+PAD_DEADZONE = 0.15           # zone morte des sticks (rayon, 0..1) : augmenter si le personnage dérive
+PAD_TRIGGER_DEADZONE = 0.05   # gâchettes L2 / R2 : ignore les pressions infimes
+
 PAD_BUTTONS = ('cross', 'circle', 'square', 'triangle', 'share', 'ps', 'options',
                'l3', 'r3', 'l1', 'r1', 'up', 'down', 'left', 'right')
 
 
 class Gamepad:
-    """Lit la manette une fois par image.
+    """Lecture de la manette avec pygame, et uniquement pour ça : pygame n'ouvre aucune fenêtre
+    et ne dessine rien, Ursina reste le moteur du jeu. Installation : pip install pygame
 
-    Moteur 1 : pygame (SDL2) — le plus fiable pour la DualSense sous Windows, en USB comme en
-               Bluetooth, avec les vibrations. Installation : pip install pygame
-    Moteur 2 : Panda3D (intégré à Ursina) — utilisé si pygame est absent ; reconnaît les manettes
-               XInput et une partie des manettes HID.
-    Valeurs exposées : lx, ly (stick gauche, ly > 0 = vers l'avant), rx, ry (stick droit, ry > 0 = vers
-    le haut), l2, r2 (gâchettes 0..1), down[nom] (bouton maintenu), pressed[nom] (appui de cette image).
+    Valeurs lues à chaque image : lx, ly (stick gauche, ly > 0 = vers l'avant), rx, ry (stick droit,
+    ry > 0 = vers le haut), l2, r2 (gâchettes 0..1), down[nom] (bouton maintenu),
+    pressed[nom] (appui de cette image). Zone morte circulaire appliquée à chaque stick.
     """
-    DEADZONE = 0.12
 
     def __init__(self):
-        self.backend = None
         self.dev = None
         self.name = ''
         self.lx = self.ly = self.rx = self.ry = self.l2 = self.r2 = 0.0
@@ -2614,61 +2614,49 @@ class Gamepad:
         self._scan_t = 0.0
         self._pg = None
         self._sdlc = None
-        self.missing_pygame = False
-        self._init_backend()
+        self.available = self._init_pygame()
 
     # -- initialisation --------------------------------------------------------
-    def _init_backend(self):
+    def _init_pygame(self):
         import os
         os.environ.setdefault('PYGAME_HIDE_SUPPORT_PROMPT', '1')
-        os.environ.setdefault('SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS', '1')   # SDL n'a pas de fenêtre à lui
-        os.environ.setdefault('SDL_JOYSTICK_HIDAPI_PS5', '1')
+        os.environ.setdefault('SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS', '1')   # la fenêtre active est celle d'Ursina
+        os.environ.setdefault('SDL_JOYSTICK_HIDAPI_PS5', '1')                # pilote DualSense de SDL
         os.environ.setdefault('SDL_JOYSTICK_HIDAPI_PS5_RUMBLE', '1')          # vibrations en Bluetooth aussi
         try:
             import pygame
-            pygame.display.init()           # nécessaire pour recevoir les événements (aucune fenêtre créée)
+            pygame.display.init()      # requis par SDL pour recevoir les événements manette ; aucune fenêtre créée
             pygame.joystick.init()
-            self._pg = pygame
-            try:
-                from pygame._sdl2 import controller as sdlc
-                sdlc.init()
-                self._sdlc = sdlc
-            except Exception:
-                self._sdlc = None
-            self.backend = 'pygame'
+        except Exception as ex:
+            print('Manette désactivée : pygame est introuvable (pip install pygame).', ex)
+            return False
+        self._pg = pygame
+        try:
+            from pygame._sdl2 import controller as sdlc    # boutons normalisés (croix, carré...)
+            sdlc.init()
+            self._sdlc = sdlc
         except Exception:
-            self.missing_pygame = True
-            self.backend = 'panda'
+            self._sdlc = None                              # repli : lecture brute du joystick
+        return True
 
     def _connect(self):
         """Cherche une manette (au démarrage puis toutes les 2 s tant qu'aucune n'est branchée)."""
         self.dev = None
-        if self.backend == 'pygame':
-            pg = self._pg
-            pg.event.pump()
-            n = pg.joystick.get_count()
-            for i in range(n):
-                try:
-                    if self._sdlc is not None and self._sdlc.is_controller(i):
-                        self.dev = ('controller', self._sdlc.Controller(i))
-                        self.name = self.dev[1].name
-                    else:
-                        j = pg.joystick.Joystick(i)
-                        j.init()
-                        self.dev = ('joystick', j)
-                        self.name = j.get_name()
-                    return
-                except Exception:
-                    continue
-        else:
+        pg = self._pg
+        pg.event.pump()
+        for i in range(pg.joystick.get_count()):
             try:
-                from panda3d.core import InputDevice
-                devs = application.base.devices.getDevices(InputDevice.DeviceClass.gamepad)
-                if devs:
-                    self.dev = ('panda', devs[0])
-                    self.name = devs[0].name
+                if self._sdlc is not None and self._sdlc.is_controller(i):
+                    self.dev = ('controller', self._sdlc.Controller(i))
+                    self.name = self.dev[1].name
+                else:
+                    j = pg.joystick.Joystick(i)
+                    j.init()
+                    self.dev = ('joystick', j)
+                    self.name = j.get_name()
+                return
             except Exception:
-                self.dev = None
+                continue
 
     @property
     def connected(self):
@@ -2676,19 +2664,21 @@ class Gamepad:
             return False
         kind, d = self.dev
         try:
-            if kind == 'controller':
-                return d.attached()
-            if kind == 'joystick':
-                return d.get_init()
-            return d.connected
+            return d.attached() if kind == 'controller' else d.get_init()
         except Exception:
             return False
 
     # -- lecture ---------------------------------------------------------------
-    def _dz(self, v):
-        if abs(v) < self.DEADZONE:
-            return 0.0
-        return math.copysign((abs(v) - self.DEADZONE) / (1 - self.DEADZONE), v)
+    @staticmethod
+    def deadzone(x, y, dz=None):
+        """Zone morte circulaire : en dessous de dz (rayon), le stick est considéré au repos ;
+        au-delà, la course restante est ramenée sur 0..1 (pas de saut de vitesse au bord)."""
+        dz = PAD_DEADZONE if dz is None else dz
+        m = math.hypot(x, y)
+        if m <= dz:
+            return 0.0, 0.0
+        k = min(1.0, (m - dz) / (1 - dz)) / m
+        return x * k, y * k
 
     def _read(self):
         """Renvoie (lx, ly_haut, rx, ry_haut, l2, r2, {bouton: bool})."""
@@ -2710,76 +2700,59 @@ class Gamepad:
             return (ax(pg.CONTROLLER_AXIS_LEFTX), -ax(pg.CONTROLLER_AXIS_LEFTY),
                     ax(pg.CONTROLLER_AXIS_RIGHTX), -ax(pg.CONTROLLER_AXIS_RIGHTY),
                     max(0.0, ax(pg.CONTROLLER_AXIS_TRIGGERLEFT)), max(0.0, ax(pg.CONTROLLER_AXIS_TRIGGERRIGHT)), btn)
-        if kind == 'joystick':
-            # disposition SDL (pilote HIDAPI de la DualSense) : 0 croix, 1 rond, 2 carré, 3 triangle, ...
-            na, nb = d.get_numaxes(), d.get_numbuttons()
-            ax = lambda i: d.get_axis(i) if i < na else 0.0
-            b = lambda i: bool(d.get_button(i)) if i < nb else False
-            hat = d.get_hat(0) if d.get_numhats() else (0, 0)
-            btn = {'cross': b(0), 'circle': b(1), 'square': b(2), 'triangle': b(3), 'share': b(4),
-                   'ps': b(5), 'options': b(6), 'l3': b(7), 'r3': b(8), 'l1': b(9), 'r1': b(10),
-                   'up': b(11) or hat[1] > 0, 'down': b(12) or hat[1] < 0,
-                   'left': b(13) or hat[0] < 0, 'right': b(14) or hat[0] > 0}
-            trig = lambda i: (ax(i) + 1) / 2 if i < na else 0.0     # gâchettes de -1 (relâchée) à 1
-            return ax(0), -ax(1), ax(2), -ax(3), trig(4), trig(5), btn
-        # Panda3D
-        from panda3d.core import InputDevice
-        try:
-            d.poll()
-        except Exception:
-            pass
-        A = InputDevice.Axis
+        # repli joystick brut, disposition SDL de la DualSense : 0 croix, 1 rond, 2 carré, 3 triangle...
+        na, nb = d.get_numaxes(), d.get_numbuttons()
+        ax = lambda i: d.get_axis(i) if i < na else 0.0
+        b = lambda i: bool(d.get_button(i)) if i < nb else False
+        hat = d.get_hat(0) if d.get_numhats() else (0, 0)
+        btn = {'cross': b(0), 'circle': b(1), 'square': b(2), 'triangle': b(3), 'share': b(4),
+               'ps': b(5), 'options': b(6), 'l3': b(7), 'r3': b(8), 'l1': b(9), 'r1': b(10),
+               'up': b(11) or hat[1] > 0, 'down': b(12) or hat[1] < 0,
+               'left': b(13) or hat[0] < 0, 'right': b(14) or hat[0] > 0}
+        trig = lambda i: (ax(i) + 1) / 2 if i < na else 0.0     # gâchettes de -1 (relâchée) à 1
+        return ax(0), -ax(1), ax(2), -ax(3), trig(4), trig(5), btn
 
-        def ax(a):
-            h = d.findAxis(a)
-            return h.value if h else 0.0
-
-        def b(name):
-            try:
-                return d.findButton(name).pressed
-            except Exception:
-                return False
-        btn = {'cross': b('face_a'), 'circle': b('face_b'), 'square': b('face_x'), 'triangle': b('face_y'),
-               'share': b('back'), 'ps': b('guide'), 'options': b('start'), 'l3': b('lstick'), 'r3': b('rstick'),
-               'l1': b('lshoulder'), 'r1': b('rshoulder'), 'up': b('dpad_up'), 'down': b('dpad_down'),
-               'left': b('dpad_left'), 'right': b('dpad_right')}
-        return (ax(A.left_x), ax(A.left_y), ax(A.right_x), ax(A.right_y),
-                max(0.0, ax(A.left_trigger)), max(0.0, ax(A.right_trigger)), btn)
+    def _reset(self):
+        self.lx = self.ly = self.rx = self.ry = self.l2 = self.r2 = 0.0
+        for k in PAD_BUTTONS:
+            self.down[k] = self.pressed[k] = False
 
     def update(self, now):
-        if self.backend == 'pygame':
-            try:
-                for _ in self._pg.event.get():       # vide la file d'événements SDL
-                    pass
-            except Exception:
+        if not self.available:
+            return
+        try:
+            for _ in self._pg.event.get():       # vide la file d'événements SDL
                 pass
+        except Exception:
+            pass
         if not self.connected:
             self._scan_t -= time.dt
             if self._scan_t <= 0:
                 self._scan_t = 2.0
                 self._connect()
             if not self.connected:
-                self.lx = self.ly = self.rx = self.ry = self.l2 = self.r2 = 0.0
-                for k in PAD_BUTTONS:
-                    self.down[k] = self.pressed[k] = False
+                self._reset()
                 return
         try:
             lx, ly, rx, ry, l2, r2, btn = self._read()
         except Exception:
             self.dev = None
+            self._reset()
             return
-        self.lx, self.ly = self._dz(lx), self._dz(ly)
-        self.rx, self.ry = self._dz(rx), self._dz(ry)
-        self.l2, self.r2 = l2, r2
+        self.lx, self.ly = self.deadzone(lx, ly)
+        self.rx, self.ry = self.deadzone(rx, ry)
+        self.l2 = l2 if l2 > PAD_TRIGGER_DEADZONE else 0.0
+        self.r2 = r2 if r2 > PAD_TRIGGER_DEADZONE else 0.0
         for k in PAD_BUTTONS:
             v = btn.get(k, False)
             self.pressed[k] = v and not self.down[k]
             self.down[k] = v
-        if (abs(self.lx) + abs(self.ly) + abs(self.rx) + abs(self.ry) + l2 + r2 > 0.05) or any(self.down.values()):
+        if (abs(self.lx) + abs(self.ly) + abs(self.rx) + abs(self.ry) + self.l2 + self.r2 > 0) \
+                or any(self.down.values()):
             self.last_used = now
 
     def rumble(self, low, high, ms):
-        """Vibrations (moteur pygame uniquement ; ignoré sinon)."""
+        """Vibrations (manettes reconnues par SDL comme « game controller », dont la DualSense)."""
         if self.dev is None or self.dev[0] != 'controller':
             return
         try:
@@ -3220,6 +3193,9 @@ class Game(Entity):
     def pad_actions(self):
         """Boutons de la manette qui correspondent à des touches (menu, pause, saut, rechargement...)."""
         pad = PAD
+        if not pad.available and not getattr(self, '_pad_warned', False) and self.t > 1:
+            self._pad_warned = True
+            self.hud.add_feed('Manette : installez pygame (pip install pygame)')
         if pad.connected != self._pad_was:
             self._pad_was = pad.connected
             if pad.connected:
