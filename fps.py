@@ -22,6 +22,17 @@ Commandes (clavier AZERTY) :
     Échap              : pause (X pour quitter pendant la pause)
     Entrée             : recommencer après la mort
 
+Manette PS5 (DualSense, USB ou Bluetooth) — installer une fois :  pip install pygame
+    Stick gauche       : se déplacer (analogique) ; L3 (clic du stick) : courir
+    Stick droit        : regarder (légère aide à la visée sur les ennemis)
+    R2 / L2            : tirer / viser
+    Croix              : sauter ; valider dans le menu ; recommencer après la mort
+    Carré              : recharger
+    Triangle           : qualité graphique
+    Options            : pause (Create pour quitter pendant la pause)
+    Croix directionnelle ou stick gauche : choisir l'arme dans le menu
+    Vibrations au tir, aux dégâts et aux explosions. La manette peut être branchée en cours de partie.
+
 IA des ennemis (de plus en plus redoutable à chaque vague) :
     - perception : champ de vision, ligne de vue (raycast), audition des tirs
     - mémoire de la dernière position connue du joueur, partage d'infos entre alliés
@@ -1308,6 +1319,7 @@ class Grenade(Entity):
             pl.take_damage(int(105 * (1 - d / radius) ** 1.1) + 5, pos)
         if d < 16:
             pl.shake = max(pl.shake, 0.6 * (1 - d / 16))
+            PAD.rumble(1.0 * (1 - d / 16), 0.8 * (1 - d / 16), 350)
         for e in list(g.enemies):
             if e.dead:
                 continue
@@ -2219,7 +2231,8 @@ class Enemy(Entity):
 # Armes du joueur
 # ---------------------------------------------------------------------------
 
-SNIPER_ZOOM = 2.0     # grossissement de la lunette par rapport à la vue normale (90°)
+SNIPER_ZOOM = 2.0
+PAD_LOOK_SPEED = (200, 140)   # vitesse de rotation au stick droit (degrés/s, horizontal / vertical)     # grossissement de la lunette par rapport à la vue normale (90°)
 
 WEAPONS = {
     'rifle': dict(
@@ -2286,6 +2299,7 @@ class Player(Entity):
         self.shake = 0.0
         self.bob_t = 0.0
         self.land_dip = 0.0
+        self.pad_sprint = False
         self._zoom_on = False
         self.build_gun()
 
@@ -2371,6 +2385,7 @@ class Player(Entity):
         self.last_hurt = self.game.t
         self.shake = max(self.shake, 0.15)
         self.game.hud.flash_damage(from_pos)
+        PAD.rumble(0.7, 0.3, 160)
         if self.hp <= 0:
             self.hp = 0
             self.dead = True
@@ -2381,23 +2396,38 @@ class Player(Entity):
             return
         dt = time.dt
         w = self.weapon
-        aiming = held_keys['right mouse'] and self.reload_t <= 0 and not self.sprinting
+        pad = PAD
+        aiming = (held_keys['right mouse'] or pad.l2 > 0.4) and self.reload_t <= 0 and not self.sprinting
         self.ads = lerp(self.ads, 1.0 if aiming else 0.0, min(1, dt * 14))
 
         # regard à la souris (plus précis en visée)
+        sens = lerp(1.0, w['ads_sens'], self.ads)
         if mouse.locked:
-            sens = lerp(1.0, w['ads_sens'], self.ads)
             self.rotation_y += mouse.velocity[0] * self.sensitivity[1] * sens
             self.pivot.rotation_x -= mouse.velocity[1] * self.sensitivity[0] * sens
-            self.pivot.rotation_x = clamp(self.pivot.rotation_x, -89, 89)
+        # regard au stick droit : courbe progressive (précis au centre, rapide au bout)
+        if pad.rx or pad.ry:
+            assist = 0.55 if self.enemy_under_crosshair() else 1.0     # légère aide à la visée
+            k = sens * assist * dt
+            self.rotation_y += pad.rx * abs(pad.rx) * PAD_LOOK_SPEED[0] * k
+            self.pivot.rotation_x -= pad.ry * abs(pad.ry) * PAD_LOOK_SPEED[1] * k
+        self.pivot.rotation_x = clamp(self.pivot.rotation_x, -89, 89)
 
         # déplacement : E avancer, S reculer, Q gauche, D droite (+ flèches) ; Z pour courir
+        # stick gauche : déplacement analogique (on marche doucement en poussant peu le stick)
         fwd = clamp(held_keys['e'] + held_keys['up arrow'], 0, 1) - clamp(held_keys['s'] + held_keys['down arrow'], 0, 1)
         side = clamp(held_keys['d'] + held_keys['right arrow'], 0, 1) - clamp(held_keys['q'] + held_keys['left arrow'], 0, 1)
+        fwd = clamp(fwd + pad.ly, -1, 1)
+        side = clamp(side + pad.lx, -1, 1)
         direction = flat(self.forward) * fwd + flat(self.right) * side
-        if direction.length() > 0:
+        if direction.length() > 1:
             direction = direction.normalized()
-        self.sprinting = bool(held_keys['z'] or held_keys['shift']) and fwd > 0 and self.ads < 0.3
+        # L3 : course maintenue tant qu'on pousse le stick vers l'avant
+        if pad.pressed['l3']:
+            self.pad_sprint = True
+        if fwd < 0.5:
+            self.pad_sprint = False
+        self.sprinting = bool(held_keys['z'] or held_keys['shift'] or self.pad_sprint) and fwd > 0 and self.ads < 0.3
         speed = (9 if self.sprinting else 5.5) * lerp(1, 0.6, self.ads)
         accel = 12 if self.grounded else 3
         self.vel = lerp(self.vel, direction * speed, min(1, dt * accel))
@@ -2455,7 +2485,8 @@ class Player(Entity):
         self.game.hud.scope_visible(scoped)
         self.game.hud.crosshair_visible(self.ads < 0.5)
 
-        trigger = held_keys['left mouse'] or held_keys['p']
+        pad_fire = pad.r2 > 0.35
+        trigger = held_keys['left mouse'] or held_keys['p'] or pad_fire
         if not trigger:
             self.armed = True
             self.trigger_ready = True
@@ -2467,7 +2498,8 @@ class Player(Entity):
             self.gun.rotation_z = 20 * k
             if self.reload_t <= 0:
                 self.mag = w['mag']
-        elif trigger and self.armed and (w['auto'] or self.trigger_ready) and self.cooldown <= 0 and mouse.locked:
+        elif trigger and self.armed and (w['auto'] or self.trigger_ready) and self.cooldown <= 0 \
+                and (mouse.locked or pad_fire):
             self.trigger_ready = False               # sniper : relâcher pour tirer à nouveau
             self.shoot()
 
@@ -2496,6 +2528,11 @@ class Player(Entity):
         camera.set_shader_input('zoom', lerp(1.0, z, k))
         self._zoom_on = True
 
+    def enemy_under_crosshair(self):
+        """Aide à la visée manette : le regard ralentit quand un ennemi est sous le réticule."""
+        hit = raycast(camera.world_position, camera.forward, 80, ignore=[self])
+        return hit.hit and isinstance(getattr(hit.entity, 'owner', None), Enemy)
+
     def jump(self):
         if self.grounded and not self.dead:
             self.vy = 7.5
@@ -2514,6 +2551,10 @@ class Player(Entity):
         self.cooldown = w['cooldown']
         self.recoil = min(1.5, self.recoil + (1.2 if w['scope'] else 0.5))
         muzzle_flash(self.muzzle, scale=w['flash'], intensity=w['flash_intensity'], life=w['flash_life'])
+        if w['scope']:
+            PAD.rumble(0.9, 0.6, 180)
+        else:
+            PAD.rumble(0.15, 0.35, 60)
         shell_casing(self.eject.world_position, camera.right)
         spread = (w['spread'] + w['move_spread'] * min(1, self.speed_now / 9) + (0.02 if not self.grounded else 0)) \
             * lerp(1, w['ads_spread'], self.ads)
@@ -2543,15 +2584,227 @@ class Player(Entity):
 
 
 # ---------------------------------------------------------------------------
+# Manette (PS5 DualSense, et la plupart des manettes)
+# ---------------------------------------------------------------------------
+
+PAD_BUTTONS = ('cross', 'circle', 'square', 'triangle', 'share', 'ps', 'options',
+               'l3', 'r3', 'l1', 'r1', 'up', 'down', 'left', 'right')
+
+
+class Gamepad:
+    """Lit la manette une fois par image.
+
+    Moteur 1 : pygame (SDL2) — le plus fiable pour la DualSense sous Windows, en USB comme en
+               Bluetooth, avec les vibrations. Installation : pip install pygame
+    Moteur 2 : Panda3D (intégré à Ursina) — utilisé si pygame est absent ; reconnaît les manettes
+               XInput et une partie des manettes HID.
+    Valeurs exposées : lx, ly (stick gauche, ly > 0 = vers l'avant), rx, ry (stick droit, ry > 0 = vers
+    le haut), l2, r2 (gâchettes 0..1), down[nom] (bouton maintenu), pressed[nom] (appui de cette image).
+    """
+    DEADZONE = 0.12
+
+    def __init__(self):
+        self.backend = None
+        self.dev = None
+        self.name = ''
+        self.lx = self.ly = self.rx = self.ry = self.l2 = self.r2 = 0.0
+        self.down = {b: False for b in PAD_BUTTONS}
+        self.pressed = {b: False for b in PAD_BUTTONS}
+        self.last_used = -99.0
+        self._scan_t = 0.0
+        self._pg = None
+        self._sdlc = None
+        self.missing_pygame = False
+        self._init_backend()
+
+    # -- initialisation --------------------------------------------------------
+    def _init_backend(self):
+        import os
+        os.environ.setdefault('PYGAME_HIDE_SUPPORT_PROMPT', '1')
+        os.environ.setdefault('SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS', '1')   # SDL n'a pas de fenêtre à lui
+        os.environ.setdefault('SDL_JOYSTICK_HIDAPI_PS5', '1')
+        os.environ.setdefault('SDL_JOYSTICK_HIDAPI_PS5_RUMBLE', '1')          # vibrations en Bluetooth aussi
+        try:
+            import pygame
+            pygame.display.init()           # nécessaire pour recevoir les événements (aucune fenêtre créée)
+            pygame.joystick.init()
+            self._pg = pygame
+            try:
+                from pygame._sdl2 import controller as sdlc
+                sdlc.init()
+                self._sdlc = sdlc
+            except Exception:
+                self._sdlc = None
+            self.backend = 'pygame'
+        except Exception:
+            self.missing_pygame = True
+            self.backend = 'panda'
+
+    def _connect(self):
+        """Cherche une manette (au démarrage puis toutes les 2 s tant qu'aucune n'est branchée)."""
+        self.dev = None
+        if self.backend == 'pygame':
+            pg = self._pg
+            pg.event.pump()
+            n = pg.joystick.get_count()
+            for i in range(n):
+                try:
+                    if self._sdlc is not None and self._sdlc.is_controller(i):
+                        self.dev = ('controller', self._sdlc.Controller(i))
+                        self.name = self.dev[1].name
+                    else:
+                        j = pg.joystick.Joystick(i)
+                        j.init()
+                        self.dev = ('joystick', j)
+                        self.name = j.get_name()
+                    return
+                except Exception:
+                    continue
+        else:
+            try:
+                from panda3d.core import InputDevice
+                devs = application.base.devices.getDevices(InputDevice.DeviceClass.gamepad)
+                if devs:
+                    self.dev = ('panda', devs[0])
+                    self.name = devs[0].name
+            except Exception:
+                self.dev = None
+
+    @property
+    def connected(self):
+        if self.dev is None:
+            return False
+        kind, d = self.dev
+        try:
+            if kind == 'controller':
+                return d.attached()
+            if kind == 'joystick':
+                return d.get_init()
+            return d.connected
+        except Exception:
+            return False
+
+    # -- lecture ---------------------------------------------------------------
+    def _dz(self, v):
+        if abs(v) < self.DEADZONE:
+            return 0.0
+        return math.copysign((abs(v) - self.DEADZONE) / (1 - self.DEADZONE), v)
+
+    def _read(self):
+        """Renvoie (lx, ly_haut, rx, ry_haut, l2, r2, {bouton: bool})."""
+        kind, d = self.dev
+        if kind == 'controller':
+            pg = self._pg
+            ax = lambda a: d.get_axis(a) / 32767.0
+            b = lambda k: bool(d.get_button(k))
+            btn = {
+                'cross': b(pg.CONTROLLER_BUTTON_A), 'circle': b(pg.CONTROLLER_BUTTON_B),
+                'square': b(pg.CONTROLLER_BUTTON_X), 'triangle': b(pg.CONTROLLER_BUTTON_Y),
+                'share': b(pg.CONTROLLER_BUTTON_BACK), 'ps': b(pg.CONTROLLER_BUTTON_GUIDE),
+                'options': b(pg.CONTROLLER_BUTTON_START),
+                'l3': b(pg.CONTROLLER_BUTTON_LEFTSTICK), 'r3': b(pg.CONTROLLER_BUTTON_RIGHTSTICK),
+                'l1': b(pg.CONTROLLER_BUTTON_LEFTSHOULDER), 'r1': b(pg.CONTROLLER_BUTTON_RIGHTSHOULDER),
+                'up': b(pg.CONTROLLER_BUTTON_DPAD_UP), 'down': b(pg.CONTROLLER_BUTTON_DPAD_DOWN),
+                'left': b(pg.CONTROLLER_BUTTON_DPAD_LEFT), 'right': b(pg.CONTROLLER_BUTTON_DPAD_RIGHT),
+            }
+            return (ax(pg.CONTROLLER_AXIS_LEFTX), -ax(pg.CONTROLLER_AXIS_LEFTY),
+                    ax(pg.CONTROLLER_AXIS_RIGHTX), -ax(pg.CONTROLLER_AXIS_RIGHTY),
+                    max(0.0, ax(pg.CONTROLLER_AXIS_TRIGGERLEFT)), max(0.0, ax(pg.CONTROLLER_AXIS_TRIGGERRIGHT)), btn)
+        if kind == 'joystick':
+            # disposition SDL (pilote HIDAPI de la DualSense) : 0 croix, 1 rond, 2 carré, 3 triangle, ...
+            na, nb = d.get_numaxes(), d.get_numbuttons()
+            ax = lambda i: d.get_axis(i) if i < na else 0.0
+            b = lambda i: bool(d.get_button(i)) if i < nb else False
+            hat = d.get_hat(0) if d.get_numhats() else (0, 0)
+            btn = {'cross': b(0), 'circle': b(1), 'square': b(2), 'triangle': b(3), 'share': b(4),
+                   'ps': b(5), 'options': b(6), 'l3': b(7), 'r3': b(8), 'l1': b(9), 'r1': b(10),
+                   'up': b(11) or hat[1] > 0, 'down': b(12) or hat[1] < 0,
+                   'left': b(13) or hat[0] < 0, 'right': b(14) or hat[0] > 0}
+            trig = lambda i: (ax(i) + 1) / 2 if i < na else 0.0     # gâchettes de -1 (relâchée) à 1
+            return ax(0), -ax(1), ax(2), -ax(3), trig(4), trig(5), btn
+        # Panda3D
+        from panda3d.core import InputDevice
+        try:
+            d.poll()
+        except Exception:
+            pass
+        A = InputDevice.Axis
+
+        def ax(a):
+            h = d.findAxis(a)
+            return h.value if h else 0.0
+
+        def b(name):
+            try:
+                return d.findButton(name).pressed
+            except Exception:
+                return False
+        btn = {'cross': b('face_a'), 'circle': b('face_b'), 'square': b('face_x'), 'triangle': b('face_y'),
+               'share': b('back'), 'ps': b('guide'), 'options': b('start'), 'l3': b('lstick'), 'r3': b('rstick'),
+               'l1': b('lshoulder'), 'r1': b('rshoulder'), 'up': b('dpad_up'), 'down': b('dpad_down'),
+               'left': b('dpad_left'), 'right': b('dpad_right')}
+        return (ax(A.left_x), ax(A.left_y), ax(A.right_x), ax(A.right_y),
+                max(0.0, ax(A.left_trigger)), max(0.0, ax(A.right_trigger)), btn)
+
+    def update(self, now):
+        if self.backend == 'pygame':
+            try:
+                for _ in self._pg.event.get():       # vide la file d'événements SDL
+                    pass
+            except Exception:
+                pass
+        if not self.connected:
+            self._scan_t -= time.dt
+            if self._scan_t <= 0:
+                self._scan_t = 2.0
+                self._connect()
+            if not self.connected:
+                self.lx = self.ly = self.rx = self.ry = self.l2 = self.r2 = 0.0
+                for k in PAD_BUTTONS:
+                    self.down[k] = self.pressed[k] = False
+                return
+        try:
+            lx, ly, rx, ry, l2, r2, btn = self._read()
+        except Exception:
+            self.dev = None
+            return
+        self.lx, self.ly = self._dz(lx), self._dz(ly)
+        self.rx, self.ry = self._dz(rx), self._dz(ry)
+        self.l2, self.r2 = l2, r2
+        for k in PAD_BUTTONS:
+            v = btn.get(k, False)
+            self.pressed[k] = v and not self.down[k]
+            self.down[k] = v
+        if (abs(self.lx) + abs(self.ly) + abs(self.rx) + abs(self.ry) + l2 + r2 > 0.05) or any(self.down.values()):
+            self.last_used = now
+
+    def rumble(self, low, high, ms):
+        """Vibrations (moteur pygame uniquement ; ignoré sinon)."""
+        if self.dev is None or self.dev[0] != 'controller':
+            return
+        try:
+            self.dev[1].rumble(clamp(low, 0, 1), clamp(high, 0, 1), int(ms))
+        except Exception:
+            pass
+
+
+PAD = None       # instance unique, créée par Game
+
+
+# ---------------------------------------------------------------------------
 # Interface
 # ---------------------------------------------------------------------------
 
 CONTROLS_LINE = ('E/S/Q/D ou flèches bouger · Z courir · Espace sauter · Clic gauche/P tirer'
                  ' · Clic droit viser · R recharger · G graphismes · Échap pause')
+CONTROLS_PAD_LINE = ('Manette : stick G bouger · L3 courir · stick D regarder · R2 tirer · L2 viser'
+                     ' · Croix sauter · Carré recharger · Triangle graphismes · Options pause')
 CONTROLS_PAUSE = ('E avancer   ·   S reculer   ·   Q gauche   ·   D droite   ·   flèches : se déplacer\n'
                   'Z courir   ·   Espace sauter   ·   Clic gauche ou P tirer   ·   Clic droit viser\n'
-                  'R recharger   ·   G graphismes\n\n'
-                  'Échap : reprendre    ·    X : quitter')
+                  'R recharger   ·   G graphismes\n'
+                  'Manette PS5 : stick gauche bouger (L3 courir) · stick droit regarder · R2 tirer · L2 viser\n'
+                  'Croix sauter · Carré recharger · Triangle graphismes\n\n'
+                  'Échap / Options : reprendre    ·    X / Create : quitter')
 
 class HUD:
     def __init__(self, game):
@@ -2607,8 +2860,8 @@ class HUD:
         self.feed_lines = []
         self._fps_frames = 0
         self._fps_time = 0.0
-        Text(parent=ui, text=CONTROLS_LINE,
-             origin=(0, 0), position=(0, -0.475), scale=0.7, color=color.rgba(1, 1, 1, 0.55))
+        self.help = Text(parent=ui, text=CONTROLS_LINE,
+                         origin=(0, 0), position=(0, -0.475), scale=0.7, color=color.rgba(1, 1, 1, 0.55))
 
     @staticmethod
     def scope_texture(size=1024):
@@ -2662,6 +2915,10 @@ class HUD:
         tier = TIERS[g.tier_index()]['name']
         self.set_text(self.info, f'Vague {g.wave}   ·   {tier} (IA niv. {max(g.wave, 1)})   ·   Ennemis {alive}'
                       f'   ·   Score {g.score}   ·   Éliminations {g.kills}')
+
+        # aide : commandes de la manette si elle a servi récemment
+        self.set_text(self.help, CONTROLS_PAD_LINE if PAD is not None and g.t - PAD.last_used < 10 and PAD.connected
+                      else CONTROLS_LINE)
 
         # images par seconde, moyenne sur une demi-seconde
         self._fps_frames += 1
@@ -2747,8 +3004,11 @@ class Game(Entity):
         self.high_quality = True
         self.choosing = True        # menu de choix d'arme affiché
 
-        global FXM
+        global FXM, PAD
         FXM = FX()
+        PAD = Gamepad()
+        self.menu_sel = 0
+        self._pad_was = False
         Sky(texture='sky_default', color=Color(0.95, 0.97, 1.0, 1))
         self.world = World()
         self.sun = DirectionalLight(shadow_map_resolution=Vec2(SHADOW_RES, SHADOW_RES), color=SUN_COLOR)
@@ -2774,16 +3034,23 @@ class Game(Entity):
             ('sniper', '2  —  Sniper',
              'Un tir par clic · gros dégâts · 5 balles · lunette zoom x2'),
         ]
+        self.menu_buttons = []
         for k, (key, title, desc) in enumerate(choices):
             y = 0.07 - k * 0.19
             b = Button(parent=self.menu, text='', scale=(0.9, 0.15), y=y, radius=0.08,
                        color=color.rgba(0.2, 0.25, 0.3, 0.95), highlight_color=color.rgba(0.3, 0.45, 0.55, 1))
             b.on_click = (lambda k=key: self.choose_weapon(k))
+            b.weapon_key = key
+            self.menu_buttons.append(b)
             Text(parent=self.menu, text=title, origin=(0, 0), y=y + 0.025, scale=1.5, z=-0.02)
             Text(parent=self.menu, text=desc, origin=(0, 0), y=y - 0.035, scale=0.95, z=-0.02,
                  color=color.rgba(1, 1, 1, 0.75))
-        Text(parent=self.menu, text='Cliquez sur une arme ou appuyez sur 1 / 2', origin=(0, 0), y=-0.26,
-             scale=0.9, color=color.rgba(1, 1, 1, 0.6))
+        # cadre de sélection pour la manette
+        self.menu_cursor = Entity(parent=self.menu, model=Quad(radius=0.08, thickness=3, mode='line'),
+                                  color=rgb(255, 210, 90), scale=(0.93, 0.18), y=0.07, z=-0.03, visible=False)
+        Text(parent=self.menu, text='Cliquez sur une arme ou appuyez sur 1 / 2\n'
+                                    'Manette : croix directionnelle ou stick gauche, puis Croix pour valider',
+             origin=(0, 0), y=-0.265, scale=0.85, color=color.rgba(1, 1, 1, 0.6))
 
     def choose_weapon(self, key):
         if not self.choosing:
@@ -2884,7 +3151,7 @@ class Game(Entity):
     def game_over(self):
         self.over = True
         self.hud.message('Vous êtes mort !', 0,
-                         f'Score : {self.score}   ·   Vague : {self.wave}\n\nEntrée pour recommencer')
+                         f'Score : {self.score}   ·   Vague : {self.wave}\n\nEntrée (ou Croix) pour recommencer')
         self.player.pivot.animate_position((0, 0.3, 0), duration=0.6)
         self.player.pivot.animate_rotation_z(40, duration=0.6)
 
@@ -2945,8 +3212,57 @@ class Game(Entity):
     def update(self):
         if not self.paused:
             self.t += time.dt
+        PAD.update(self.t)
+        self.pad_actions()
         self.update_grass()
         self.hud.update()
+
+    def pad_actions(self):
+        """Boutons de la manette qui correspondent à des touches (menu, pause, saut, rechargement...)."""
+        pad = PAD
+        if pad.connected != self._pad_was:
+            self._pad_was = pad.connected
+            if pad.connected:
+                self.hud.add_feed(f'Manette connectée : {pad.name[:28]}')
+            else:
+                self.hud.add_feed('Manette déconnectée')
+        if not pad.connected:
+            return
+        pr = pad.pressed
+        if self.choosing:
+            move = (pr['down'] or pr['up'] or pr['left'] or pr['right'])
+            if pr['down'] or pr['right']:
+                self.menu_sel = 1
+            elif pr['up'] or pr['left']:
+                self.menu_sel = 0
+            if abs(pad.ly) > 0.6:
+                self.menu_sel = 0 if pad.ly > 0 else 1
+                move = True
+            if move or pad.last_used == self.t:
+                self.menu_cursor.visible = True
+                self.menu_cursor.y = self.menu_buttons[self.menu_sel].y
+            if pr['cross']:
+                self.choose_weapon(self.menu_buttons[self.menu_sel].weapon_key)
+            elif pr['triangle']:
+                self.set_quality(not self.high_quality)
+            return
+        if pr['options'] and not self.over:
+            self.toggle_pause()
+        elif self.paused:
+            if pr['share']:
+                application.quit()
+            elif pr['triangle']:
+                self.input('g')
+        elif self.over:
+            if pr['cross']:
+                self.restart()
+        else:
+            if pr['cross']:
+                self.player.jump()
+            if pr['square']:
+                self.player.reload()
+            if pr['triangle']:
+                self.input('g')
 
     def input(self, key):
         if self.choosing:
