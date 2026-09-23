@@ -1,8 +1,8 @@
 """
 Petit FPS avec Ursina — ennemis humanoïdes dotés d'une IA tactique qui progresse.
 
-Lancement :  python fps.py            (vsync coupé : FPS non plafonnés)
-             python fps.py --vsync    (vsync activé : FPS calés sur l'écran, pas de déchirure)
+Lancement :  python fps.py                 (vsync activé, FPS limités à 60)
+             python fps.py --sans-limite   (vsync coupé, FPS non plafonnés : pour mesurer)
 
 Au lancement : choix de l'arme (clic sur le menu, ou touches 1 / 2)
     1 : fusil d'assaut (tir automatique, viseur point rouge grossissant x1,4 dans la vitre seulement)
@@ -61,7 +61,20 @@ ENEMY_RADIUS = 0.35
 EYE_STAND = 1.6     # hauteur des yeux d'un ennemi debout
 EYE_CROUCH = 1.0    # hauteur de la tête d'un ennemi accroupi
 SHADOW_RES = 1024        # carte d'ombres allégée (4096 puis 2048 auparavant) : ombres un peu plus douces
-VSYNC = '--vsync' in sys.argv   # vsync coupé par défaut : lancer « python fps.py --vsync » pour le réactiver
+VSYNC = '--sans-limite' not in sys.argv   # vsync + limite à 60 FPS ; « --sans-limite » pour tout couper
+FPS_MAX = 60
+# Ursina ignore son option vsync : on règle directement Panda3D, avant l'ouverture de la fenêtre
+# (lu à l'ouverture de la fenêtre ; la limite de 60 images/s est posée sur l'horloge dans limit_fps()).
+loadPrcFileData('', f"sync-video {'#t' if VSYNC else '#f'}")
+
+
+def limit_fps():
+    """Jamais plus de FPS_MAX images/s (en plus du vsync, utile sur un écran 144 Hz)."""
+    if VSYNC:
+        from panda3d.core import ClockObject
+        clock = ClockObject.getGlobalClock()
+        clock.setMode(ClockObject.MLimited)
+        clock.setFrameRate(FPS_MAX)
 
 FOG_COLOR = Color(0.72, 0.79, 0.86, 1)
 SUN_COLOR = Color(1.0, 0.94, 0.82, 1)
@@ -581,14 +594,7 @@ class World:
         self.add_box(cx, cz, size, size, size)
         b = self.plain
         b.xf((cx, 0, cz), 0)
-        b.box((0, size / 2, 0), (size, size, size), rgb(160, 115, 65), jitter=0.06)
-        dark = rgb(115, 80, 45)
-        e = size / 2 + 0.01
-        for sgn in (-1, 1):   # renforts
-            b.box((0, size / 2, sgn * e), (size, 0.12, 0.03), dark)
-            b.box((sgn * e, size / 2, 0), (0.03, 0.12, size), dark)
-            b.box((0, size - 0.06, sgn * e), (size, 0.12, 0.03), dark)
-            b.box((0, 0.06, sgn * e), (size, 0.12, 0.03), dark)
+        b.box((0, size / 2, 0), (size, size, size), rgb(160, 115, 65), jitter=0.06)   # simple cube de bois
         b.xf()
 
     def tree(self, x, z, collide=True, scale=1.0, y=0.0):
@@ -597,20 +603,20 @@ class World:
         h = rng.uniform(2.4, 3.3) * scale
         r = 0.27 * scale
         self.plain.xf()
-        self.plain.cylinder((x, y - 0.2, z), r, h + 1.2, rgb(95, 68, 45), seg=8, caps=False)
+        self.plain.cylinder((x, y - 0.2, z), r, h + 1.2, rgb(95, 68, 45), seg=6, caps=False)
         f = self.foliage
         f.xf()
         if pine:
             greens = [rgb(40, 85, 50), rgb(50, 100, 55), rgb(35, 75, 45)]
             base = y + h * 0.45
-            for k in range(4):
-                f.cone((x, base + k * 1.05 * scale, z), (2.0 - k * 0.42) * scale, 1.9 * scale,
-                       rng.choice(greens), seg=9, jitter=0.12)
+            for k in range(3):
+                f.cone((x, base + k * 1.35 * scale, z), (2.0 - k * 0.5) * scale, 2.1 * scale,
+                       rng.choice(greens), seg=7, jitter=0.12)
         else:
             greens = [rgb(70, 125, 50), rgb(85, 140, 55), rgb(60, 110, 45), rgb(95, 145, 60)]
             top = y + h + 0.5 * scale
-            f.blob((x, top, z), (1.5 * scale, 1.25 * scale, 1.5 * scale), rng.choice(greens), rng=rng)
-            for _ in range(rng.randint(3, 5)):
+            f.blob((x, top, z), (1.5 * scale, 1.25 * scale, 1.5 * scale), rng.choice(greens), seg=6, rings=4, rng=rng)
+            for _ in range(2):
                 a = rng.uniform(0, 6.28)
                 d = rng.uniform(0.7, 1.2) * scale
                 rad = rng.uniform(0.9, 1.25) * scale
@@ -622,40 +628,29 @@ class World:
     def car(self, x, z, yaw, paint):
         sx, sz = (2.0, 4.4) if yaw % 180 == 0 else (4.4, 2.0)
         self.add_box(x, z, sx, sz, 1.5)
+        # voiture simplifiée : caisse, habitacle vitré, toit et 4 roues carrées
         s, p = self.shiny, self.plain
         s.xf((x, 0, z), yaw)
         p.xf((x, 0, z), yaw)
-        s.box((0, 0.68, 0), (1.86, 0.62, 4.3), paint)
-        s.box((0, 1.02, 1.35), (1.8, 0.08, 1.5), shade(paint, 0.95))         # capot
-        s.box((0, 1.22, -0.25), (1.62, 0.55, 2.15), shade(paint, 0.97))      # habitacle
-        s.box((0, 1.24, -0.25), (1.66, 0.4, 2.2), rgb(40, 55, 70))           # vitres
+        s.box((0, 0.68, 0), (1.86, 0.62, 4.3), paint)                       # caisse
+        s.box((0, 1.2, -0.25), (1.66, 0.5, 2.2), rgb(40, 55, 70))           # habitacle vitré
+        s.box((0, 1.47, -0.25), (1.62, 0.06, 2.1), shade(paint, 0.97))      # toit
         dark = rgb(30, 30, 32)
-        p.box((0, 0.45, 2.17), (1.9, 0.24, 0.1), dark)                       # pare-chocs
-        p.box((0, 0.45, -2.17), (1.9, 0.24, 0.1), dark)
-        p.box((0, 0.72, 2.16), (1.2, 0.16, 0.04), rgb(60, 60, 64))            # calandre
         for sgn in (-1, 1):
-            p.box((sgn * 0.68, 0.78, 2.16), (0.34, 0.14, 0.05), rgb(255, 250, 225))
-            p.box((sgn * 0.7, 0.78, -2.16), (0.3, 0.12, 0.05), rgb(200, 30, 30))
             for wz in (1.35, -1.35):
-                p.cylinder((sgn * 0.84 - 0.13, 0.38, wz), 0.38, 0.26, dark, seg=12, axis='x',
-                           col_cap=rgb(150, 150, 155))
+                p.box((sgn * 0.84, 0.36, wz), (0.26, 0.7, 0.7), dark, top=False)
         p.xf()
         s.xf()
 
     def sandbags(self, cx, cz, length, along_x=True):
         sx, sz = (length, 0.8) if along_x else (0.8, length)
         self.add_box(cx, cz, sx, sz, 1.12)
-        n = int(length / 0.62)
         khaki = rgb(160, 145, 105)
         self.plain.xf()
-        for layer in range(3):
-            off = 0.31 if layer % 2 else 0
-            for i in range(n - (1 if layer % 2 else 0)):
-                t = -length / 2 + 0.31 + i * 0.62 + off
-                px, pz = (cx + t, cz) if along_x else (cx, cz + t)
-                rx, rz = (0.33, 0.24) if along_x else (0.24, 0.33)
-                self.plain.blob((px, 0.19 + layer * 0.35, pz), (rx, 0.19, rz), khaki, seg=7, rings=4,
-                                jitter=0.08, rough=0.05, rng=self.rng)
+        for layer in range(3):       # trois rangées de sacs (une boîte chacune, légèrement en retrait)
+            inset = 0.06 * layer
+            bx, bz = (sx - inset, sz - 0.1 - inset) if along_x else (sx - 0.1 - inset, sz - inset)
+            self.plain.box((cx, 0.19 + layer * 0.36, cz), (bx, 0.36, bz), shade(khaki, 1 - 0.05 * layer), jitter=0.05)
 
     def barrels(self, cx, cz):
         cols = [rgb(170, 45, 35), rgb(40, 80, 150), rgb(120, 90, 50), rgb(60, 110, 70)]
@@ -663,15 +658,13 @@ class World:
         self.plain.xf()
         for ox, oz in offs:
             c = self.rng.choice(cols)
-            self.plain.cylinder((cx + ox, 0, cz + oz), 0.3, 0.95, c, seg=12, col_cap=shade(c, 0.8))
-            for ry in (0.3, 0.65):
-                self.plain.cylinder((cx + ox, ry, cz + oz), 0.315, 0.04, shade(c, 0.7), seg=12, caps=False)
+            self.plain.cylinder((cx + ox, 0, cz + oz), 0.3, 0.95, c, seg=8, col_cap=shade(c, 0.8))
         self.add_box(cx + 0.3, cz + 0.3, 1.3, 1.3, 0.95)
 
     def rock(self, cx, cz, size=1.0):
         self.plain.xf()
         self.plain.blob((cx, 0.35 * size, cz), (1.2 * size, 0.95 * size, 1.0 * size), rgb(125, 122, 115),
-                        seg=7, rings=5, jitter=0.12, rough=0.18, rng=self.rng)
+                        seg=6, rings=4, jitter=0.12, rough=0.18, rng=self.rng)
         self.add_box(cx, cz, 2.0 * size, 1.7 * size, 1.25 * size)
 
     # -- terrain -------------------------------------------------------------
@@ -2983,7 +2976,8 @@ class Game(Entity):
 
 
 if __name__ == '__main__':
-    app = Ursina(title='FPS Ursina', borderless=False, development_mode=False, vsync=VSYNC)
+    app = Ursina(title='FPS Ursina', borderless=False, development_mode=False)
+    limit_fps()
     window.color = FOG_COLOR
     window.fps_counter.enabled = False
     window.exit_button.visible = False
