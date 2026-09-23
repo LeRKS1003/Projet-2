@@ -55,7 +55,7 @@ PLAYER_RADIUS = 0.5
 ENEMY_RADIUS = 0.35
 EYE_STAND = 1.6     # hauteur des yeux d'un ennemi debout
 EYE_CROUCH = 1.0    # hauteur de la tête d'un ennemi accroupi
-SHADOW_RES = 2048        # 4096 auparavant : aucune différence visible grâce au filtrage PCF
+SHADOW_RES = 1024        # carte d'ombres allégée (4096 puis 2048 auparavant) : ombres un peu plus douces
 VSYNC = '--vsync' in sys.argv   # vsync coupé par défaut : lancer « python fps.py --vsync » pour le réactiver
 
 FOG_COLOR = Color(0.72, 0.79, 0.86, 1)
@@ -756,7 +756,7 @@ class World:
             z = self.rng.uniform(-ARENA + 3, ARENA - 3)
             if 11.5 < z < 17.5:              # pas sur la route
                 continue
-            if abs(x) < 9 and z < -30:       # zone de départ et cibles dégagées
+            if abs(x) < 9 and z < -30:       # zone de départ dégagée
                 continue
             if not self.area_free(x, z, 0.7, 0.7, margin=1.8):
                 continue
@@ -1189,42 +1189,6 @@ def shell_casing(origin, right):
     c.scale = (0.012, 0.012, 0.03)
     FXM.play(c, 0.3, pos=origin + right * random.uniform(0.25, 0.4) + Vec3(0, random.uniform(-0.2, 0.05), 0),
              rot=Vec3(random.uniform(0, 720), random.uniform(0, 720), 0))
-
-
-# ---------------------------------------------------------------------------
-# Cibles d'entraînement
-# ---------------------------------------------------------------------------
-
-class Target(Entity):
-    def __init__(self, game, position, yaw=0):
-        super().__init__(position=position, rotation_y=yaw)
-        self.game = game
-        Entity(parent=self, model='cube', color=rgb(100, 70, 40), scale=(0.1, 1.2, 0.1), y=0.6, shader=LIT)
-        Entity(parent=self, model='cube', color=rgb(90, 90, 95), scale=(0.6, 0.08, 0.6), y=0.04, shader=LIT)
-        self.board = Entity(parent=self, y=1.2)
-        Entity(parent=self.board, model='cube', color=rgb(120, 85, 50), scale=(0.95, 0.95, 0.04), y=0.5, z=0.03,
-               shader=LIT)
-        rings = [(0.9, color.white), (0.7, rgb(210, 30, 30)), (0.5, color.white), (0.3, rgb(210, 30, 30)),
-                 (0.12, color.white)]
-        for k, (s, c) in enumerate(rings):
-            Entity(parent=self.board, model='circle', color=c, scale=s, y=0.5, z=-0.03 - k * 0.012,
-                   unlit=True, double_sided=True)
-        self.hitbox = Entity(parent=self.board, model='cube', scale=(0.9, 0.9, 0.05), y=0.5,
-                             collider='box', visible=False)
-        self.hitbox.target = self
-        self.is_down = False
-
-    def hit(self):
-        if self.is_down:
-            return
-        self.is_down = True
-        self.game.add_score(10, 'Cible +10')
-        self.board.animate_rotation_x(-90, duration=0.2)
-        invoke(self.reset, delay=3)
-
-    def reset(self):
-        self.board.animate_rotation_x(0, duration=0.3)
-        self.is_down = False
 
 
 # ---------------------------------------------------------------------------
@@ -2499,10 +2463,6 @@ class Player(Entity):
                 dmg = w['dmg'].get(zone, 25)
                 owner.take_hit(dmg, zone, hit.world_point)
                 self.game.hud.hitmarker(zone == 'head' or owner.dead)
-            elif hasattr(ent, 'target'):
-                ent.target.hit()
-                impact(hit.world_point, hit.world_normal, rgb(40, 40, 40))
-                self.game.hud.hitmarker(False)
             else:
                 impact(hit.world_point, hit.world_normal)
         for e in self.game.enemies:        # les ennemis entendent le tir
@@ -2726,8 +2686,6 @@ class Game(Entity):
 
         self.player = Player(self)
         self.hud = HUD(self)
-        for x in (-6, -3, 0, 3, 6):
-            Target(self, Vec3(x, 0, -35))
         self.set_quality(True)
         self.show_weapon_menu()
 
@@ -2763,7 +2721,7 @@ class Game(Entity):
         self.player.set_weapon(key)
         mouse.locked = True
         self.hud.message('Éliminez les ennemis !', 4,
-                         f"Arme : {WEAPONS[key]['name']} — les cibles devant vous servent à s'entraîner")
+                         f"Arme : {WEAPONS[key]['name']}")
         invoke(self.next_wave, delay=2)
 
     def fit_shadows(self):
