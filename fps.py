@@ -4,12 +4,19 @@ Petit FPS avec Ursina — ennemis humanoïdes dotés d'une IA tactique qui progr
 Lancement :  python fps.py            (vsync coupé : FPS non plafonnés)
              python fps.py --vsync    (vsync activé : FPS calés sur l'écran, pas de déchirure)
 
+Au lancement : choix de l'arme (clic sur le menu, ou touches 1 / 2)
+    1 : fusil d'assaut (tir automatique, viseur point rouge)
+    2 : sniper (un tir par clic, gros dégâts, lunette zoom x2)
+
 Commandes (clavier AZERTY) :
-    Z Q S D / flèches  : se déplacer
-    Maj                : courir
+    E / flèche haut    : avancer
+    S / flèche bas     : reculer
+    Q / flèche gauche  : aller à gauche
+    D / flèche droite  : aller à droite
+    Z (ou Maj)         : courir
     Espace             : sauter
-    Clic gauche ou P   : tirer (maintenir pour le tir automatique)
-    Clic droit         : viser (zoom avec le viseur point rouge)
+    Clic gauche ou P   : tirer (fusil : maintenir pour le tir automatique)
+    Clic droit         : viser (point rouge / lunette du sniper)
     R                  : recharger
     G                  : qualité graphique (post-traitement + herbe) on/off
     Échap              : pause (X pour quitter pendant la pause)
@@ -33,7 +40,7 @@ import random
 import sys
 
 from ursina import (
-    Ursina, Entity, Text, Sky, DirectionalLight, Vec2, Vec3, Mesh, Shader, Quad,
+    Ursina, Entity, Text, Sky, DirectionalLight, Vec2, Vec3, Mesh, Shader, Quad, Button, Texture,
     camera, color, mouse, held_keys, time, window, application, raycast,
     destroy, invoke, clamp, lerp, scene,
 )
@@ -1120,15 +1127,17 @@ def tracer(start, end, col=color.yellow, thickness=0.025, life=0.06):
     FXM.play(e, life)
 
 
-def muzzle_flash(parent, pos=(0, 0, 0), scale=0.25):
+def muzzle_flash(parent, pos=(0, 0, 0), scale=0.25, intensity=1.0, life=0.05):
+    """intensity : opacité du flash (1 = plein éclat) ; life : durée en secondes."""
+    a = int(255 * clamp(intensity, 0, 1))
     for k in range(2):
         f = FXM.get('quad', 'circle', parent)
-        f.color = rgb(255, 215, 120) if k else rgb(255, 250, 220)
+        f.color = rgb(255, 215, 120, a) if k else rgb(255, 250, 220, a)
         f.position = pos
         f.scale = scale * (1 if k else 0.5)
         f.billboard = True
         f.rotation_z = random.uniform(0, 90)
-        FXM.play(f, 0.05)
+        FXM.play(f, life)
 
 
 _impacts = []
@@ -2204,14 +2213,41 @@ class Enemy(Entity):
 
 
 # ---------------------------------------------------------------------------
+# Armes du joueur
+# ---------------------------------------------------------------------------
+
+SNIPER_ZOOM = 2.0     # grossissement de la lunette par rapport à la vue normale (90°)
+
+WEAPONS = {
+    'rifle': dict(
+        name="Fusil d'assaut", short='FUSIL', auto=True, cooldown=0.1, mag=30, reload=1.6,
+        dmg={'head': 250, 'body': 34, 'limb': 22, 'gun': 15},
+        spread=0.004, move_spread=0.02, ads_spread=0.25, kick=0.35,
+        ads_fov=52, ads_sens=0.55, scope=False,
+        flash=0.45 * 0.5, flash_intensity=0.5, flash_life=0.05 * 0.5,      # flash réduit de 50 %
+        tracer=(0.015, 0.04),
+        hip=Vec3(0.15, -0.14, 0.2), ads=Vec3(0, -0.16 * 0.42, 0.17),        # le point rouge au centre
+    ),
+    'sniper': dict(
+        name='Sniper', short='SNIPER', auto=False, cooldown=1.25, mag=5, reload=2.6,
+        dmg={'head': 500, 'body': 160, 'limb': 95, 'gun': 40},
+        spread=0.035, move_spread=0.04, ads_spread=0.02, kick=2.6,
+        ads_fov=math.degrees(2 * math.atan(math.tan(math.radians(45)) / SNIPER_ZOOM)),   # zoom x2
+        ads_sens=0.45, scope=True,
+        flash=0.7 * 0.5, flash_intensity=0.5, flash_life=0.06 * 0.5,
+        tracer=(0.03, 0.09),
+        hip=Vec3(0.15, -0.15, 0.2), ads=Vec3(0, -0.1, 0.12),
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
 # Joueur
 # ---------------------------------------------------------------------------
 
 class Player(Entity):
     GUN_SCALE = 0.42
     DOT = Vec3(0, 0.16, 0.1)                     # point rouge (repère local de l'arme)
-    HIP_POS = Vec3(0.15, -0.14, 0.2)
-    ADS_POS = Vec3(0, -0.16 * 0.42, 0.17)       # le point rouge tombe au centre de l'écran
 
     def __init__(self, game):
         super().__init__(position=(0, 0, -40))
@@ -2230,7 +2266,10 @@ class Player(Entity):
         self.grounded = True
         self.hp = 100
         self.dead = False
-        self.mag = 30
+        self.weapon = WEAPONS['rifle']
+        self.mag = self.weapon['mag']
+        self.armed = False          # il faut relâcher la détente avant le premier tir (clic du menu)
+        self.trigger_ready = False  # sniper : un tir par pression
         self.reload_t = 0
         self.cooldown = 0
         self.last_hurt = -99
@@ -2248,8 +2287,49 @@ class Player(Entity):
     def eye(self):
         return self.position + Vec3(0, 1.65, 0)
 
+    def set_weapon(self, key):
+        self.weapon = WEAPONS[key]
+        destroy(self.gun)
+        self.build_gun()
+        self.mag = self.weapon['mag']
+        self.reload_t = 0
+        self.cooldown = 0.3
+        self.armed = False
+        self.trigger_ready = False
+
     def build_gun(self):
-        self.gun = Entity(parent=camera, position=self.HIP_POS, scale=self.GUN_SCALE)
+        if self.weapon['scope']:
+            self.build_sniper()
+        else:
+            self.build_rifle()
+
+    def build_sniper(self):
+        self.gun = Entity(parent=camera, position=self.weapon['hip'], scale=self.GUN_SCALE)
+        dark = rgb(34, 36, 38)
+        mid = rgb(58, 60, 64)
+        wood = rgb(95, 70, 45)
+
+        def p(pos, sc, col):
+            return Entity(parent=self.gun, model='cube', color=col, position=pos, scale=sc, shader=LIT)
+        p((0, 0, 0), (0.08, 0.1, 0.5), dark)                    # boîtier
+        p((0, -0.01, -0.45), (0.075, 0.16, 0.42), wood)         # crosse
+        p((0, 0.0, 0.42), (0.07, 0.08, 0.4), wood)              # fût
+        p((0, 0.02, 0.95), (0.03, 0.03, 0.75), dark)            # long canon
+        p((0, 0.02, 1.34), (0.045, 0.045, 0.08), mid)           # frein de bouche
+        p((0, -0.1, 0.05), (0.06, 0.1, 0.09), mid)              # petit chargeur
+        p((0, -0.1, -0.13), (0.055, 0.14, 0.07), dark)          # poignée
+        p((0.06, 0.03, -0.05), (0.06, 0.02, 0.02), mid)         # levier de culasse
+        # lunette
+        p((0, 0.09, 0.02), (0.04, 0.04, 0.12), dark)            # montage
+        p((0, 0.14, 0.05), (0.07, 0.07, 0.42), dark)            # tube
+        p((0, 0.14, 0.28), (0.09, 0.09, 0.07), mid)             # objectif
+        p((0, 0.14, -0.18), (0.085, 0.085, 0.06), mid)          # oculaire
+        self.dot = None
+        self.muzzle = Entity(parent=self.gun, z=1.4, y=0.02)
+        self.eject = Entity(parent=self.gun, x=0.05, y=0.03, z=0.02)
+
+    def build_rifle(self):
+        self.gun = Entity(parent=camera, position=self.weapon['hip'], scale=self.GUN_SCALE)
         dark = rgb(38, 38, 42)
         mid = rgb(60, 62, 66)
         tan = rgb(150, 125, 90)
@@ -2270,7 +2350,7 @@ class Player(Entity):
         p((-0.035, 0.16, 0.08), (0.01, 0.1, 0.05), dark)
         p((0, 0.215, 0.08), (0.08, 0.012, 0.05), dark)
         self.dot = Entity(parent=self.gun, model='quad', texture='circle', color=rgb(255, 40, 40),
-                          position=self.DOT, scale=0.012, unlit=True)
+                          position=self.DOT, scale=0.006, unlit=True)      # point rouge réduit de 50 %
         self.muzzle = Entity(parent=self.gun, z=0.82, y=0.03)
         self.eject = Entity(parent=self.gun, x=0.05, y=0.03, z=0.05)
 
@@ -2287,26 +2367,27 @@ class Player(Entity):
             self.game.game_over()
 
     def update(self):
-        if self.game.paused or self.dead:
+        if self.game.paused or self.dead or self.game.choosing:
             return
         dt = time.dt
+        w = self.weapon
         aiming = held_keys['right mouse'] and self.reload_t <= 0 and not self.sprinting
         self.ads = lerp(self.ads, 1.0 if aiming else 0.0, min(1, dt * 14))
 
         # regard à la souris (plus précis en visée)
         if mouse.locked:
-            sens = lerp(1.0, 0.55, self.ads)
+            sens = lerp(1.0, w['ads_sens'], self.ads)
             self.rotation_y += mouse.velocity[0] * self.sensitivity[1] * sens
             self.pivot.rotation_x -= mouse.velocity[1] * self.sensitivity[0] * sens
             self.pivot.rotation_x = clamp(self.pivot.rotation_x, -89, 89)
 
-        # déplacement ZQSD (+ flèches)
-        fwd = held_keys['z'] + held_keys['up arrow'] - held_keys['s'] - held_keys['down arrow']
-        side = held_keys['d'] + held_keys['right arrow'] - held_keys['q'] - held_keys['left arrow']
+        # déplacement : E avancer, S reculer, Q gauche, D droite (+ flèches) ; Z pour courir
+        fwd = clamp(held_keys['e'] + held_keys['up arrow'], 0, 1) - clamp(held_keys['s'] + held_keys['down arrow'], 0, 1)
+        side = clamp(held_keys['d'] + held_keys['right arrow'], 0, 1) - clamp(held_keys['q'] + held_keys['left arrow'], 0, 1)
         direction = flat(self.forward) * fwd + flat(self.right) * side
         if direction.length() > 0:
             direction = direction.normalized()
-        self.sprinting = bool(held_keys['shift']) and fwd > 0 and self.ads < 0.3
+        self.sprinting = bool(held_keys['z'] or held_keys['shift']) and fwd > 0 and self.ads < 0.3
         speed = (9 if self.sprinting else 5.5) * lerp(1, 0.6, self.ads)
         accel = 12 if self.grounded else 3
         self.vel = lerp(self.vel, direction * speed, min(1, dt * accel))
@@ -2332,7 +2413,7 @@ class Player(Entity):
             self.hp = min(100, self.hp + 8 * dt)
 
         # caméra : zoom, balancement de tête, secousses
-        camera.fov = lerp(90, 52, self.ads)
+        camera.fov = lerp(90, w['ads_fov'], self.ads)
         move = min(1, self.speed_now / 5) if self.grounded else 0
         self.bob_t += dt * (13 if self.sprinting else 9) * move
         self.land_dip = max(0, self.land_dip - dt * 0.5)
@@ -2351,23 +2432,32 @@ class Player(Entity):
             self.recoil_pitch -= back
             self.pivot.rotation_x += back
         sway = Vec3(math.sin(self.bob_t) * 0.012, abs(math.cos(self.bob_t)) * 0.01, 0) * move * (1 - self.ads * 0.85)
-        base = lerp(self.HIP_POS, self.ADS_POS, self.ads)
+        base = lerp(w['hip'], w['ads'], self.ads)
         if self.sprinting:
             base += Vec3(0.02, -0.03, -0.03)
         self.gun.position = base + sway + Vec3(0, -self.recoil * 0.012, -self.recoil * 0.05)
         self.gun.rotation = Vec3(-self.recoil * 5 * (1 - 0.6 * self.ads), 18 if self.sprinting else 0, 0)
-        self.dot.visible = self.ads > 0.6
+        if self.dot is not None:
+            self.dot.visible = self.ads > 0.6
+        scoped = w['scope'] and self.ads > 0.85
+        self.gun.visible = not scoped                 # dans la lunette, on ne voit plus l'arme
+        self.game.hud.scope_visible(scoped)
         self.game.hud.crosshair_visible(self.ads < 0.5)
 
+        trigger = held_keys['left mouse'] or held_keys['p']
+        if not trigger:
+            self.armed = True
+            self.trigger_ready = True
         self.cooldown -= dt
         if self.reload_t > 0:
             self.reload_t -= dt
-            k = math.sin(clamp(self.reload_t / 1.6, 0, 1) * math.pi)
+            k = math.sin(clamp(self.reload_t / w['reload'], 0, 1) * math.pi)
             self.gun.rotation_x = 30 * k
             self.gun.rotation_z = 20 * k
             if self.reload_t <= 0:
-                self.mag = 30
-        elif (held_keys['left mouse'] or held_keys['p']) and self.cooldown <= 0 and mouse.locked:
+                self.mag = w['mag']
+        elif trigger and self.armed and (w['auto'] or self.trigger_ready) and self.cooldown <= 0 and mouse.locked:
+            self.trigger_ready = False               # sniper : relâcher pour tirer à nouveau
             self.shoot()
 
     def jump(self):
@@ -2376,26 +2466,28 @@ class Player(Entity):
             self.grounded = False
 
     def reload(self):
-        if self.reload_t <= 0 and self.mag < 30:
-            self.reload_t = 1.6
+        if self.reload_t <= 0 and self.mag < self.weapon['mag']:
+            self.reload_t = self.weapon['reload']
 
     def shoot(self):
         if self.mag <= 0:
             self.reload()
             return
+        w = self.weapon
         self.mag -= 1
-        self.cooldown = 0.1
-        self.recoil = min(1.5, self.recoil + 0.5)
-        muzzle_flash(self.muzzle, scale=0.45)
+        self.cooldown = w['cooldown']
+        self.recoil = min(1.5, self.recoil + (1.2 if w['scope'] else 0.5))
+        muzzle_flash(self.muzzle, scale=w['flash'], intensity=w['flash_intensity'], life=w['flash_life'])
         shell_casing(self.eject.world_position, camera.right)
-        spread = (0.004 + 0.02 * min(1, self.speed_now / 9) + (0.02 if not self.grounded else 0)) * lerp(1, 0.25, self.ads)
+        spread = (w['spread'] + w['move_spread'] * min(1, self.speed_now / 9) + (0.02 if not self.grounded else 0)) \
+            * lerp(1, w['ads_spread'], self.ads)
         d = camera.forward + camera.right * random.uniform(-spread, spread) + camera.up * random.uniform(-spread, spread)
         d = d.normalized()
         origin = camera.world_position
         hit = raycast(origin, d, 200, ignore=[self])
         end = hit.world_point if hit.hit else origin + d * 200
-        tracer(self.muzzle.world_position, end, rgb(255, 240, 160), thickness=0.015, life=0.04)
-        kick = 0.35 * lerp(1, 0.6, self.ads)
+        tracer(self.muzzle.world_position, end, rgb(255, 240, 160), thickness=w['tracer'][0], life=w['tracer'][1])
+        kick = w['kick'] * lerp(1, 0.6, self.ads)
         self.pivot.rotation_x -= kick
         self.recoil_pitch = min(self.recoil_pitch + kick * 0.8, 6)
         self.rotation_y += random.uniform(-0.15, 0.15)
@@ -2404,7 +2496,7 @@ class Player(Entity):
             owner = getattr(ent, 'owner', None)
             if isinstance(owner, Enemy):
                 zone = ent.zone
-                dmg = {'head': 250, 'body': 34, 'limb': 22, 'gun': 15}.get(zone, 25)
+                dmg = w['dmg'].get(zone, 25)
                 owner.take_hit(dmg, zone, hit.world_point)
                 self.game.hud.hitmarker(zone == 'head' or owner.dead)
             elif hasattr(ent, 'target'):
@@ -2421,6 +2513,13 @@ class Player(Entity):
 # ---------------------------------------------------------------------------
 # Interface
 # ---------------------------------------------------------------------------
+
+CONTROLS_LINE = ('E/S/Q/D ou flèches bouger · Z courir · Espace sauter · Clic gauche/P tirer'
+                 ' · Clic droit viser · R recharger · G graphismes · Échap pause')
+CONTROLS_PAUSE = ('E avancer   ·   S reculer   ·   Q gauche   ·   D droite   ·   flèches : se déplacer\n'
+                  'Z courir   ·   Espace sauter   ·   Clic gauche ou P tirer   ·   Clic droit viser\n'
+                  'R recharger   ·   G graphismes\n\n'
+                  'Échap : reprendre    ·    X : quitter')
 
 class HUD:
     def __init__(self, game):
@@ -2452,8 +2551,14 @@ class HUD:
                              position=(-ar + 0.05, -0.455, -0.01), scale=(0.4, 0.022))
         self.hp_text = Text(parent=ui, text='', position=(-ar + 0.05, -0.415), scale=1)
         self.ammo = Text(parent=ui, text='', origin=(0.5, 0), position=(ar - 0.05, -0.445), scale=1.8)
-        Text(parent=ui, text='MUNITIONS', origin=(0.5, 0), position=(ar - 0.05, -0.4), scale=0.75,
-             color=color.rgba(1, 1, 1, 0.6))
+        self.ammo_lbl = Text(parent=ui, text='MUNITIONS', origin=(0.5, 0), position=(ar - 0.05, -0.4), scale=0.75,
+                             color=color.rgba(1, 1, 1, 0.6))
+        # lunette du sniper : cache noir avec un trou rond et un réticule
+        self.scope = Entity(parent=ui, z=0.8, enabled=False)
+        Entity(parent=self.scope, model='quad', texture=self.scope_texture(), scale=1)
+        side = ar - 0.5 + 0.05
+        for sgn in (-1, 1):
+            Entity(parent=self.scope, model='quad', color=color.black, scale=(side, 1.02), x=sgn * (0.5 + side / 2 - 0.001))
         self.info = Text(parent=ui, text='', position=(-ar + 0.04, 0.477), scale=1)
         self.msg = Text(parent=ui, text='', origin=(0, 0), y=0.17, scale=2, color=color.white)
         self.sub_msg = Text(parent=ui, text='', origin=(0, 0), y=0.1, scale=1.1, color=color.rgba(1, 1, 1, 0.85))
@@ -2470,9 +2575,35 @@ class HUD:
         self.feed_lines = []
         self._fps_frames = 0
         self._fps_time = 0.0
-        Text(parent=ui, text='ZQSD bouger · Maj courir · Espace sauter · Clic gauche/P tirer · Clic droit viser'
-                             ' · R recharger · G graphismes · Échap pause',
+        Text(parent=ui, text=CONTROLS_LINE,
              origin=(0, 0), position=(0, -0.475), scale=0.7, color=color.rgba(1, 1, 1, 0.55))
+
+    @staticmethod
+    def scope_texture(size=1024):
+        """Réticule de lunette dessiné une fois (noir autour, transparent dans le cercle)."""
+        from PIL import Image, ImageDraw
+        img = Image.new('RGBA', (size, size), (0, 0, 0, 255))
+        d = ImageDraw.Draw(img)
+        c, r = size // 2, int(size * 0.48)
+        d.ellipse((c - r, c - r, c + r, c + r), fill=(0, 0, 0, 0))
+        d.ellipse((c - r, c - r, c + r, c + r), outline=(0, 0, 0, 255), width=int(size * 0.012))
+        t = 2                                                    # fil fin au centre
+        d.rectangle((c - r, c - t // 2, c + r, c + t // 2), fill=(0, 0, 0, 255))
+        d.rectangle((c - t // 2, c - r, c + t // 2, c + r), fill=(0, 0, 0, 255))
+        g, T = int(size * 0.12), int(size * 0.012)               # montants épais vers le bord
+        d.rectangle((c - r, c - T, c - g, c + T), fill=(0, 0, 0, 255))
+        d.rectangle((c + g, c - T, c + r, c + T), fill=(0, 0, 0, 255))
+        d.rectangle((c - T, c + g, c + T, c + r), fill=(0, 0, 0, 255))
+        for k in range(1, 5):                                    # graduations
+            o = int(size * 0.022 * k)
+            for x, y in ((c + o, c), (c - o, c), (c, c + o)):
+                d.ellipse((x - 3, y - 3, x + 3, y + 3), fill=(0, 0, 0, 255))
+        d.ellipse((c - 3, c - 3, c + 3, c + 3), fill=(230, 30, 30, 255))   # point central rouge
+        return Texture(img)
+
+    def scope_visible(self, v):
+        if self.scope.enabled != v:
+            self.scope.enabled = v
 
     def crosshair_visible(self, v):
         if getattr(self, '_cross_on', None) is v:
@@ -2493,7 +2624,8 @@ class HUD:
         self.hp_bar.scale_x = 0.4 * max(0, p.hp) / 100
         self.hp_bar.color = rgb(80, 220, 90) if p.hp > 50 else (color.orange if p.hp > 25 else color.red)
         self.set_text(self.hp_text, f'SANTÉ  {int(p.hp)}')
-        self.set_text(self.ammo, '...' if p.reload_t > 0 else f'{p.mag} / 30')
+        self.set_text(self.ammo, '...' if p.reload_t > 0 else f"{p.mag} / {p.weapon['mag']}")
+        self.set_text(self.ammo_lbl, f"MUNITIONS · {p.weapon['short']}")
         alive = sum(1 for e in g.enemies if not e.dead)
         tier = TIERS[g.tier_index()]['name']
         self.set_text(self.info, f'Vague {g.wave}   ·   {tier} (IA niv. {max(g.wave, 1)})   ·   Ennemis {alive}'
@@ -2581,6 +2713,7 @@ class Game(Entity):
         self.grenades = []
         self.last_grenade = -99
         self.high_quality = True
+        self.choosing = True        # menu de choix d'arme affiché
 
         global FXM
         FXM = FX()
@@ -2595,10 +2728,42 @@ class Game(Entity):
         self.hud = HUD(self)
         for x in (-6, -3, 0, 3, 6):
             Target(self, Vec3(x, 0, -35))
-        mouse.locked = True
         self.set_quality(True)
+        self.show_weapon_menu()
+
+    # -- menu de choix d'arme ------------------------------------------------
+    def show_weapon_menu(self):
+        mouse.locked = False
+        ui = camera.ui
+        self.menu = Entity(parent=ui, z=-0.5)
+        Entity(parent=self.menu, model=Quad(radius=0.03), color=color.rgba(0, 0, 0, 0.72), scale=(1.1, 0.62), z=0.01)
+        Text(parent=self.menu, text='CHOISISSEZ VOTRE ARME', origin=(0, 0), y=0.24, scale=2)
+        choices = [
+            ('rifle', "1  —  Fusil d'assaut",
+             'Tir automatique · 30 balles · viseur point rouge'),
+            ('sniper', '2  —  Sniper',
+             'Un tir par clic · gros dégâts · 5 balles · lunette zoom x2'),
+        ]
+        for k, (key, title, desc) in enumerate(choices):
+            y = 0.07 - k * 0.19
+            b = Button(parent=self.menu, text='', scale=(0.9, 0.15), y=y, radius=0.08,
+                       color=color.rgba(0.2, 0.25, 0.3, 0.95), highlight_color=color.rgba(0.3, 0.45, 0.55, 1))
+            b.on_click = (lambda k=key: self.choose_weapon(k))
+            Text(parent=self.menu, text=title, origin=(0, 0), y=y + 0.025, scale=1.5, z=-0.02)
+            Text(parent=self.menu, text=desc, origin=(0, 0), y=y - 0.035, scale=0.95, z=-0.02,
+                 color=color.rgba(1, 1, 1, 0.75))
+        Text(parent=self.menu, text='Cliquez sur une arme ou appuyez sur 1 / 2', origin=(0, 0), y=-0.26,
+             scale=0.9, color=color.rgba(1, 1, 1, 0.6))
+
+    def choose_weapon(self, key):
+        if not self.choosing:
+            return
+        self.choosing = False
+        destroy(self.menu)
+        self.player.set_weapon(key)
+        mouse.locked = True
         self.hud.message('Éliminez les ennemis !', 4,
-                         "Les cibles devant vous servent à s'entraîner — clic droit pour viser")
+                         f"Arme : {WEAPONS[key]['name']} — les cibles devant vous servent à s'entraîner")
         invoke(self.next_wave, delay=2)
 
     def fit_shadows(self):
@@ -2712,7 +2877,8 @@ class Game(Entity):
         p.rotation_y = 0
         p.pivot.position = (0, 1.65, 0)
         p.pivot.rotation = (0, 0, 0)
-        p.hp, p.dead, p.mag, p.reload_t, p.vel, p.vy = 100, False, 30, 0, Vec3(0, 0, 0), 0
+        p.hp, p.dead, p.mag, p.reload_t, p.vel, p.vy = 100, False, p.weapon['mag'], 0, Vec3(0, 0, 0), 0
+        p.armed = False
         self.over = False
         self.score = self.kills = self.wave = 0
         self.hud.msg.text = ''
@@ -2724,7 +2890,7 @@ class Game(Entity):
         mouse.locked = not self.paused
         if self.paused:
             application.pause()
-            self.hud.message('PAUSE', 0, 'Échap : reprendre    ·    X : quitter    ·    G : graphismes')
+            self.hud.message('PAUSE', 0, CONTROLS_PAUSE)
         else:
             application.resume()
             self.hud.msg.text = ''
@@ -2736,6 +2902,12 @@ class Game(Entity):
         self.hud.update()
 
     def input(self, key):
+        if self.choosing:
+            if key in ('1', '2'):
+                self.choose_weapon('rifle' if key == '1' else 'sniper')
+            elif key == 'g':
+                self.set_quality(not self.high_quality)
+            return
         if key == 'escape':
             if not self.over:
                 self.toggle_pause()
