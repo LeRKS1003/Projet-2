@@ -5,7 +5,7 @@ Lancement :  python fps.py            (vsync coupé : FPS non plafonnés)
              python fps.py --vsync    (vsync activé : FPS calés sur l'écran, pas de déchirure)
 
 Au lancement : choix de l'arme (clic sur le menu, ou touches 1 / 2)
-    1 : fusil d'assaut (tir automatique, viseur point rouge)
+    1 : fusil d'assaut (tir automatique, viseur point rouge grossissant x1,4 dans la vitre seulement)
     2 : sniper (un tir par clic, gros dégâts, lunette zoom x2)
 
 Commandes (clavier AZERTY) :
@@ -18,7 +18,7 @@ Commandes (clavier AZERTY) :
     Clic gauche ou P   : tirer (fusil : maintenir pour le tir automatique)
     Clic droit         : viser (point rouge / lunette du sniper)
     R                  : recharger
-    G                  : qualité graphique (post-traitement + herbe) on/off
+    G                  : qualité graphique (effets de post-traitement + herbe) on/off
     Échap              : pause (X pour quitter pendant la pause)
     Entrée             : recommencer après la mort
 
@@ -41,10 +41,15 @@ import sys
 
 from ursina import (
     Ursina, Entity, Text, Sky, DirectionalLight, Vec2, Vec3, Mesh, Shader, Quad, Button, Texture,
-    camera, color, mouse, held_keys, time, window, application, raycast,
+    Vec4, camera, color, mouse, held_keys, time, window, application, raycast,
     destroy, invoke, clamp, lerp, scene,
 )
 from ursina.color import Color
+from panda3d.core import loadPrcFileData, Point3, Point2
+
+# Panda3D balaie par défaut tout son cache d'états de rendu à chaque image (~2 ms) ;
+# sans ce balayage, chaque état est libéré dès qu'il ne sert plus.
+loadPrcFileData('', 'garbage-collect-states 0')
 from ursina.collider import Collider
 from panda3d.core import CollisionBox
 
@@ -207,36 +212,50 @@ void main() {
 ''', fragment='''
 #version 150
 uniform sampler2D tex;
+uniform float fx_on;        // 1 = bloom, étalonnage et vignettage ; 0 = image brute
+uniform float zoom;         // grossissement dans la vitre du viseur (1 = aucun)
+uniform vec4 zoom_rect;     // vitre du viseur à l'écran : umin, vmin, umax, vmax
+uniform vec2 zoom_center;   // point visé (centre du grossissement)
 in vec2 uv;
 out vec4 out_color;
 
 void main() {
-    vec2 px = 1.0 / vec2(textureSize(tex, 0));
-    vec3 c = texture(tex, uv).rgb;
+    // loupe : seule la vitre du viseur est grossie, la vision périphérique reste normale
+    vec2 suv = uv;
+    if (zoom > 1.001 && uv.x > zoom_rect.x && uv.x < zoom_rect.z && uv.y > zoom_rect.y && uv.y < zoom_rect.w)
+        suv = zoom_center + (uv - zoom_center) / zoom;
+    vec3 c = texture(tex, suv).rgb;
 
-    // léger bloom sur les zones lumineuses
-    vec3 b = vec3(0.0);
-    // 8 échantillons en spirale (au lieu de 16) : même halo, moitié moins de lectures
-    for (int i = 0; i < 8; i++) {
-        float a = float(i) * 0.785398 + 0.3927;
-        vec2 dir = vec2(cos(a), sin(a));
-        b += max(texture(tex, uv + dir * px * (i % 2 == 0 ? 4.0 : 9.0)).rgb - 0.72, 0.0);
+    if (fx_on > 0.5) {
+        vec2 px = 1.0 / vec2(textureSize(tex, 0));
+        // léger bloom sur les zones lumineuses (8 échantillons en spirale)
+        vec3 b = vec3(0.0);
+        for (int i = 0; i < 8; i++) {
+            float a = float(i) * 0.785398 + 0.3927;
+            vec2 dir = vec2(cos(a), sin(a));
+            b += max(texture(tex, suv + dir * px * (i % 2 == 0 ? 4.0 : 9.0)).rgb - 0.72, 0.0);
+        }
+        c += b * 0.12;
+
+        // étalonnage : saturation, contraste, teinte chaude
+        float l = dot(c, vec3(0.299, 0.587, 0.114));
+        c = mix(vec3(l), c, 1.18);
+        c = (c - 0.5) * 1.07 + 0.5;
+        c *= vec3(1.03, 1.0, 0.96);
+
+        // vignettage
+        vec2 d = uv - 0.5;
+        float v = smoothstep(0.95, 0.30, length(d * vec2(1.0, 0.8)) * 1.25);
+        c *= mix(0.62, 1.0, v);
     }
-    c += b * 0.12;
-
-    // étalonnage : saturation, contraste, teinte chaude
-    float l = dot(c, vec3(0.299, 0.587, 0.114));
-    c = mix(vec3(l), c, 1.18);
-    c = (c - 0.5) * 1.07 + 0.5;
-    c *= vec3(1.03, 1.0, 0.96);
-
-    // vignettage
-    vec2 d = uv - 0.5;
-    float v = smoothstep(0.95, 0.30, length(d * vec2(1.0, 0.8)) * 1.25);
-    c *= mix(0.62, 1.0, v);
     out_color = vec4(clamp(c, 0.0, 1.0), 1.0);
 }
-''')
+''', default_input={
+    'fx_on': 1.0,
+    'zoom': 1.0,
+    'zoom_rect': Vec4(0, 0, 0, 0),
+    'zoom_center': Vec2(0.5, 0.5),
+})
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +301,18 @@ def value_noise(x, z, seed=0):
     return (math.sin(x * 0.11 + seed) * math.cos(z * 0.13 + seed * 1.7)
             + 0.5 * math.sin(x * 0.27 + z * 0.21 + seed * 2.3)
             + 0.25 * math.cos(x * 0.53 - z * 0.47 + seed * 0.7)) / 1.75
+
+
+def mark_static(root, include_root=False):
+    """Ursina parcourt toutes les entités à chaque image pour appeler leur update().
+    Celles qui n'en ont pas (décor, os des ennemis, effets...) sont marquées « ignore » :
+    la boucle les saute immédiatement."""
+    stack = [root] if include_root else list(root.children)
+    while stack:
+        e = stack.pop()
+        if not hasattr(e, 'update') and not hasattr(e, 'input') and not hasattr(e, 'on_click'):
+            e.ignore = True
+        stack.extend(e.children)
 
 
 # ---------------------------------------------------------------------------
@@ -459,6 +490,8 @@ class MeshBuilder:
                 continue
             m = Mesh(vertices=v, triangles=list(range(len(v))), colors=c, uvs=u, normals=n, mode='triangle')
             e = Entity(parent=parent, model=m, texture=texture, shader=LIT, double_sided=double_sided)
+            e.ignore = True
+            e.center = sum(v, Vec3(0, 0, 0)) / len(v)       # sert à masquer l'herbe lointaine
             e.set_shader_input('specular', specular)
             if double_sided and not cast_shadows:
                 e.set_shader_input('flip_backface', 0.0)   # herbe : même éclairage des deux côtés
@@ -508,6 +541,7 @@ class World:
         self.build_nav()
         self.build_cover()
         self.grass = self.build_grass()
+        mark_static(self.level)
 
     # -- collisions pour le décor --------------------------------------------
     def add_box(self, cx, cz, sx, sz, h, collider=True):
@@ -1046,6 +1080,7 @@ class FX(Entity):
             e.enabled = True
         else:
             e = Entity(model=model, texture=texture, unlit=True)
+            e.ignore = True
             e.pool_key = (model, texture)
         e.parent = parent if parent is not None else scene
         e.rotation = (0, 0, 0)
@@ -1093,12 +1128,13 @@ class FX(Entity):
             if k >= 1:
                 self.release(e)
                 continue
+            # setters Panda3D directs : bien plus rapides que les propriétés Ursina
             if fx[4] is not None:
-                e.position = lerp(fx[3], fx[4], k)
+                e.setPos(fx[3] + (fx[4] - fx[3]) * k)
             if fx[6] is not None:
-                e.scale = lerp(fx[5], fx[6], k)
+                e.setScale(fx[5] + (fx[6] - fx[5]) * k)
             if fx[8] is not None:
-                e.color = lerp(fx[7], fx[8], k)
+                e.setColorScale(fx[7] + (fx[8] - fx[7]) * k)
             if fx[10] is not None:
                 e.rotation = lerp(fx[9], fx[10], k)
             keep.append(fx)
@@ -1151,6 +1187,7 @@ def impact(point, normal=None, col=rgb(40, 35, 30)):
         e.look_at(point - normal)
     else:
         e.billboard = True
+    e.ignore = True
     _impacts.append(e)
     if len(_impacts) > 80:
         destroy(_impacts.pop(0))
@@ -1362,6 +1399,7 @@ class Enemy(Entity):
         self.build_body()
         self.icon = Text(parent=self, text='', y=2.3, scale=18, billboard=True,
                          origin=(0, 0), color=color.yellow)
+        mark_static(self)        # os, arme, icône : rien à mettre à jour image par image
 
     # -- corps articulé ----------------------------------------------------
     def part(self, bone, pos, scale, col, zone, collide=True, lit=True):
@@ -1536,10 +1574,18 @@ class Enemy(Entity):
         threat = self.threat_eye()
         tpos = flat(threat)
         best, best_score = None, -1e9
-        candidates = [c for c in self.world.covers
-                      if (c.owner is None or c.owner is self)
-                      and flat_dist(c.pos, self.position) < (30 if far else 22)]
-        candidates.sort(key=lambda c: flat_dist(c.pos, self.position))
+        sx, sz = self.x, self.z
+        r2 = (30 if far else 22) ** 2
+        near = []
+        for c in self.world.covers:      # distances au carré, sans créer d'objets
+            if c.owner is not None and c.owner is not self:
+                continue
+            dx, dz = c.pos.x - sx, c.pos.z - sz
+            d2 = dx * dx + dz * dz
+            if d2 < r2:
+                near.append((d2, c))
+        near.sort(key=lambda t: t[0])
+        candidates = [c for _, c in near]
         others = [e.position for e in self.game.enemies if e is not self and not e.dead]
         ideal = 14 - 3 * self.skill
         for c in candidates[:50]:
@@ -2187,17 +2233,18 @@ WEAPONS = {
         name="Fusil d'assaut", short='FUSIL', auto=True, cooldown=0.1, mag=30, reload=1.6,
         dmg={'head': 250, 'body': 34, 'limb': 22, 'gun': 15},
         spread=0.004, move_spread=0.02, ads_spread=0.25, kick=0.35,
-        ads_fov=52, ads_sens=0.55, scope=False,
+        ads_fov=90, ads_sens=0.8, scope=False,
+        sight_zoom=1.4,        # grossissement uniquement dans la vitre du viseur point rouge
         flash=0.45 * 0.5, flash_intensity=0.5, flash_life=0.05 * 0.5,      # flash réduit de 50 %
         tracer=(0.015, 0.04),
-        hip=Vec3(0.15, -0.14, 0.2), ads=Vec3(0, -0.16 * 0.42, 0.17),        # le point rouge au centre
+        hip=Vec3(0.15, -0.14, 0.2), ads=Vec3(0, -0.1675 * 0.42, 0.09),      # le point rouge au centre
     ),
     'sniper': dict(
         name='Sniper', short='SNIPER', auto=False, cooldown=1.25, mag=5, reload=2.6,
         dmg={'head': 500, 'body': 160, 'limb': 95, 'gun': 40},
         spread=0.035, move_spread=0.04, ads_spread=0.02, kick=2.6,
         ads_fov=math.degrees(2 * math.atan(math.tan(math.radians(45)) / SNIPER_ZOOM)),   # zoom x2
-        ads_sens=0.45, scope=True,
+        ads_sens=0.45, scope=True, sight_zoom=1.0,
         flash=0.7 * 0.5, flash_intensity=0.5, flash_life=0.06 * 0.5,
         tracer=(0.03, 0.09),
         hip=Vec3(0.15, -0.15, 0.2), ads=Vec3(0, -0.1, 0.12),
@@ -2211,7 +2258,8 @@ WEAPONS = {
 
 class Player(Entity):
     GUN_SCALE = 0.42
-    DOT = Vec3(0, 0.16, 0.1)                     # point rouge (repère local de l'arme)
+    DOT = Vec3(0, 0.1675, 0.08)                  # point rouge (repère local de l'arme), centre de la vitre
+    SIGHT = ((-0.059, 0.11), (0.059, 0.225))     # coins intérieurs de la vitre (repère local)
 
     def __init__(self, game):
         super().__init__(position=(0, 0, -40))
@@ -2245,6 +2293,7 @@ class Player(Entity):
         self.shake = 0.0
         self.bob_t = 0.0
         self.land_dip = 0.0
+        self._zoom_on = False
         self.build_gun()
 
     @property
@@ -2289,6 +2338,7 @@ class Player(Entity):
         p((0, 0.14, 0.28), (0.09, 0.09, 0.07), mid)             # objectif
         p((0, 0.14, -0.18), (0.085, 0.085, 0.06), mid)          # oculaire
         self.dot = None
+        self.sight_corners = []
         self.muzzle = Entity(parent=self.gun, z=1.4, y=0.02)
         self.eject = Entity(parent=self.gun, x=0.05, y=0.03, z=0.02)
 
@@ -2308,11 +2358,14 @@ class Player(Entity):
         p((0, -0.1, -0.1), (0.06, 0.15, 0.07), dark)             # poignée
         p((0, -0.02, -0.38), (0.07, 0.13, 0.25), tan)            # crosse
         p((0, 0.075, 0.05), (0.03, 0.03, 0.4), mid)              # rail
-        # viseur point rouge
-        p((0, 0.1, 0.08), (0.07, 0.02, 0.1), dark)
-        p((0.035, 0.16, 0.08), (0.01, 0.1, 0.05), dark)
-        p((-0.035, 0.16, 0.08), (0.01, 0.1, 0.05), dark)
-        p((0, 0.215, 0.08), (0.08, 0.012, 0.05), dark)
+        # viseur point rouge : cadre autour d'une vitre (grossie x1,4 en visée)
+        p((0, 0.1, 0.08), (0.14, 0.02, 0.1), dark)               # socle
+        p((0.065, 0.165, 0.08), (0.012, 0.13, 0.02), dark)       # montants (cadre fin)
+        p((-0.065, 0.165, 0.08), (0.012, 0.13, 0.02), dark)
+        p((0, 0.232, 0.08), (0.142, 0.014, 0.02), dark)          # dessus
+        (x0, y0), (x1, y1) = self.SIGHT
+        self.sight_corners = [Entity(parent=self.gun, position=(x, y, 0.09))
+                              for x in (x0, x1) for y in (y0, y1)]
         self.dot = Entity(parent=self.gun, model='quad', texture='circle', color=rgb(255, 40, 40),
                           position=self.DOT, scale=0.006, unlit=True)      # point rouge réduit de 50 %
         self.muzzle = Entity(parent=self.gun, z=0.82, y=0.03)
@@ -2403,6 +2456,7 @@ class Player(Entity):
         self.gun.rotation = Vec3(-self.recoil * 5 * (1 - 0.6 * self.ads), 18 if self.sprinting else 0, 0)
         if self.dot is not None:
             self.dot.visible = self.ads > 0.6
+        self.update_sight_zoom()
         scoped = w['scope'] and self.ads > 0.85
         self.gun.visible = not scoped                 # dans la lunette, on ne voit plus l'arme
         self.game.hud.scope_visible(scoped)
@@ -2423,6 +2477,31 @@ class Player(Entity):
         elif trigger and self.armed and (w['auto'] or self.trigger_ready) and self.cooldown <= 0 and mouse.locked:
             self.trigger_ready = False               # sniper : relâcher pour tirer à nouveau
             self.shoot()
+
+    def update_sight_zoom(self):
+        """Grossissement limité à la vitre du viseur : on projette ses coins à l'écran
+        et le shader de caméra agrandit l'image seulement dans ce rectangle."""
+        z = self.weapon['sight_zoom']
+        k = smoothstep((self.ads - 0.75) / 0.2) if z > 1 and self.reload_t <= 0 else 0
+        if k <= 0:
+            if self._zoom_on:
+                camera.set_shader_input('zoom', 1.0)
+                self._zoom_on = False
+            return
+        cam = application.base.cam
+        lens = camera.lens
+        us, vs = [], []
+        for c in self.sight_corners:
+            p2 = Point2()
+            lens.project(cam.getRelativePoint(c, Point3(0, 0, 0)), p2)
+            us.append((p2.x + 1) / 2)
+            vs.append((p2.y + 1) / 2)
+        p2 = Point2()
+        lens.project(cam.getRelativePoint(self.dot, Point3(0, 0, 0)), p2)
+        camera.set_shader_input('zoom_rect', Vec4(min(us), min(vs), max(us), max(vs)))
+        camera.set_shader_input('zoom_center', Vec2((p2.x + 1) / 2, (p2.y + 1) / 2))
+        camera.set_shader_input('zoom', lerp(1.0, z, k))
+        self._zoom_on = True
 
     def jump(self):
         if self.grounded and not self.dead:
@@ -2698,7 +2777,7 @@ class Game(Entity):
         Text(parent=self.menu, text='CHOISISSEZ VOTRE ARME', origin=(0, 0), y=0.24, scale=2)
         choices = [
             ('rifle', "1  —  Fusil d'assaut",
-             'Tir automatique · 30 balles · viseur point rouge'),
+             'Tir automatique · 30 balles · viseur point rouge x1,4'),
             ('sniper', '2  —  Sniper',
              'Un tir par clic · gros dégâts · 5 balles · lunette zoom x2'),
         ]
@@ -2731,18 +2810,17 @@ class Game(Entity):
         self.shadow_bounds.visible = False
 
     def set_quality(self, high):
+        """G : effets de post-traitement et herbe. Le shader de caméra reste actif car il
+        porte aussi la loupe du viseur du fusil (il ne coûte presque rien sans les effets)."""
         self.high_quality = high
-        try:
-            if high:
+        if camera.shader is None:
+            try:
                 camera.shader = POST
-            elif camera.shader is not None:
-                camera.shader = None
-                camera.filter_quad = None    # sinon Ursina plante au redimensionnement de la fenêtre
-        except Exception as ex:      # carte graphique incompatible : on reste sans post-traitement
-            print('Post-traitement indisponible :', ex)
-        camera.clip_plane_near = 0.05    # Ursina le remet à 1 quand on change le shader de caméra
-        for g in self.world.grass:
-            g.enabled = high
+            except Exception as ex:      # carte graphique incompatible
+                print('Post-traitement indisponible :', ex)
+            camera.clip_plane_near = 0.05    # Ursina le remet à 1 quand on pose un shader de caméra
+        camera.set_shader_input('fx_on', 1.0 if high else 0.0)
+        self.update_grass(force=True)
 
     # -- vagues ------------------------------------------------------------
     def skill(self):
@@ -2854,9 +2932,27 @@ class Game(Entity):
             self.hud.msg.text = ''
             self.hud.sub_msg.text = ''
 
+    GRASS_DIST = 38.0
+
+    def update_grass(self, force=False):
+        """L'herbe n'est dessinée qu'autour du joueur (au-delà, le brouillard la rend invisible)."""
+        if not force:
+            self.grass_t = getattr(self, 'grass_t', 0) - time.dt
+            if self.grass_t > 0:
+                return
+        self.grass_t = 0.25
+        p = self.player.position
+        r2 = self.GRASS_DIST ** 2
+        for g in self.world.grass:
+            c = g.center
+            on = self.high_quality and (c.x - p.x) ** 2 + (c.z - p.z) ** 2 < r2
+            if g.enabled != on:
+                g.enabled = on
+
     def update(self):
         if not self.paused:
             self.t += time.dt
+        self.update_grass()
         self.hud.update()
 
     def input(self, key):
