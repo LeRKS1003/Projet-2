@@ -264,16 +264,7 @@ void main() {
     vec3 c = texture(tex, suv).rgb;
 
     if (fx_on > 0.5) {
-        vec2 px = 1.0 / vec2(textureSize(tex, 0));
-        // léger bloom sur les zones lumineuses (8 échantillons en spirale)
-        vec3 b = vec3(0.0);
-        for (int i = 0; i < 8; i++) {
-            float a = float(i) * 0.785398 + 0.3927;
-            vec2 dir = vec2(cos(a), sin(a));
-            b += max(texture(tex, suv + dir * px * (i % 2 == 0 ? 4.0 : 9.0)).rgb - 0.72, 0.0);
-        }
-        c += b * 0.12;
-
+        // (le halo lumineux « bloom » a été retiré : quasi invisible, 8 lectures de texture par pixel)
         // étalonnage : saturation, contraste, teinte chaude
         float l = dot(c, vec3(0.299, 0.587, 0.114));
         c = mix(vec3(l), c, 1.18);
@@ -1645,43 +1636,56 @@ class Enemy(Entity):
         t = self.look
         U, UD, S = t['uniform'], t['dark'], t['skin']
         glove = t['glove']
+        # ennemis (tout en noir) : silhouette simplifiée, les petits détails seraient invisibles ;
+        # l'avatar du joueur (3e personne) garde ses détails
+        detail = self.look is not ENEMY_LOOK
         self._bone_parts = {}
         # bassin : pivot principal (hauteur des hanches)
         self.hips = Entity(parent=self, y=0.95)
         self.part(self.hips, (0, 0.02, 0), (0.36, 0.2, 0.22), UD, 'body')
-        self.part(self.hips, (0, 0.1, 0), (0.39, 0.06, 0.25), t['belt'], 'body', collide=False)   # ceinture
+        if detail:
+            self.part(self.hips, (0, 0.1, 0), (0.39, 0.06, 0.25), t['belt'], 'body', collide=False)   # ceinture
         # torse : pivote au bassin
         self.torso = Entity(parent=self.hips, y=0.08)
         self.part(self.torso, (0, 0.28, 0), (0.42, 0.5, 0.25), U, 'body')
-        self.part(self.torso, (0, 0.3, 0.12), (0.36, 0.36, 0.06), UD, 'body', collide=False)    # gilet
-        for px in (-0.1, 0.02, 0.14):                                                          # poches
+        if detail:
+            self.part(self.torso, (0, 0.3, 0.12), (0.36, 0.36, 0.06), UD, 'body', collide=False)    # gilet
+        for px in ((-0.1, 0.02, 0.14) if detail else ()):                                       # poches
             self.part(self.torso, (px, 0.2, 0.16), (0.09, 0.11, 0.05), shade(UD, 0.85), 'body', collide=False)
         self.part(self.torso, (0, 0.3, -0.19), (0.3, 0.38, 0.14), shade(UD, 0.9), 'body')       # sac à dos
-        self.part(self.torso, (0, 0.52, -0.19), (0.26, 0.08, 0.13), shade(UD, 0.75), 'body', collide=False)
+        if detail:
+            self.part(self.torso, (0, 0.52, -0.19), (0.26, 0.08, 0.13), shade(UD, 0.75), 'body', collide=False)
         if self.carries_rpg:     # lance-roquettes porté en travers du dos
             self.part(self.torso, (0.12, 0.35, -0.3), (0.1, 0.95, 0.1), rgb(70, 80, 50), 'body', collide=False)
             self.part(self.torso, (0.12, 0.88, -0.3), (0.14, 0.18, 0.14), rgb(60, 60, 55), 'body', collide=False)
-        self.part(self.torso, (0, 0.58, 0), (0.11, 0.08, 0.11), S, 'body', collide=False)        # cou
+        if detail:
+            self.part(self.torso, (0, 0.58, 0), (0.11, 0.08, 0.11), S, 'body', collide=False)        # cou
         # tête
         self.neck = Entity(parent=self.torso, y=0.6)
         self.part(self.neck, (0, 0.14, 0), (0.22, 0.26, 0.24), S, 'head')
-        self.part(self.neck, (0, 0.15, -0.1), (0.228, 0.2, 0.06), t['hair'], 'head', collide=False)   # arrière du crâne
+        if detail:
+            self.part(self.neck, (0, 0.15, -0.1), (0.228, 0.2, 0.06), t['hair'], 'head', collide=False)   # arrière du crâne
         self.part(self.neck, (0, 0.26, -0.01), (0.27, 0.1, 0.29), t['helmet'], 'head')              # casque
-        self.part(self.neck, (0, 0.22, 0), (0.28, 0.04, 0.3), shade(t['helmet'], 0.8), 'head', collide=False)
-        self.part(self.neck, (0, 0.07, 0.12), (0.06, 0.05, 0.02), shade(S, 0.9), 'head', collide=False)  # nez
+        if detail:
+            self.part(self.neck, (0, 0.22, 0), (0.28, 0.04, 0.3), shade(t['helmet'], 0.8), 'head', collide=False)
+        if detail:
+            self.part(self.neck, (0, 0.07, 0.12), (0.06, 0.05, 0.02), shade(S, 0.9), 'head', collide=False)  # nez
         for ex in (-0.055, 0.055):
-            self.part(self.neck, (ex, 0.17, 0.12), (0.045, 0.03, 0.01), color.black, 'head', collide=False)
+            if detail:
+                self.part(self.neck, (ex, 0.17, 0.12), (0.045, 0.03, 0.01), color.black, 'head', collide=False)
             if self.night:       # vision nocturne : deux oculaires verts lumineux
                 self.part(self.neck, (ex, 0.19, 0.16), (0.05, 0.05, 0.07), rgb(20, 20, 22), 'head', collide=False)
                 self.part(self.neck, (ex, 0.19, 0.196), (0.035, 0.035, 0.01), rgb(90, 255, 110), 'head',
                           collide=False, lit=False)
-        self.part(self.neck, (0, 0.23, 0.13), (0.2, 0.025, 0.02), shade(t['helmet'], 0.7), 'head', collide=False)
+        if detail:
+            self.part(self.neck, (0, 0.23, 0.13), (0.2, 0.025, 0.02), shade(t['helmet'], 0.7), 'head', collide=False)
 
         # bras : épaule -> bras -> coude -> avant-bras -> main
         self.shoulders, self.elbows = [], []
         for side in (-1, 1):
             sh = Entity(parent=self.torso, position=(0.27 * side, 0.48, 0))
-            self.part(sh, (0, 0, 0), (0.15, 0.12, 0.15), UD, 'limb', collide=False)            # épaulière
+            if detail:
+                self.part(sh, (0, 0, 0), (0.15, 0.12, 0.15), UD, 'limb', collide=False)        # épaulière
             self.part(sh, (0, -0.15, 0), (0.12, 0.32, 0.12), U, 'limb')
             el = Entity(parent=sh, y=-0.3)
             self.part(el, (0, -0.14, 0), (0.1, 0.28, 0.1), U, 'limb')
@@ -1699,10 +1703,12 @@ class Enemy(Entity):
         for side in (-1, 1):
             hj = Entity(parent=self.hips, position=(0.1 * side, -0.05, 0))
             self.part(hj, (0, -0.22, 0), (0.15, 0.45, 0.16), UD, 'limb')
-            self.part(hj, (0.08 * side, -0.25, 0.02), (0.05, 0.12, 0.1), shade(UD, 0.85), 'limb', collide=False)
+            if detail:
+                self.part(hj, (0.08 * side, -0.25, 0.02), (0.05, 0.12, 0.1), shade(UD, 0.85), 'limb', collide=False)
             kn = Entity(parent=hj, y=-0.44)
             self.part(kn, (0, -0.2, 0), (0.13, 0.42, 0.14), UD, 'limb')
-            self.part(kn, (0, -0.03, 0.07), (0.12, 0.1, 0.04), shade(UD, 1.4), 'limb', collide=False)  # genouillère
+            if detail:
+                self.part(kn, (0, -0.03, 0.07), (0.12, 0.1, 0.04), shade(UD, 1.4), 'limb', collide=False)
             self.part(kn, (0, -0.43, 0.05), (0.14, 0.09, 0.27), t['boot'], 'limb')
             self.hip_joints.append(hj)
             self.knees.append(kn)
@@ -2338,6 +2344,7 @@ class Enemy(Entity):
         if self.think_t <= 0:
             self.think_t += 0.2          # l'IA réfléchit 5 fois par seconde (décalée entre ennemis)
             self.think()
+            self.update_shadow()
 
         if self.sub == 'throw':
             if self.last_known is not None:
@@ -2487,6 +2494,18 @@ class Enemy(Entity):
         self.torso.rotation_x = lerp(self.torso.rotation_x, 0, dt * 4)
         if self.death_t > CORPSE_TIME - 2:
             self.scale = lerp(self.scale, Vec3(0.01, 0.01, 0.01), dt * 3)
+
+    SHADOW_DIST = 35.0
+
+    def update_shadow(self):
+        """Au-delà de 35 m, l'ombre d'un soldat est à peine visible : on ne la calcule plus."""
+        near = flat_dist(self.position, self.game.player.position) < self.SHADOW_DIST
+        if near != getattr(self, '_casts', True):
+            self._casts = near
+            if near:
+                self.show(0b0001)
+            else:
+                self.hide(0b0001)
 
     def on_destroy(self):
         self.release_cover()
