@@ -52,21 +52,25 @@ Installer une fois :  pip install pygame      (sans pygame, le jeu se joue au cl
     Croix directionnelle ou stick gauche : choisir l'arme, le moment et la carte dans le menu
     Vibrations au tir, aux dégâts et aux explosions. La manette peut être branchée en cours de partie.
 
-Mode DÉFENSE DU VILLAGE : une colonne ennemie descend le village vers la ligne rouge et blanche (sud).
+Mode DÉFENSE (grande carte désertique de 80 x 200 m : dunes, tranchées creusées, maison, épaves) :
+    une colonne ennemie descend du nord vers la ligne rouge et blanche, devant votre base au sud.
+    - tranchées creusées dans le sable : on y descend, on en sort par les rampes aux deux bouts ;
+      debout on tire par-dessus le bord, accroupi on est entièrement à couvert
     - chars (canon + mitrailleuse, presque insensibles aux balles : RPG, grenades, missiles du drone)
     - blindés anti-aériens bitubes : tirent sur le drone (et sur vous quand il n'est pas en l'air)
     - fantassins en escouades, dont un porteur de MANPADS (missile sol-air contre le drone) par escouade
     - le RPG est l'arme secondaire (Triangle / Tab) ; roquettes illimitées à la caisse verte (Carré / V)
-    - 3 percées de la ligne = le village tombe
+    - 3 percées de la ligne = la position tombe
 
 Drone Reaper (ultime, pendant toute la manche ; vous réapparaissez au sol à la fin de la manche) :
-    Souris / stick droit : viser · E/S/Q/D / stick gauche : déplacer la zone survolée
     Clic gauche / R2 : canon à obus explosifs (paquets de 20 obus, 3 s pour engager le paquet suivant)
     Espace / R1 : missile à guidage infrarouge manuel (6 en tout) : pas de verrouillage, il suit jusqu'à
                   l'impact la tache infrarouge projetée au centre du réticule — gardez la cible dans le viseur
     Clic droit / L2 : zoom · N / Triangle : caméra normale ou thermique (corps chauds en blanc)
     F / L1 : leurres thermiques contre les missiles sol-air · le drone a 100 % de vie (DCA, MANPADS)
-    Sticks : droit = visée fine (accélère en butée, ralentit sur une cible), gauche = déplacement rapide
+    Stick gauche / E,S,Q,D : piloter le drone (il vole dans la direction poussée, avec de l'inertie)
+    Stick droit / souris : viser avec le canon et les missiles (accélère en butée, ralentit sur une cible) ;
+    le point visé reste stabilisé au sol quand le drone se déplace
 
 Batterie anti-aérienne (désert) : souris / stick droit pour pointer, clic gauche / R2 pour tirer,
     clic droit / L2 pour zoomer, V / Carré pour descendre.
@@ -646,15 +650,34 @@ class Box:
         return (x - px) ** 2 + (z - pz) ** 2 < r * r
 
 
+TRENCH_DEPTH = 1.35    # profondeur des tranchées creusées (debout on voit par-dessus, accroupi on est caché)
+TRENCH_WIDTH = 2.0
+TRENCH_RAMP = 3.0      # longueur des rampes aux deux bouts
+
+
+class Pit:
+    """Tranchée creusée : rectangle (x0..x1, z0..z1) orienté le long de x ou de z."""
+    def __init__(self, x0, x1, z0, z1, along_x):
+        self.x0, self.x1, self.z0, self.z1 = x0, x1, z0, z1
+        self.along_x = along_x
+
+
 class World:
     CELL = 1.0
 
     def __init__(self, map_name='village', mode='survie'):
-        self.map = map_name
         self.mode = mode
-        self.desert = map_name == 'desert'
+        if mode == 'defense':
+            map_name = 'defense'   # la défense se joue sur sa propre grande carte désertique
+        self.map = map_name
+        self.desert = map_name in ('desert', 'defense')
+        # demi-dimensions de la zone jouable (x, z) : carrée en survie, longue (80 x 200 m) en défense
+        self.hx, self.hz = (40.0, 100.0) if map_name == 'defense' else (float(ARENA), float(ARENA))
+        self.spawn = Vec3(0, 0, -self.hz + 6) if map_name == 'defense' else Vec3(0, 0, -40)
+        self.defense_z = -self.hz + 22          # ligne à tenir (défense)
         # défense : deux axes dégagés pour les blindés (rien n'y est construit)
-        self.lanes = [Box(x, 0, 5.2, ARENA * 2, 1) for x in LANES] if mode == 'defense' else []
+        self.lanes = [Box(x, 0, 5.2, self.hz * 2, 1) for x in LANES] if mode == 'defense' else []
+        self.pits = []             # tranchées creusées dans le sable (défense)
         self.ammo_point = None     # caisse de roquettes (défense)
         self.aa = None             # batterie anti-aérienne (carte désert)
         self.smoke_points = []     # épaves qui fument
@@ -705,7 +728,10 @@ class World:
         for b in self.boxes:
             if not (probe.x1 < b.x0 or probe.x0 > b.x1 or probe.z1 < b.z0 or probe.z0 > b.z1):
                 return False
-        return abs(cx) + sx / 2 < ARENA - 1.5 and abs(cz) + sz / 2 < ARENA - 1.5
+        for pt in self.pits:
+            if not (probe.x1 < pt.x0 - 1 or probe.x0 > pt.x1 + 1 or probe.z1 < pt.z0 - 1 or probe.z0 > pt.z1 + 1):
+                return False
+        return abs(cx) + sx / 2 < self.hx - 1.5 and abs(cz) + sz / 2 < self.hz - 1.5
 
     # -- éléments --------------------------------------------------------------
     def wall(self, cx, cz, sx, sz, h, tint=None, low=False):
@@ -799,16 +825,20 @@ class World:
         """Ligne à tenir (poteaux rouges et blancs), caisse de roquettes et traces de chenilles sur les axes."""
         p = self.plain
         p.xf()
-        for k in range(31):
-            x = -ARENA + 1.5 + k * 2.9
-            p.box((x, 0.5, DEFENSE_LINE), (0.12, 1.0, 0.12), rgb(200, 40, 35) if k % 2 else rgb(235, 235, 230))
+        n = int(2 * self.hx / 2.9)
+        for k in range(n + 1):
+            x = -self.hx + 1.5 + k * 2.9
+            if x > self.hx - 1:
+                break
+            p.box((x, 0.5, self.defense_z), (0.12, 1.0, 0.12), rgb(200, 40, 35) if k % 2 else rgb(235, 235, 230))
         up = Vec3(0, 1, 0)
         for lx in LANES:
             for sx in (-1.3, 1.3):         # ornières laissées par les chenilles
                 x = lx + sx
-                p.quad(Vec3(x - 0.35, 0.015, -ARENA + 1), Vec3(x + 0.35, 0.015, -ARENA + 1),
-                       Vec3(x + 0.35, 0.015, ARENA - 1), Vec3(x - 0.35, 0.015, ARENA - 1), rgb(95, 85, 65), up)
-        cx, cz = -4.0, -37.0                # caisse de roquettes près du point de départ
+                z0, z1 = -self.hz + 1, self.hz - 1
+                p.quad(Vec3(x - 0.35, 0.015, z0), Vec3(x + 0.35, 0.015, z0),
+                       Vec3(x + 0.35, 0.015, z1), Vec3(x - 0.35, 0.015, z1), rgb(150, 125, 90), up)
+        cx, cz = -4.0, self.spawn.z + 3        # caisse de roquettes près du point de départ
         self.add_box(cx, cz, 1.6, 1.0, 0.9)
         p.box((cx, 0.45, cz), (1.6, 0.9, 1.0), rgb(80, 90, 55), jitter=0.05)
         p.box((cx, 0.92, cz), (1.64, 0.06, 1.04), rgb(65, 72, 45))
@@ -818,7 +848,8 @@ class World:
     # -- terrain -------------------------------------------------------------
     def build_ground(self):
         """Sol limité à l'arène (rien n'est construit hors des murs)."""
-        half = ARENA + 2 if not self.desert else ARENA + 16      # désert : le sable continue sous les dunes
+        pad = 16 if self.desert else 2          # désert : le sable continue sous les dunes
+        hx, hz = self.hx + pad, self.hz + pad
         n = 32
         b = MeshBuilder()
         up = Vec3(0, 1, 0)
@@ -833,11 +864,16 @@ class World:
             return value_noise(x * 0.09, z * 0.09, 3) * 1.4 + math.sin(x * 0.55 + z * 0.3
                                                                         + value_noise(x * 0.2, z * 0.2, 4) * 3) * 0.12
 
-        step = 2 * half / n
+        step = 2 * max(hx, hz) / n
+        # lignes de la grille : pas régulier + bords des tranchées (chaque case est dedans ou dehors)
+        xs = sorted(set([-hx + k * step for k in range(int(2 * hx / step) + 1)] + [hx]
+                        + [v for p in self.pits for v in (p.x0, p.x1)]))
+        zs = sorted(set([-hz + k * step for k in range(int(2 * hz / step) + 1)] + [hz]
+                        + [v for p in self.pits for v in (p.z0, p.z1)]))
 
         def vert(i, j):
             if (i, j) not in cache:
-                x, z = -half + i * step, -half + j * step
+                x, z = xs[i], zs[j]
                 nz = value_noise(x, z, 1) * 0.5 + 0.5
                 dry = value_noise(x * 1.7, z * 1.7, 5) * 0.5 + 0.5
                 if desert:
@@ -851,16 +887,37 @@ class World:
                     cache[(i, j)] = (Vec3(x, 0, z), col, (x / 3, z / 3), up)
             return cache[(i, j)]
 
-        for i in range(n):
-            for j in range(n):
+        for i in range(len(xs) - 1):
+            for j in range(len(zs) - 1):
+                if self.pit_at((xs[i] + xs[i + 1]) / 2, (zs[j] + zs[j + 1]) / 2):
+                    continue                   # trou de la tranchée (dessinée à part)
                 q = [vert(i, j), vert(i + 1, j), vert(i + 1, j + 1), vert(i, j + 1)]
                 for a, bb, c in ((0, 1, 2), (0, 2, 3)):
                     b.tri(q[a][0], q[bb][0], q[c][0], [q[a][1], q[bb][1], q[c][1]], up,
                           (q[a][2], q[bb][2], q[c][2]), normals=[q[a][3], q[bb][3], q[c][3]], local=False)
         # le sol ne projette aucune ombre : on l'exclut de la passe d'ombres
         b.build(self.level, texture=sand_texture() if desert else 'grass', cast_shadows=False)
-        # collisionneur plat pour les impacts de balles
-        self.add_collider(0, -0.05, 0, 2 * half, 0.1, 2 * half)
+        # collisionneur du sol pour les impacts de balles (percé au droit des tranchées)
+        if not self.pits:
+            self.add_collider(0, -0.05, 0, 2 * hx, 0.1, 2 * hz)
+        else:
+            bx = sorted(set([-hx, hx] + [v for p in self.pits for v in (p.x0, p.x1)]))
+            bz = sorted(set([-hz, hz] + [v for p in self.pits for v in (p.z0, p.z1)]))
+            th = TRENCH_DEPTH + 0.3
+            for j in range(len(bz) - 1):
+                z0, z1 = bz[j], bz[j + 1]
+                run = None
+                for i in range(len(bx) - 1):
+                    solid = not self.pit_at((bx[i] + bx[i + 1]) / 2, (z0 + z1) / 2)
+                    if solid and run is None:
+                        run = bx[i]
+                    if (not solid or i == len(bx) - 2) and run is not None:
+                        end = bx[i + 1] if solid else bx[i]
+                        self.add_collider((run + end) / 2, -th / 2, (z0 + z1) / 2, end - run, th, z1 - z0)
+                        run = None
+            for p in self.pits:          # fond des tranchées
+                self.add_collider((p.x0 + p.x1) / 2, -TRENCH_DEPTH - 0.1, (p.z0 + p.z1) / 2,
+                                  p.x1 - p.x0, 0.2, p.z1 - p.z0)
 
     def road(self, z0, z1):
         b = self.plain
@@ -883,8 +940,12 @@ class World:
             b.box(((x0 + x1) / 2, 0.06, zz), (x1 - x0, 0.12, 0.24), rgb(170, 168, 160))
 
     def build(self):
+        if self.map == 'defense':
+            self.define_pits()
         self.build_ground()
-        if self.desert:
+        if self.map == 'defense':
+            self.build_defense_map()
+        elif self.desert:
             self.build_desert()
         else:
             self.build_village()
@@ -918,8 +979,6 @@ class World:
                                (16, -29, 0.8, 5), (-37, 7, 5, 0.8), (37, 7, 5, 0.8), (0, -27, 6, 0.8)]:
             if not self.in_lane(cx, cz, sx, sz):
                 self.wall(cx, cz, sx, sz, 1.3, low=True)
-        if self.mode == 'defense':
-            self.build_defense_line()
 
         # voitures
         paints = [rgb(180, 30, 35), rgb(30, 70, 150), rgb(220, 220, 215), rgb(40, 40, 45),
@@ -1136,16 +1195,186 @@ class World:
         self.sandbags(ax + 2.9, az + 0.6, 4, False)
         self.aa = AAGun(self, self.AA_POS)
 
+    # -- carte de défense (désert long) ------------------------------------------
+    def define_pits(self):
+        """Tranchées creusées (avant de construire le sol, qui est percé à leur emplacement).
+        Chaque tranchée a une rampe à chaque bout ; accroupi au fond, on est à couvert."""
+        w = TRENCH_WIDTH
+        dz = self.defense_z
+        segs = [
+            # ligne principale, juste devant la ligne à tenir (en zigzag, avec des passages)
+            (-37, -26.5, dz + 8, True), (-17, -3, dz + 8, True), (3, 17, dz + 6, True), (26.5, 37, dz + 8, True),
+            (0, dz + 10, dz + 26, False),                            # boyau de communication vers l'avant
+            # tranchées avancées
+            (-15, -2, dz + 42, True), (4, 16, dz + 40, True),
+            (-36, -27, dz + 60, True), (27, 36, dz + 62, True),
+            # anciennes positions ennemies, au nord
+            (-14, 14, dz + 108, True), (-35, -26, dz + 126, True), (26, 35, dz + 124, True),
+            (-10, 10, dz + 150, True),
+        ]
+        for a, b, c, along_x in segs:
+            if along_x:
+                self.pits.append(Pit(a, b, c - w / 2, c + w / 2, True))
+            else:
+                self.pits.append(Pit(a - w / 2, a + w / 2, b, c, False))
+
+    def draw_pit(self, p):
+        """Tranchée creusée : parois coffrées de planches et de poteaux, rampes de sable aux bouts,
+        caillebotis au fond, sacs de sable posés au bord."""
+        b = self.plain
+        b.xf()
+        d = TRENCH_DEPTH
+        R = TRENCH_RAMP
+        wood, post, sand = rgb(125, 95, 62), rgb(88, 66, 45), shade(self.SAND, 0.82)
+        floor = rgb(150, 120, 84)
+        # repère local : u le long de la tranchée, v en travers
+        if p.along_x:
+            u0, u1, v0, v1 = p.x0, p.x1, p.z0, p.z1
+
+            def P(u, y, v):
+                return Vec3(u, y, v)
+        else:
+            u0, u1, v0, v1 = p.z0, p.z1, p.x0, p.x1
+
+            def P(u, y, v):
+                return Vec3(v, y, u)
+        up = Vec3(0, 1, 0)
+        a, c = u0 + R, u1 - R
+        # fond et rampes
+        b.quad(P(a, -d, v0), P(c, -d, v0), P(c, -d, v1), P(a, -d, v1), floor, up, local=False)
+        for s0, s1 in ((u0, a), (u1, c)):
+            n = (P(s1, -d, v0) - P(s0, 0, v0)).cross(P(s0, 0, v1) - P(s0, 0, v0)).normalized()
+            if n.y < 0:
+                n = -n
+            b.quad(P(s0, 0, v0), P(s1, -d, v0), P(s1, -d, v1), P(s0, 0, v1), sand, n, local=False)
+        # parois : coffrage en planches sur la partie profonde, sable au-dessus des rampes
+        for v, inward in ((v0, 1), (v1, -1)):
+            n = P(0, 0, inward) - P(0, 0, 0)
+            b.quad(P(a, -d, v), P(c, -d, v), P(c, 0, v), P(a, 0, v), wood, n, local=False)
+            b.tri(P(u0, 0, v), P(a, -d, v), P(a, 0, v), sand, n, local=False)
+            b.tri(P(c, -d, v), P(u1, 0, v), P(c, 0, v), sand, n, local=False)
+            for k in range(int((c - a) / 1.8) + 1):                 # poteaux
+                u = a + 0.2 + k * 1.8
+                if u > c - 0.1:
+                    break
+                ctr = P(u, -d / 2, v + inward * 0.05)
+                b.box((ctr.x, ctr.y, ctr.z), (0.1, d, 0.1), post)
+            # sacs de sable au bord (décor)
+            ctr = P((u0 + u1) / 2, 0.14, v - inward * 0.35)
+            size = P(u1 - u0 - 0.6, 0.28, 0.55) - P(0, 0, 0)
+            b.box((ctr.x, ctr.y, ctr.z), (abs(size.x), 0.28, abs(size.z)), rgb(170, 150, 108), jitter=0.05)
+        for k in range(int((c - a) / 0.5)):                          # caillebotis
+            u = a + 0.25 + k * 0.5
+            ctr = P(u, -d + 0.03, (v0 + v1) / 2)
+            size = P(0.14, 0.04, (v1 - v0) - 0.5) - P(0, 0, 0)
+            b.box((ctr.x, ctr.y, ctr.z), (abs(size.x), 0.04, abs(size.z)), rgb(105, 80, 55))
+
+    def house(self, cx, cz, w=9.0, dpt=7.0, h=3.0):
+        """Maison en terre crue : porte au sud, fenêtres, toit plat en terrasse (on peut y entrer)."""
+        t = 0.4
+        mud, dark, wood = rgb(196, 164, 122), rgb(150, 122, 90), rgb(95, 70, 45)
+        p = self.plain
+        p.xf()
+
+        def solid(x, z, sx, sz, hh):
+            self.add_box(x, z, sx, sz, hh)
+            p.box((x, hh / 2, z), (sx, hh, sz), mud, jitter=0.03)
+
+        def lintel(x, z, sx, sz, y0):
+            self.add_collider(x, (y0 + h) / 2, z, sx, h - y0, sz)
+            p.box((x, (y0 + h) / 2, z), (sx, h - y0, sz), mud, jitter=0.03)
+        x0, x1, z0, z1 = cx - w / 2, cx + w / 2, cz - dpt / 2, cz + dpt / 2
+        # mur sud : porte de 1,4 m au milieu
+        door = 2.2                               # assez large pour que les soldats passent aussi
+        solid((x0 + cx - door / 2) / 2, z0, cx - door / 2 - x0, t, h)
+        solid((cx + door / 2 + x1) / 2, z0, x1 - cx - door / 2, t, h)
+        lintel(cx, z0, door, t, 2.2)
+        p.box((cx, 2.15, z0 - 0.05), (door + 0.2, 0.12, t + 0.1), wood)
+        # murs nord, est, ouest : une fenêtre de 1,2 m chacun
+        win = 1.2
+        for side in ('n', 'e', 'o'):
+            if side == 'n':
+                solid((x0 + cx - win / 2) / 2, z1, cx - win / 2 - x0, t, h)
+                solid((cx + win / 2 + x1) / 2, z1, x1 - cx - win / 2, t, h)
+                solid(cx, z1, win, t, 1.1)
+                lintel(cx, z1, win, t, 2.0)
+            else:
+                x = x1 if side == 'e' else x0
+                solid(x, (z0 + cz - win / 2) / 2, t, cz - win / 2 - z0, h)
+                solid(x, (cz + win / 2 + z1) / 2, t, z1 - cz - win / 2, h)
+                solid(x, cz, t, win, 1.1)
+                lintel(x, cz, t, win, 2.0)
+        # toit en terrasse avec un petit parapet et des poutres qui dépassent
+        p.box((cx, h + 0.12, cz), (w + 0.2, 0.24, dpt + 0.2), dark, bottom=True)
+        self.add_collider(cx, h + 0.12, cz, w + 0.2, 0.24, dpt + 0.2)
+        for sx_, sz_, bx, bz in ((w + 0.2, 0.15, cx, z0 - 0.02), (w + 0.2, 0.15, cx, z1 + 0.02),
+                                 (0.15, dpt + 0.2, x0 - 0.02, cz), (0.15, dpt + 0.2, x1 + 0.02, cz)):
+            p.box((bx, h + 0.42, bz), (sx_, 0.36, sz_), mud)
+        for k in range(5):
+            p.cylinder((x0 - 0.3, h - 0.25, z0 + 0.8 + k * (dpt - 1.6) / 4), 0.08, w + 0.6, wood, seg=5, axis='x')
+        p.cylinder((cx + 2.5, h + 0.24, cz + 1.5), 0.45, 0.9, rgb(60, 80, 110), seg=10)   # réservoir d'eau
+
+    def build_defense_map(self):
+        rng = self.rng
+        hx, hz, dz = self.hx, self.hz, self.defense_z
+        # limites : murs invisibles et grandes dunes tout autour
+        for cx, cz, sx, sz in [(0, hz, 2 * hx + 1, 1), (0, -hz, 2 * hx + 1, 1), (hx, 0, 1, 2 * hz + 1),
+                               (-hx, 0, 1, 2 * hz + 1)]:
+            self.add_box(cx, cz, sx, sz, 6)
+        for k in range(int(2 * hx / 9) + 2):
+            t = -hx + k * 9 + rng.uniform(-2, 2)
+            for pz in (hz + 5.5, -hz - 5.5):
+                self.dune(t, pz, rng.uniform(7, 9), rng.uniform(6, 8), rng.uniform(3.0, 5.0), collide=False)
+        for k in range(int(2 * hz / 9) + 2):
+            t = -hz + k * 9 + rng.uniform(-2, 2)
+            for px in (hx + 5.5, -hx - 5.5):
+                self.dune(px, t, rng.uniform(6, 8), rng.uniform(7, 9), rng.uniform(3.0, 5.0), collide=False)
+        for p in self.pits:
+            self.draw_pit(p)
+        self.house(-10, dz + 30)                              # maison, avant-poste au milieu des tranchées
+        self.tank_wreck(8, dz + 92)                           # char détruit à mi-chemin
+        for x, z, yaw in [(-32, dz + 20, 0), (32, dz + 80, 90), (-6, dz + 132, 90), (34, dz + 140, 0)]:
+            if self.area_free(x, z, 5, 5, margin=0.3):
+                self.truck_wreck(x, z, yaw)
+        # dunes : grandes (à couvert debout) et basses (à couvert accroupi), réparties sur toute la longueur
+        placed = tries = 0
+        while placed < 26 and tries < 600:
+            tries += 1
+            x, z = rng.uniform(-hx + 5, hx - 5), rng.uniform(dz + 14, hz - 16)
+            big = rng.random() < 0.45
+            rx, rz = (rng.uniform(4, 6), rng.uniform(3.5, 5)) if big else (rng.uniform(2.6, 3.4), rng.uniform(2.2, 3))
+            if self.area_free(x, z, rx * 1.4, rz * 1.4, margin=1.0):
+                self.dune(x, z, rx, rz, rng.uniform(2.2, 2.7) if big else rng.uniform(1.1, 1.3))
+                placed += 1
+        for x, z, l, ax in [(-8, dz + 3, 6, True), (8, dz + 3, 6, True), (-32, dz + 3, 6, True), (32, dz + 3, 6, True),
+                            (-2, dz + 36, 4, True), (-16, dz + 28, 4, False)]:
+            if self.area_free(x, z, l + 0.4, l + 0.4, margin=0.2):
+                self.sandbags(x, z, l, ax)
+        for x, z in [(-26, dz + 44, ), (28, dz + 46), (-4, dz + 70), (12, dz + 118), (-30, dz + 100)]:
+            if self.area_free(x, z, 1.4, 1.4, margin=0.3):
+                self.ammo_crate(x, z)
+        for x, z, s_ in [(-15, dz + 76, 1.0), (16, dz + 24, 0.9), (-34, dz + 150, 1.1), (30, dz + 104, 1.0)]:
+            if self.area_free(x, z, 2.5 * s_, 2.5 * s_, margin=0.4):
+                self.rock(x, z, s_)
+        # batterie anti-aérienne près de la base
+        ax, az = 13.0, dz - 9
+        self.sandbags(ax, az + 3.2, 5, True)
+        self.sandbags(ax - 2.9, az + 0.6, 4, False)
+        self.sandbags(ax + 2.9, az + 0.6, 4, False)
+        self.aa = AAGun(self, Vec3(ax, 0, az))
+        self.build_defense_line()
+
     def build_shrubs(self):
         """Désert : quelques touffes sèches (bien moins que l'herbe)."""
         b = MeshBuilder(tile=15)
         rng = random.Random(77)
         count = 0
         up = Vec3(0, 1, 0)
-        while count < 900:
-            x = rng.uniform(-ARENA + 1, ARENA - 1)
-            z = rng.uniform(-ARENA + 1, ARENA - 1)
-            if not self.is_free(Vec3(x, 0, z)):
+        target = int(900 * self.hx * self.hz / (ARENA * ARENA))
+        while count < target:
+            x = rng.uniform(-self.hx + 1, self.hx - 1)
+            z = rng.uniform(-self.hz + 1, self.hz - 1)
+            if not self.is_free(Vec3(x, 0, z)) or (self.pits and self.pit_at(x, z)):
                 continue
             count += 1
             base = rgb(120, 100, 60)
@@ -1212,9 +1441,39 @@ class World:
     def boxes_near(self, x, z):
         return self.box_grid.get((int(math.floor(x / self.GRID)), int(math.floor(z / self.GRID))), ())
 
+    # -- tranchées creusées ---------------------------------------------------
+    def pit_at(self, x, z):
+        for p in self.pits:
+            if p.x0 <= x <= p.x1 and p.z0 <= z <= p.z1:
+                return p
+        return None
+
+    def ground_y(self, x, z):
+        """Hauteur du terrain : 0, ou fond de tranchée (avec une rampe à chaque bout)."""
+        p = self.pit_at(x, z) if self.pits else None
+        if p is None:
+            return 0.0
+        u, u0, u1 = (x, p.x0, p.x1) if p.along_x else (z, p.z0, p.z1)
+        return -TRENCH_DEPTH * min(1.0, min(u - u0, u1 - u) / TRENCH_RAMP)
+
+    def pit_resolve(self, old, new, r, y):
+        """Au fond d'une tranchée on ne sort que par les rampes : les parois retiennent le joueur
+        (on le recadre entre les deux parois ; aux bouts, la rampe le fait remonter)."""
+        if not self.pits or y > -0.4:
+            return new
+        p = self.pit_at(old.x, old.z) or self.pit_at(new.x, new.z)
+        if p is None:
+            return new
+        x, z = clamp(new.x, p.x0, p.x1), clamp(new.z, p.z0, p.z1)
+        if p.along_x:
+            z = clamp(z, p.z0 + r, p.z1 - r)
+        else:
+            x = clamp(x, p.x0 + r, p.x1 - r)
+        return Vec3(x, new.y, z)
+
     def floor_height(self, x, z, r, y):
-        """Hauteur du sol sous une entité (sol ou dessus d'une caisse / d'un muret)."""
-        h = 0
+        """Hauteur du sol sous une entité (sol, fond de tranchée ou dessus d'une caisse / d'un muret)."""
+        h = self.ground_y(x, z) if self.pits else 0
         for b in self.boxes_near(x, z):
             if b.h <= y + 0.35 and b.circle_overlap(x, z, r * 0.8):
                 h = max(h, b.h)
@@ -1254,12 +1513,13 @@ class World:
 
     # -- navigation (A* sur grille) -----------------------------------------
     def build_nav(self):
-        self.n = int(ARENA * 2 / self.CELL)
-        self.blocked = [[False] * self.n for _ in range(self.n)]
-        for i in range(self.n):
-            for j in range(self.n):
+        self.nx = int(self.hx * 2 / self.CELL)
+        self.nz = int(self.hz * 2 / self.CELL)
+        self.blocked = [[False] * self.nz for _ in range(self.nx)]
+        for i in range(self.nx):
+            for j in range(self.nz):
                 x, z = self.cell_center(i, j)
-                if abs(x) > ARENA - 1 or abs(z) > ARENA - 1:
+                if abs(x) > self.hx - 1 or abs(z) > self.hz - 1:
                     self.blocked[i][j] = True
         for b in self.boxes:
             i0, j0 = self.cell_of(Vec3(b.x0 - 1, 0, b.z0 - 1))
@@ -1269,23 +1529,23 @@ class World:
                     x, z = self.cell_center(i, j)
                     if b.circle_overlap(x, z, 0.55):
                         self.blocked[i][j] = True
-        self.free_cells = [(i, j) for i in range(self.n) for j in range(self.n) if not self.blocked[i][j]]
+        self.free_cells = [(i, j) for i in range(self.nx) for j in range(self.nz) if not self.blocked[i][j]]
 
     def cell_center(self, i, j):
-        return -ARENA + (i + 0.5) * self.CELL, -ARENA + (j + 0.5) * self.CELL
+        return -self.hx + (i + 0.5) * self.CELL, -self.hz + (j + 0.5) * self.CELL
 
     def cell_of(self, p):
-        i = int((p.x + ARENA) / self.CELL)
-        j = int((p.z + ARENA) / self.CELL)
-        return clamp(i, 0, self.n - 1), clamp(j, 0, self.n - 1)
+        i = int((p.x + self.hx) / self.CELL)
+        j = int((p.z + self.hz) / self.CELL)
+        return clamp(i, 0, self.nx - 1), clamp(j, 0, self.nz - 1)
 
     def is_free(self, p):
         return self.free_xz(p.x, p.z)
 
     def free_xz(self, x, z):
-        i = int((x + ARENA) / self.CELL)
-        j = int((z + ARENA) / self.CELL)
-        if i < 0 or j < 0 or i >= self.n or j >= self.n:
+        i = int((x + self.hx) / self.CELL)
+        j = int((z + self.hz) / self.CELL)
+        if i < 0 or j < 0 or i >= self.nx or j >= self.nz:
             return False
         return not self.blocked[i][j]
 
@@ -1296,7 +1556,7 @@ class World:
             for di in range(-rad, rad + 1):
                 for dj in range(-rad, rad + 1):
                     i, j = c[0] + di, c[1] + dj
-                    if 0 <= i < self.n and 0 <= j < self.n and not self.blocked[i][j]:
+                    if 0 <= i < self.nx and 0 <= j < self.nz and not self.blocked[i][j]:
                         return (i, j)
         return None
 
@@ -1337,7 +1597,7 @@ class World:
             ci, cj = cur
             for di, dj in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)):
                 ni, nj = ci + di, cj + dj
-                if not (0 <= ni < self.n and 0 <= nj < self.n) or self.blocked[ni][nj]:
+                if not (0 <= ni < self.nx and 0 <= nj < self.nz) or self.blocked[ni][nj]:
                     continue
                 if di and dj and (self.blocked[ci + di][cj] or self.blocked[ci][cj + dj]):
                     continue  # pas de coupe de coin
@@ -1413,7 +1673,7 @@ class World:
                 for k in range(n + 1):
                     t = k / n
                     p = Vec3(lerp(ax, bx, t), 0, lerp(az, bz, t))
-                    if abs(p.x) > ARENA - 1.2 or abs(p.z) > ARENA - 1.2:
+                    if abs(p.x) > self.hx - 1.2 or abs(p.z) > self.hz - 1.2:
                         continue
                     if self.is_free(p):
                         self.covers.append(CoverPoint(p, normal, b.h))
@@ -2914,7 +3174,7 @@ class Enemy(Entity):
                 desired += flat(self.position - e.position) / d * (0.9 - d) * 4
         self.vel = lerp(self.vel, desired, min(1, dt * 8))
         new = self.world.resolve(self.position + self.vel * dt, ENEMY_RADIUS)
-        new.y = 0
+        new.y = lerp(self.y, self.world.ground_y(new.x, new.z), min(1, dt * 7)) if self.world.pits else 0
         self.real_speed = flat(new - self.position).length() / max(dt, 1e-4)
         self.position = new
 
@@ -3126,7 +3386,7 @@ class Player(Entity):
     SIGHT = ((-0.044, 0.1235), (0.044, 0.2115))  # carré qui encadre la lentille ronde (repère local)
 
     def __init__(self, game):
-        super().__init__(position=(0, 0, -40))      # = PLAYER_START
+        super().__init__(position=game.world.spawn)
         self.game = game
         self.world = game.world
         self.pivot = Entity(parent=self, y=1.65)
@@ -3598,6 +3858,7 @@ class Player(Entity):
         new = self.world.resolve(self.position + self.vel * dt, PLAYER_RADIUS, self.y)
         for v in self.game.vehicles:
             new = v.push_out(new, PLAYER_RADIUS)
+        new = self.world.pit_resolve(self.position, new, PLAYER_RADIUS, self.y)
 
         # gravité et saut
         floor_h = self.world.floor_height(new.x, new.z, PLAYER_RADIUS, self.y)
@@ -3834,7 +4095,6 @@ class Player(Entity):
 # ---------------------------------------------------------------------------
 
 ULT_HEADSHOTS = 3                 # tirs à la tête qui débloquent le drone
-PLAYER_START = Vec3(0, 0, -40)    # point de (ré)apparition au sol
 
 
 class IRMissile(Entity):
@@ -3907,7 +4167,7 @@ class ReaperDrone(Entity):
     Caméra normale ou thermique (N / Triangle), canon à obus explosifs par paquets de 20,
     6 missiles à guidage infrarouge manuel."""
     ALT = 48
-    RADIUS = 30
+    FLY_SPEED = 20.0     # m/s, stick gauche poussé à fond
     MISSILES = 6
     PACK = 20            # obus par paquet
     PACK_RELOAD = 3.0    # secondes pour engager un nouveau paquet
@@ -3916,9 +4176,10 @@ class ReaperDrone(Entity):
         super().__init__()
         self.game = game
         p = game.player
-        self.aim = Vec3(p.x, 0, p.z) + flat(p.forward) * 15
-        self.center = Vec3(self.aim)
-        self.ang = math.atan2(p.z - self.aim.z, p.x - self.aim.x)
+        self.center = Vec3(p.x, 0, p.z) - flat(p.forward) * 10     # le drone arrive derrière le joueur
+        self.aim = Vec3(p.x, 0, p.z) + flat(p.forward) * 25
+        self.fly_vel = Vec3(0, 0, 0)
+        self.bob = 0.0
         self.missiles = self.MISSILES
         self.shells = self.PACK
         self.pack_t = 0.0
@@ -3993,7 +4254,7 @@ class ReaperDrone(Entity):
                                 f'CANON 30 mm EXPLOSIF  {shells}   [Clic G / R2]\n'
                                 f'MISSILES IR  {self.missiles}/{self.MISSILES}   [Espace / R1]\n'
                                 f'VISION  {"THERMIQUE" if self.thermal else "NORMALE"}   [N / Triangle]\n'
-                                f'ZOOM   [Clic D / L2]   ·   DÉPLACER : E/S/Q/D, stick gauche')
+                                f'PILOTER : stick gauche / E,S,Q,D   ·   VISER : stick droit / souris   ·   ZOOM : L2 / clic D')
         HUD.set_text(self.alt, f'ALT {self.ALT} m\nCAP {int(self.rotation_y) % 360:03d}°\nCIBLES {alive}')
         HUD.set_text(self.guide_txt, 'GUIDAGE IR : gardez le réticule sur la cible' if self.in_flight else '')
         threat = any(m.decoy is None for m in g.sams)
@@ -4002,9 +4263,8 @@ class ReaperDrone(Entity):
 
     # -- vol -----------------------------------------------------------------
     def update_position(self, dt):
-        self.center = lerp(self.center, self.aim, min(1, dt * 0.8))
-        self.ang += dt * 0.07            # orbite lente : l'image tourne peu, la visée reste stable
-        self.position = self.center + Vec3(math.cos(self.ang) * self.RADIUS, self.ALT, math.sin(self.ang) * self.RADIUS)
+        self.bob += dt
+        self.position = self.center + Vec3(0, self.ALT + math.sin(self.bob * 0.8) * 0.4, 0)
         self.look_at(Vec3(self.aim.x, 0, self.aim.z))
         self.shake = max(0.0, self.shake - dt)
         camera.position = Vec3(random.uniform(-1, 1), random.uniform(-1, 1), 0) * self.shake * 0.3
@@ -4025,18 +4285,25 @@ class ReaperDrone(Entity):
         if mouse.locked:
             k = dist * 2 * math.tan(math.radians(self.fov / 2))
             self.aim += right * mouse.velocity[0] * k + fwd * mouse.velocity[1] * k * 1.3
-        # manette : stick droit = visée fine, stick gauche = déplacement rapide de la zone survolée.
-        # Courbe progressive (précis au centre), accélération quand on garde le stick en butée,
-        # ralentissement quand le réticule passe sur un ennemi, et inertie pour un mouvement fluide.
+        # VISÉE (canon et missiles) : stick droit ou souris. Courbe progressive (précis au centre),
+        # accélération quand le stick reste en butée, ralentissement quand le réticule passe sur une cible.
+        # La visée est stabilisée : le point visé au sol ne bouge pas quand le drone se déplace.
         want = Vec3(0, 0, 0)
         rm = math.hypot(pad.rx, pad.ry)
         if rm > 0:
             self.edge_t = self.edge_t + dt if rm > 0.9 else 0.0
             boost = 1 + min(1.5, self.edge_t * 2.5)
-            k = rm ** 1.8 / rm * 16 * boost
-            want += (right * pad.rx + fwd * pad.ry) * k
+            want += (right * pad.rx + fwd * pad.ry) * (rm ** 1.8 / rm * 16 * boost)
         else:
             self.edge_t = 0.0
+        near = any(not e.dead and flat_dist(e.position, self.laser) < 4 for e in g.enemies) or \
+            any(v.alive and flat_dist(v.position, self.laser) < 5 for v in g.vehicles)
+        want *= z * (0.45 if near else 1.0)                   # aide à la visée
+        self.aim_vel = lerp(self.aim_vel, want, min(1, dt * 9))
+        self.aim += self.aim_vel * dt
+
+        # PILOTAGE du drone : stick gauche ou E/S/Q/D (et flèches). Il vole dans la direction poussée
+        # (haut = vers l'avant de l'image), avec l'inertie d'un avion.
         mv = clamp(held_keys['e'] + held_keys['up arrow'], 0, 1) - clamp(held_keys['s'] + held_keys['down arrow'], 0, 1)
         sd = clamp(held_keys['d'] + held_keys['right arrow'], 0, 1) - clamp(held_keys['q'] + held_keys['left arrow'], 0, 1)
         lm = math.hypot(pad.lx, pad.ly)
@@ -4044,14 +4311,19 @@ class ReaperDrone(Entity):
             k = lm ** 1.5 / lm
             mv += pad.ly * k
             sd += pad.lx * k
-        want += (fwd * clamp(mv, -1, 1) + right * clamp(sd, -1, 1)) * 32
-        near = any(not e.dead and flat_dist(e.position, self.laser) < 4 for e in g.enemies) or \
-            any(v.alive and flat_dist(v.position, self.laser) < 5 for v in g.vehicles)
-        want *= z * (0.45 if near and rm > 0 else 1.0)          # aide à la visée
-        self.aim_vel = lerp(self.aim_vel, want, min(1, dt * 9))
-        self.aim += self.aim_vel * dt
-        lim = ARENA + 5
-        self.aim = Vec3(clamp(self.aim.x, -lim, lim), 0, clamp(self.aim.z, -lim, lim))
+        fly = (fwd * clamp(mv, -1, 1) + right * clamp(sd, -1, 1)) * self.FLY_SPEED
+        self.fly_vel = lerp(self.fly_vel, fly, min(1, dt * 2.2))
+        self.center += self.fly_vel * dt
+        w = g.world
+        self.center = Vec3(clamp(self.center.x, -w.hx - 10, w.hx + 10), 0, clamp(self.center.z, -w.hz - 10, w.hz + 10))
+        self.aim = Vec3(clamp(self.aim.x, -w.hx - 5, w.hx + 5), 0, clamp(self.aim.z, -w.hz - 5, w.hz + 5))
+        # la caméra ne vise ni à la verticale exacte ni trop loin (12 à 75 m devant le drone)
+        off = flat(self.aim - self.center)
+        d = off.length()
+        if d < 12:
+            self.aim = self.center + (off / d if d > 0.01 else fwd) * 12
+        elif d > 75:
+            self.aim = self.center + off / d * 75
         self.update_position(dt)
         camera.set_shader_input('nv_time', g.t % 100)
 
@@ -4167,7 +4439,7 @@ class ReaperDrone(Entity):
         camera.rotation = (0, 0, 0)
         camera.fov = 90
         p.drone = None
-        p.position = Vec3(PLAYER_START)
+        p.position = Vec3(g.world.spawn)
         p.rotation_y = 0
         p.pivot.rotation_x = 0
         p.vel, p.vy = Vec3(0, 0, 0), 0
@@ -4185,7 +4457,6 @@ class ReaperDrone(Entity):
 # Mode « Défense du village » : chars, blindés anti-aériens, missiles sol-air
 # ---------------------------------------------------------------------------
 
-DEFENSE_LINE = -30.0          # ligne à tenir (z) : au-delà, l'ennemi a percé
 MAX_BREACHES = 3              # percées tolérées avant la chute du village
 LANES = (-21.5, 21.5)         # axes de progression des blindés (x), dégagés dans le village
 # dégâts contre les blindés : (char, camion anti-aérien) au point d'impact
@@ -4340,7 +4611,7 @@ class Vehicle(Entity):
         self.hp = self.max_hp
         self.alive = True
         self.gone = False
-        self.speed = 1.4 if kind == 'tank' else 1.8        # ~50 s pour traverser le village
+        self.speed = 2.0 if kind == 'tank' else 2.4        # ~1 min 30 pour descendre jusqu'à la ligne
         self.fire_t = random.uniform(3, 6)
         self.mg_t = random.uniform(1, 3)
         self.burn_t = 0.0
@@ -4489,7 +4760,7 @@ class Vehicle(Entity):
         if not blocked:
             self.z -= self.speed * dt
             self.y = abs(math.sin(g.t * 9)) * 0.02
-        if self.z <= DEFENSE_LINE:
+        if self.z <= g.world.defense_z:
             g.breach(self)
             self.remove()
             return
@@ -4782,7 +5053,8 @@ CONTROLS_PAUSE = ('E avancer   ·   S reculer   ·   Q gauche   ·   D droite   
                   'T vue 3e personne   ·   N vision nocturne (la nuit)   ·   M carte   ·   G graphismes\n'
                   'Manette PS5 : stick gauche bouger (L3 courir) · stick droit regarder · R2 tirer · L2 viser\n'
                   'Rond accroupi · en visant L3 / R3 se pencher · Croix sauter · Carré recharger / ramasser / utiliser\n'
-                  'R1 grenade · flèche gauche : drone · drone : R2 canon, R1 missile, L1 leurres, L2 zoom, Triangle vision\n'
+                  'R1 grenade · flèche gauche : drone · drone : stick G piloter, stick D viser, R2 canon, R1 missile,\n'
+                  'L1 leurres, L2 zoom, Triangle vision\n'
                   'Triangle changer d\'arme · flèche bas : vue 3e personne · flèche haut : vision nocturne\n\n'
                   'Échap / Options : reprendre    ·    X / Create : quitter')
 
@@ -4809,7 +5081,7 @@ class MiniMap:
     def update(self):
         if not self.root.enabled:
             return
-        k = 1 / (2 * ARENA)
+        k = 1 / (2 * max(self.game.world.hx, self.game.world.hz))
         p = self.game.player
         self.player_icon.position = (p.x * k, p.z * k, -0.02)
         self.player_icon.rotation_z = p.rotation_y
@@ -4831,7 +5103,8 @@ class MiniMap:
         for d in self.vdots[len(vs):]:
             d.enabled = False
         self.line.enabled = self.game.mode == 'defense'
-        self.line.y = DEFENSE_LINE * k
+        self.line.y = self.game.world.defense_z * k
+        self.line.scale_x = self.game.world.hx * 2 * k
 
 
 class HUD:
@@ -5202,8 +5475,8 @@ class Game(Entity):
                          f"Arme : {WEAPONS[key]['name']}" + (' · Nuit : les ennemis ont la vision nocturne'
                                                              if self.night else '')
                          + ('\nDésert : Carré / V près de la batterie anti-aérienne pour l\'utiliser'
-                            if self.map_name == 'desert' else '')
-                         + ('\nDÉFENSE : arrêtez chars, DCA et fantassins avant la ligne rouge et blanche'
+                            if self.world.aa is not None else '')
+                         + ('\nDÉFENSE : arrêtez chars, DCA et fantassins avant la ligne rouge et blanche au sud'
                             f' ({MAX_BREACHES} percées = défaite)\nRPG : Triangle / Tab · roquettes à la caisse verte'
                             if self.mode == 'defense' else ''))
         self.set_nv(self.night)             # la nuit, on commence lunettes allumées
@@ -5212,7 +5485,7 @@ class Game(Entity):
     def apply_time_of_day(self, night):
         """Jour ou nuit : ambiance posée une fois sur toute la scène (tous les objets en héritent)."""
         self.night = night
-        a = NIGHT if night else (DESERT_DAY if self.map_name == 'desert' else DAY)
+        a = NIGHT if night else (DESERT_DAY if self.map_name == 'desert' or self.mode == 'defense' else DAY)
         scene.set_shader_input('sky_color', a['sky'])
         scene.set_shader_input('ground_color', a['ground'])
         scene.set_shader_input('fog_color', a['fog'])
@@ -5245,30 +5518,33 @@ class Game(Entity):
         self.menu_time_text.text = self.time_label()
 
     def map_label(self):
+        if self.mode == 'defense':
+            return '4  —  Carte : DÉSERT DE DÉFENSE (200 m de long)'
         return '4  —  Carte : ' + ('DÉSERT (dunes, tranchées, char détruit, batterie AA)' if self.map_name == 'desert'
                                    else 'VILLAGE (murs, voitures, arbres)')
 
     def toggle_map_choice(self):
         """Change de carte dans le menu : le décor est reconstruit."""
-        self.map_name = 'desert' if self.map_name == 'village' else 'village'
-        if self.map_name == 'desert':
-            self.mode = 'survie'            # la défense se joue dans le village
+        if self.mode == 'defense':          # la défense a sa propre carte : on revient à la survie
+            self.mode = 'survie'
+        else:
+            self.map_name = 'desert' if self.map_name == 'village' else 'village'
         self.rebuild_world()
 
     def mode_label(self):
-        return '5  —  Mode : ' + ('DÉFENSE DU VILLAGE (chars, DCA, MANPADS)' if self.mode == 'defense'
+        return '5  —  Mode : ' + ('DÉFENSE (chars, DCA, MANPADS) — carte désert' if self.mode == 'defense'
                                   else 'SURVIE (vagues d\'infanterie)')
 
     def toggle_mode_choice(self):
         self.mode = 'defense' if self.mode == 'survie' else 'survie'
-        if self.mode == 'defense':
-            self.map_name = 'village'
         self.rebuild_world()
 
     def rebuild_world(self):
         destroy(self.world.level)
         self.world = World(self.map_name, self.mode)
         self.player.world = self.world
+        self.player.position = Vec3(self.world.spawn)
+        self.fit_shadows()
         self.apply_time_of_day(self.night)
         self.update_grass(force=True)
         self.menu_map_text.text = self.map_label()
@@ -5279,6 +5555,8 @@ class Game(Entity):
 
     def fit_shadows(self):
         """La carte d'ombres couvre uniquement l'arène (ombres plus nettes)."""
+        w = self.world
+        self.shadow_bounds.scale = (w.hx * 2 + 4, 9, w.hz * 2 + 4)
         self.shadow_bounds.visible = True
         self.sun.update_bounds(self.shadow_bounds)
         self.shadow_bounds.visible = False
@@ -5389,7 +5667,8 @@ class Game(Entity):
         rpg_index = random.randrange(n)
         count = 0
         for size in sizes:
-            anchor = self.world.free_point_near(Vec3(random.uniform(-38, 38), 0, random.uniform(30, 41)))
+            hx, hz = self.world.hx, self.world.hz
+            anchor = self.world.free_point_near(Vec3(random.uniform(-hx + 6, hx - 6), 0, random.uniform(hz - 16, hz - 4)))
             members = []
             for i in range(size):
                 pos = anchor
@@ -5414,13 +5693,14 @@ class Game(Entity):
         if self.over or self.mode != 'defense':
             return
         self.pending = max(0, self.pending - 1)
-        Vehicle(self, kind, lane, 40, skill)
+        Vehicle(self, kind, lane, self.world.hz - 6, skill)
         self.hud.add_feed('Char en approche !' if kind == 'tank' else 'Blindé anti-aérien en approche !')
 
     def advance_point(self, e):
         """Étape suivante de la progression d'un fantassin vers la ligne à tenir."""
-        z = max(e.z - random.uniform(10, 16), DEFENSE_LINE - 6)
-        x = clamp(e.x + random.uniform(-6, 6), -ARENA + 3, ARENA - 3)
+        w = self.world
+        z = max(e.z - random.uniform(10, 16), w.defense_z - 6)
+        x = clamp(e.x + random.uniform(-6, 6), -w.hx + 3, w.hx - 3)
         return self.world.free_point_near(Vec3(x, 0, z))
 
     def breach(self, who):
@@ -5436,12 +5716,12 @@ class Game(Entity):
                 self.player.drone.finish()
             self.over = True
             self.player.dead = True
-            self.hud.message('Le village est tombé !', 0,
+            self.hud.message('La position est tombée !', 0,
                              f'Score : {self.score}   ·   Vague : {self.wave}\n\nEntrée (ou Croix) pour recommencer')
 
     def check_breaches(self):
         for e in self.enemies:
-            if not e.dead and e.z < DEFENSE_LINE:
+            if not e.dead and e.z < self.world.defense_z:
                 e.dead = True
                 e.release_cover()
                 destroy(e)
@@ -5563,7 +5843,7 @@ class Game(Entity):
         p.nades = 1
         self.headshot_streak = 0
         self.ult_ready = False
-        p.position = Vec3(PLAYER_START)
+        p.position = Vec3(self.world.spawn)
         p.rotation_y = 0
         p.pivot.position = (0, 1.65, 0)
         p.pivot.rotation = (0, 0, 0)
