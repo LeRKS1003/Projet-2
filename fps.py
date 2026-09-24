@@ -14,10 +14,14 @@ Commandes (clavier AZERTY) :
     Q / flèche gauche  : aller à gauche
     D / flèche droite  : aller à droite
     Z (ou Maj)         : courir
+    C                  : s'accroupir / se relever
     Espace             : sauter
     Clic gauche ou P   : tirer (fusil : maintenir pour le tir automatique)
     Clic droit         : viser (point rouge / lunette du sniper)
+    A / F (en visant)  : se pencher à gauche / à droite
     R                  : recharger
+    Tab                : pistolet (8 balles) <-> arme principale
+    M                  : afficher / masquer la carte (ennemis en rouge)
     G                  : qualité graphique (effets de post-traitement + herbe) on/off
     Échap              : pause (X pour quitter pendant la pause)
     Entrée             : recommencer après la mort
@@ -26,10 +30,11 @@ Manette PS5 (DualSense, USB ou Bluetooth) — lue avec pygame (Ursina reste le m
 Installer une fois :  pip install pygame      (sans pygame, le jeu se joue au clavier / à la souris)
     Stick gauche       : se déplacer (analogique, zone morte PAD_DEADZONE) ; L3 (clic du stick) : courir
     Stick droit        : regarder (légère aide à la visée sur les ennemis)
-    R2 / L2            : tirer / viser
+    R2 / L2            : tirer / viser ; en visant, L3 / R3 : se pencher à gauche / à droite
+    Rond               : s'accroupir / se relever
     Croix              : sauter ; valider dans le menu ; recommencer après la mort
     Carré              : recharger
-    Triangle           : qualité graphique
+    Triangle           : pistolet (8 balles) <-> arme principale
     Options            : pause (Create pour quitter pendant la pause)
     Croix directionnelle ou stick gauche : choisir l'arme dans le menu
     Vibrations au tir, aux dégâts et aux explosions. La manette peut être branchée en cours de partie.
@@ -811,7 +816,7 @@ class World:
         flowers = [rgb(250, 230, 80), rgb(245, 245, 245), rgb(190, 120, 220), rgb(240, 120, 60)]
         up = Vec3(0, 1, 0)
         count = 0
-        while count < 14000:
+        while count < 7000:          # herbe simplifiée : 2 fois moins de touffes
             x = rng.uniform(-ARENA + 1, ARENA - 1)
             z = rng.uniform(-ARENA + 1, ARENA - 1)
             if 12.2 < z < 16.8 or not self.is_free(Vec3(x, 0, z)):
@@ -821,7 +826,7 @@ class World:
             base = Color(0.26 + 0.06 * nz, 0.38 + 0.06 * nz, 0.14, 1)
             tip = Color(0.44 + 0.14 * nz, 0.60 + 0.08 * nz, 0.24, 1)
             flower = rng.random() < 0.05
-            for _ in range(4):
+            for _ in range(2):          # 2 brins par touffe (au lieu de 4)
                 a = rng.uniform(0, 3.1416)
                 w = rng.uniform(0.025, 0.045)
                 hgt = rng.uniform(0.15, 0.38) * (0.7 + 0.6 * nz)
@@ -1988,6 +1993,8 @@ class Enemy(Entity):
             chance *= lerp(0.8, 0.95, self.skill)
         if pl.ads > 0.5 and pl.speed_now < 1:
             chance *= 1.1           # immobile en train de viser : cible facile
+        if pl.crouch_t > 0.5:
+            chance *= 0.8           # accroupi : cible plus petite
         if self.sub in ('skirmish', 'move_cover'):
             chance *= 0.6
         if not self.world.los(muzzle, pl.eye) and not self.world.los(self.eye, pl.eye):
@@ -2233,7 +2240,10 @@ class Enemy(Entity):
 # ---------------------------------------------------------------------------
 
 SNIPER_ZOOM = 2.0
-PAD_LOOK_SPEED = (200, 140)   # vitesse de rotation au stick droit (degrés/s, horizontal / vertical)     # grossissement de la lunette par rapport à la vue normale (90°)
+PAD_LOOK_SPEED = (200, 140)   # vitesse de rotation au stick droit (degrés/s, horizontal / vertical)
+LEAN_DIST = 0.55              # décalage de la tête quand on se penche (m)
+LEAN_ROLL = 12                # inclinaison de la vue quand on se penche (degrés)
+EYE_STAND, EYE_CROUCHED = 1.65, 1.05   # hauteur des yeux du joueur debout / accroupi
 
 WEAPONS = {
     'rifle': dict(
@@ -2243,7 +2253,7 @@ WEAPONS = {
         ads_fov=90, ads_sens=0.8, scope=False,
         sight_zoom=1.4,        # grossissement uniquement dans la vitre du viseur point rouge
         flash=0.45 * 0.5, flash_intensity=0.5, flash_life=0.05 * 0.5,      # flash réduit de 50 %
-        tracer=(0.015, 0.04),
+        tracer=(0.015, 0.04), model='rifle',
         hip=Vec3(0.15, -0.14, 0.2), ads=Vec3(0, -0.1675 * 0.42, 0.09),      # le point rouge au centre
     ),
     'sniper': dict(
@@ -2253,8 +2263,18 @@ WEAPONS = {
         ads_fov=math.degrees(2 * math.atan(math.tan(math.radians(45)) / SNIPER_ZOOM)),   # zoom x2
         ads_sens=0.45, scope=True, sight_zoom=1.0,
         flash=0.7 * 0.5, flash_intensity=0.5, flash_life=0.06 * 0.5,
-        tracer=(0.03, 0.09),
+        tracer=(0.03, 0.09), model='sniper',
         hip=Vec3(0.15, -0.15, 0.2), ads=Vec3(0, -0.1, 0.12),
+    ),
+    # arme secondaire (Triangle / Tab) : semi-automatique, 8 balles, visée aux organes de visée
+    'pistol': dict(
+        name='Pistolet', short='PISTOLET', auto=False, cooldown=0.16, mag=8, reload=1.2,
+        dmg={'head': 220, 'body': 45, 'limb': 28, 'gun': 15},
+        spread=0.012, move_spread=0.02, ads_spread=0.3, kick=1.0,
+        ads_fov=75, ads_sens=0.75, scope=False, sight_zoom=1.0,
+        flash=0.35 * 0.5, flash_intensity=0.5, flash_life=0.04 * 0.5,
+        tracer=(0.012, 0.035), model='pistol',
+        hip=Vec3(0.13, -0.13, 0.25), ads=Vec3(0, -0.1 * 0.42, 0.32),      # guidon et hausse au centre
     ),
 }
 
@@ -2285,8 +2305,16 @@ class Player(Entity):
         self.grounded = True
         self.hp = 100
         self.dead = False
+        self.weapon_key = 'rifle'
+        self.primary = 'rifle'      # arme choisie au menu ; Triangle / Tab alterne avec le pistolet
         self.weapon = WEAPONS['rifle']
         self.mag = self.weapon['mag']
+        self.mags = {}              # munitions gardées pour l'arme rangée
+        self.switch_t = 0.0         # animation de changement d'arme
+        self.crouching = False
+        self.crouch_t = 0.0
+        self.lean_pad = 0           # penché choisi à la manette (-1 gauche, 0, 1 droite)
+        self.lean_t = 0.0
         self.armed = False          # il faut relâcher la détente avant le premier tir (clic du menu)
         self.trigger_ready = False  # sniper : un tir par pression
         self.reload_t = 0
@@ -2306,23 +2334,56 @@ class Player(Entity):
 
     @property
     def eye(self):
-        return self.position + Vec3(0, 1.65, 0)
+        # position réelle de la tête : tient compte de l'accroupissement et du penché
+        return self.pivot.world_position
 
     def set_weapon(self, key):
+        self.mags[self.weapon_key] = self.mag
+        self.weapon_key = key
         self.weapon = WEAPONS[key]
         destroy(self.gun)
         self.build_gun()
-        self.mag = self.weapon['mag']
+        self.mag = self.mags.get(key, self.weapon['mag'])
         self.reload_t = 0
         self.cooldown = 0.3
         self.armed = False
         self.trigger_ready = False
 
+    def switch_weapon(self):
+        """Triangle / Tab : arme principale <-> pistolet (chaque arme garde son chargeur)."""
+        if self.dead or self.switch_t > 0:
+            return
+        self.set_weapon(self.primary if self.weapon_key == 'pistol' else 'pistol')
+        self.switch_t = 0.35
+        self.game.hud.add_feed(f"Arme : {self.weapon['name']}")
+
+    def toggle_crouch(self):
+        if not self.dead:
+            self.crouching = not self.crouching
+
     def build_gun(self):
-        if self.weapon['scope']:
-            self.build_sniper()
-        else:
-            self.build_rifle()
+        {'sniper': self.build_sniper, 'pistol': self.build_pistol}.get(self.weapon['model'], self.build_rifle)()
+
+    def build_pistol(self):
+        self.gun = Entity(parent=camera, position=self.weapon['hip'], scale=self.GUN_SCALE)
+        dark = rgb(32, 33, 36)
+        mid = rgb(70, 72, 76)
+
+        def p(pos, sc, col):
+            return Entity(parent=self.gun, model='cube', color=col, position=pos, scale=sc, shader=LIT)
+        p((0, 0.04, 0.1), (0.07, 0.07, 0.36), mid)               # culasse
+        p((0, -0.01, 0.08), (0.065, 0.04, 0.3), dark)            # carcasse
+        p((0, -0.12, -0.02), (0.06, 0.2, 0.09), dark)            # poignée
+        p((0, -0.06, 0.08), (0.02, 0.05, 0.08), dark)            # pontet
+        p((0, 0.04, 0.29), (0.03, 0.03, 0.03), dark)             # bouche du canon
+        # organes de visée : hausse à cran et guidon, alignés à y = 0.1
+        p((0.024, 0.09, -0.06), (0.014, 0.02, 0.02), dark)
+        p((-0.024, 0.09, -0.06), (0.014, 0.02, 0.02), dark)
+        p((0, 0.087, 0.26), (0.01, 0.026, 0.02), rgb(230, 230, 230))
+        self.dot = None
+        self.sight_corners = []
+        self.muzzle = Entity(parent=self.gun, z=0.31, y=0.04)
+        self.eject = Entity(parent=self.gun, x=0.04, y=0.06, z=0.1)
 
     def build_sniper(self):
         self.gun = Entity(parent=camera, position=self.weapon['hip'], scale=self.GUN_SCALE)
@@ -2400,6 +2461,18 @@ class Player(Entity):
         pad = PAD
         aiming = (held_keys['right mouse'] or pad.l2 > 0.4) and self.reload_t <= 0 and not self.sprinting
         self.ads = lerp(self.ads, 1.0 if aiming else 0.0, min(1, dt * 14))
+        self.switch_t = max(0.0, self.switch_t - dt)
+
+        # se pencher (en visant) : L3 gauche / R3 droite à la manette (appui = bascule), A / F au clavier
+        if aiming:
+            if pad.pressed['l3']:
+                self.lean_pad = 0 if self.lean_pad == -1 else -1
+            if pad.pressed['r3']:
+                self.lean_pad = 0 if self.lean_pad == 1 else 1
+        else:
+            self.lean_pad = 0
+        kb_lean = (held_keys['f'] - held_keys['a']) if aiming else 0
+        self.lean_t = lerp(self.lean_t, kb_lean or self.lean_pad, min(1, dt * 10))
 
         # regard à la souris (plus précis en visée)
         sens = lerp(1.0, w['ads_sens'], self.ads)
@@ -2423,13 +2496,16 @@ class Player(Entity):
         direction = flat(self.forward) * fwd + flat(self.right) * side
         if direction.length() > 1:
             direction = direction.normalized()
-        # L3 : course maintenue tant qu'on pousse le stick vers l'avant
-        if pad.pressed['l3']:
+        # L3 : course maintenue tant qu'on pousse le stick vers l'avant (sauf en visée : L3 = se pencher)
+        if pad.pressed['l3'] and not aiming:
             self.pad_sprint = True
         if fwd < 0.5:
             self.pad_sprint = False
         self.sprinting = bool(held_keys['z'] or held_keys['shift'] or self.pad_sprint) and fwd > 0 and self.ads < 0.3
-        speed = (9 if self.sprinting else 5.5) * lerp(1, 0.6, self.ads)
+        if self.sprinting:
+            self.crouching = False           # courir relève le joueur
+        self.crouch_t = lerp(self.crouch_t, 1.0 if self.crouching else 0.0, min(1, dt * 10))
+        speed = (9 if self.sprinting else 5.5) * lerp(1, 0.6, self.ads) * lerp(1, 0.5, self.crouch_t)
         accel = 12 if self.grounded else 3
         self.vel = lerp(self.vel, direction * speed, min(1, dt * accel))
         new = self.world.resolve(self.position + self.vel * dt, PLAYER_RADIUS, self.y)
@@ -2452,6 +2528,17 @@ class Player(Entity):
 
         if self.game.t - self.last_hurt > 5 and self.hp < 100:
             self.hp = min(100, self.hp + 8 * dt)
+
+        # tête : hauteur (accroupi) et penché ; on ne passe jamais la tête à travers un mur
+        lean = 0.0
+        if abs(self.lean_t) > 0.01:
+            side_dir = self.right * math.copysign(1, self.lean_t)
+            base_eye = self.position + Vec3(0, lerp(EYE_STAND, EYE_CROUCHED, self.crouch_t), 0)
+            want = abs(self.lean_t) * LEAN_DIST
+            hit = raycast(base_eye, side_dir, want + 0.25, traverse_target=self.world.level)
+            lean = math.copysign(min(want, max(0.0, hit.distance - 0.25)) if hit.hit else want, self.lean_t)
+        self.pivot.position = (lean, lerp(EYE_STAND, EYE_CROUCHED, self.crouch_t), 0)
+        self.pivot.rotation_z = self.lean_t * LEAN_ROLL
 
         # caméra : zoom, balancement de tête, secousses
         camera.fov = lerp(90, w['ads_fov'], self.ads)
@@ -2476,6 +2563,7 @@ class Player(Entity):
         base = lerp(w['hip'], w['ads'], self.ads)
         if self.sprinting:
             base += Vec3(0.02, -0.03, -0.03)
+        base += Vec3(0, -self.switch_t * 0.6, 0)       # l'arme remonte après un changement
         self.gun.position = base + sway + Vec3(0, -self.recoil * 0.012, -self.recoil * 0.05)
         self.gun.rotation = Vec3(-self.recoil * 5 * (1 - 0.6 * self.ads), 18 if self.sprinting else 0, 0)
         if self.dot is not None:
@@ -2500,7 +2588,7 @@ class Player(Entity):
             if self.reload_t <= 0:
                 self.mag = w['mag']
         elif trigger and self.armed and (w['auto'] or self.trigger_ready) and self.cooldown <= 0 \
-                and (mouse.locked or pad_fire):
+                and self.switch_t <= 0 and (mouse.locked or pad_fire):
             self.trigger_ready = False               # sniper : relâcher pour tirer à nouveau
             self.shoot()
 
@@ -2535,6 +2623,9 @@ class Player(Entity):
         return hit.hit and isinstance(getattr(hit.entity, 'owner', None), Enemy)
 
     def jump(self):
+        if self.crouching:                    # accroupi : Croix / Espace relève d'abord
+            self.crouching = False
+            return
         if self.grounded and not self.dead:
             self.vy = 7.5
             self.grounded = False
@@ -2768,16 +2859,79 @@ PAD = None       # instance unique, créée par Game
 # Interface
 # ---------------------------------------------------------------------------
 
-CONTROLS_LINE = ('E/S/Q/D ou flèches bouger · Z courir · Espace sauter · Clic gauche/P tirer'
-                 ' · Clic droit viser · R recharger · G graphismes · Échap pause')
-CONTROLS_PAD_LINE = ('Manette : stick G bouger · L3 courir · stick D regarder · R2 tirer · L2 viser'
-                     ' · Croix sauter · Carré recharger · Triangle graphismes · Options pause')
+CONTROLS_LINE = ('E/S/Q/D bouger · Z courir · C accroupi · Espace sauter · Clic G/P tirer · Clic D viser'
+                 ' (+A/F se pencher) · R recharger · Tab pistolet · M carte · Échap pause')
+CONTROLS_PAD_LINE = ('Manette : stick G bouger · L3 courir · Rond accroupi · R2 tirer · L2 viser (+L3/R3 se pencher)'
+                     ' · Croix sauter · Carré recharger · Triangle pistolet · Options pause')
 CONTROLS_PAUSE = ('E avancer   ·   S reculer   ·   Q gauche   ·   D droite   ·   flèches : se déplacer\n'
-                  'Z courir   ·   Espace sauter   ·   Clic gauche ou P tirer   ·   Clic droit viser\n'
-                  'R recharger   ·   G graphismes\n'
+                  'Z courir   ·   C accroupi   ·   Espace sauter   ·   Clic gauche ou P tirer   ·   Clic droit viser\n'
+                  'En visant : A / F se pencher   ·   R recharger   ·   Tab pistolet   ·   M carte   ·   G graphismes\n'
                   'Manette PS5 : stick gauche bouger (L3 courir) · stick droit regarder · R2 tirer · L2 viser\n'
-                  'Croix sauter · Carré recharger · Triangle graphismes\n\n'
+                  'Rond accroupi · en visant L3 / R3 se pencher · Croix sauter · Carré recharger · Triangle pistolet\n\n'
                   'Échap / Options : reprendre    ·    X / Create : quitter')
+
+class MiniMap:
+    """Carte de l'arène (en haut à gauche) : obstacles, joueur (flèche) et ennemis (points rouges)."""
+    SIZE = 0.3
+
+    def __init__(self, game, parent, position):
+        self.game = game
+        self.root = Entity(parent=parent, position=position, scale=self.SIZE)
+        Entity(parent=self.root, model=Quad(radius=0.04), color=color.rgba(0, 0, 0, 0.55), scale=1.06, z=0.02)
+        # tous les obstacles dans un seul maillage 2D (carte vue de dessus, nord en haut)
+        verts, tris, cols = [], [], []
+        k = 1 / (2 * ARENA)
+        for b in game.world.boxes:
+            sx, sz = b.x1 - b.x0, b.z1 - b.z0
+            if b.h >= 2.9 and max(sx, sz) > 1:
+                c = color.rgba(0.85, 0.82, 0.78, 0.95)       # murs
+            elif sx < 1 and sz < 1:
+                c = color.rgba(0.25, 0.6, 0.3, 0.95)         # arbres
+            elif b.h >= 1.4:
+                c = color.rgba(0.45, 0.55, 0.75, 0.95)       # voitures
+            else:
+                c = color.rgba(0.6, 0.55, 0.45, 0.95)        # murets, sacs de sable, caisses
+            x0, x1, z0, z1 = b.x0 * k, b.x1 * k, b.z0 * k, b.z1 * k
+            i = len(verts)
+            verts += [Vec3(x0, z0, 0), Vec3(x1, z0, 0), Vec3(x1, z1, 0), Vec3(x0, z1, 0)]
+            tris += [i, i + 1, i + 2, i, i + 2, i + 3]
+            cols += [c] * 4
+        Entity(parent=self.root, model=Mesh(vertices=verts, triangles=tris, colors=cols, mode='triangle'),
+               double_sided=True, z=0.01)
+        arrow = Mesh(vertices=[Vec3(0, 0.6, 0), Vec3(-0.4, -0.45, 0), Vec3(0.4, -0.45, 0)],
+                     triangles=[0, 1, 2], mode='triangle')
+        self.player_icon = Entity(parent=self.root, model=arrow, color=rgb(90, 220, 255), scale=0.045,
+                                  double_sided=True, z=-0.02)
+        self.dots = []
+        self.gdots = []
+
+    def _dots(self, pool, n, col, size):
+        while len(pool) < n:
+            pool.append(Entity(parent=self.root, model='circle', color=col, scale=size, z=-0.01))
+        return pool
+
+    def update(self):
+        if not self.root.enabled:
+            return
+        k = 1 / (2 * ARENA)
+        p = self.game.player
+        self.player_icon.position = (p.x * k, p.z * k, -0.02)
+        self.player_icon.rotation_z = p.rotation_y
+        alive = [e for e in self.game.enemies if not e.dead]
+        dots = self._dots(self.dots, len(alive), rgb(255, 60, 50), 0.028)
+        for d, e in zip(dots, alive):
+            d.enabled = True
+            d.position = (e.x * k, e.z * k, -0.01)
+        for d in dots[len(alive):]:
+            d.enabled = False
+        gr = self.game.grenades
+        gdots = self._dots(self.gdots, len(gr), rgb(255, 170, 40), 0.02)
+        for d, g in zip(gdots, gr):
+            d.enabled = True
+            d.position = (g.x * k, g.z * k, -0.015)
+        for d in gdots[len(gr):]:
+            d.enabled = False
+
 
 class HUD:
     def __init__(self, game):
@@ -2833,6 +2987,7 @@ class HUD:
         self.feed_lines = []
         self._fps_frames = 0
         self._fps_time = 0.0
+        self.minimap = MiniMap(game, ui, (-ar + 0.02 + MiniMap.SIZE * 0.53, 0.415 - MiniMap.SIZE * 0.53))
         self.help = Text(parent=ui, text=CONTROLS_LINE,
                          origin=(0, 0), position=(0, -0.475), scale=0.7, color=color.rgba(1, 1, 1, 0.55))
 
@@ -2892,6 +3047,8 @@ class HUD:
         # aide : commandes de la manette si elle a servi récemment
         self.set_text(self.help, CONTROLS_PAD_LINE if PAD is not None and g.t - PAD.last_used < 10 and PAD.connected
                       else CONTROLS_LINE)
+
+        self.minimap.update()
 
         # images par seconde, moyenne sur une demi-seconde
         self._fps_frames += 1
@@ -3030,6 +3187,8 @@ class Game(Entity):
             return
         self.choosing = False
         destroy(self.menu)
+        self.player.primary = key
+        self.player.mags = {}
         self.player.set_weapon(key)
         mouse.locked = True
         self.hud.message('Éliminez les ennemis !', 4,
@@ -3146,8 +3305,12 @@ class Game(Entity):
         p.rotation_y = 0
         p.pivot.position = (0, 1.65, 0)
         p.pivot.rotation = (0, 0, 0)
+        p.mags = {}
+        p.set_weapon(p.primary)
+        p.mags = {}
         p.hp, p.dead, p.mag, p.reload_t, p.vel, p.vy = 100, False, p.weapon['mag'], 0, Vec3(0, 0, 0), 0
         p.armed = False
+        p.crouching, p.crouch_t, p.lean_pad, p.lean_t = False, 0.0, 0, 0.0
         self.over = False
         self.score = self.kills = self.wave = 0
         self.hud.msg.text = ''
@@ -3219,16 +3382,12 @@ class Game(Entity):
                 self.menu_cursor.y = self.menu_buttons[self.menu_sel].y
             if pr['cross']:
                 self.choose_weapon(self.menu_buttons[self.menu_sel].weapon_key)
-            elif pr['triangle']:
-                self.set_quality(not self.high_quality)
             return
         if pr['options'] and not self.over:
             self.toggle_pause()
         elif self.paused:
             if pr['share']:
                 application.quit()
-            elif pr['triangle']:
-                self.input('g')
         elif self.over:
             if pr['cross']:
                 self.restart()
@@ -3237,8 +3396,10 @@ class Game(Entity):
                 self.player.jump()
             if pr['square']:
                 self.player.reload()
+            if pr['circle']:
+                self.player.toggle_crouch()
             if pr['triangle']:
-                self.input('g')
+                self.player.switch_weapon()
 
     def input(self, key):
         if self.choosing:
@@ -3261,6 +3422,12 @@ class Game(Entity):
             self.player.jump()
         elif key == 'r':
             self.player.reload()
+        elif key == 'c':
+            self.player.toggle_crouch()
+        elif key == 'tab':
+            self.player.switch_weapon()
+        elif key == 'm':
+            self.hud.minimap.root.enabled = not self.hud.minimap.root.enabled
         elif key == 'enter' and self.over:
             self.restart()
         elif key == 'left mouse down' and not mouse.locked:
