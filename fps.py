@@ -6,7 +6,7 @@ Lancement :  python fps.py                 (vsync activé, FPS limités à 60)
 
 Au lancement : choix de l'arme (clic sur le menu, ou touches 1 / 2), du moment (3 ou N : jour / nuit)
 et de la carte (4 : village ou désert)
-    1 : fusil d'assaut type M4 (tir automatique, viseur holographique grossissant x1,4 dans la fenêtre seulement)
+    1 : fusil d'assaut type M4 (tir automatique, viseur holographique compact grossissant x1,4 dans la fenêtre)
     2 : sniper (un tir par clic, gros dégâts, lunette zoom x2)
     Carte désert : dunes, tranchées en zigzag, char détruit au centre (il fume encore),
                    batterie anti-aérienne bitube utilisable (obus explosifs, surchauffe)
@@ -20,7 +20,7 @@ Commandes (clavier AZERTY) :
     C                  : s'accroupir / se relever
     Espace             : sauter
     Clic gauche ou P   : tirer (fusil : maintenir pour le tir automatique)
-    Clic droit         : viser (point rouge / lunette du sniper)
+    Clic droit         : viser (viseur holographique / lunette du sniper / lunette x2,5 du RPG avec télémètre)
     A / F (en visant)  : se pencher à gauche / à droite
     R                  : recharger
     Tab                : changer d'arme (arme principale <-> pistolet)
@@ -54,8 +54,10 @@ Installer une fois :  pip install pygame      (sans pygame, le jeu se joue au cl
 
 Drone Reaper (ultime, pendant toute la manche ; vous réapparaissez au sol à la fin de la manche) :
     Souris / stick droit : viser · E/S/Q/D / stick gauche : déplacer la zone survolée
-    Clic gauche / R2 : canon à obus explosifs · Espace / R1 : missile infrarouge (se guide sur la cible verrouillée)
-    Clic droit / L2 : zoom · caméra thermique : les corps chauds apparaissent en blanc
+    Clic gauche / R2 : canon à obus explosifs (paquets de 20 obus, 3 s pour engager le paquet suivant)
+    Espace / R1 : missile à guidage infrarouge manuel (6 en tout) : pas de verrouillage, il suit jusqu'à
+                  l'impact la tache infrarouge projetée au centre du réticule — gardez la cible dans le viseur
+    Clic droit / L2 : zoom · N / Triangle : caméra normale ou thermique (corps chauds en blanc)
 
 Batterie anti-aérienne (désert) : souris / stick droit pour pointer, clic gauche / R2 pour tirer,
     clic droit / L2 pour zoomer, V / Carré pour descendre.
@@ -2735,8 +2737,8 @@ class Enemy(Entity):
         full = WEAPONS[self.loot]['mag']
         self.loot_mag = full if self.carries_rpg else random.randint(full // 2, full)
         self.nade_loot = 1                # chaque ennemi tué laisse une grenade (ramassée automatiquement)
-        if self.game.player.drone is not None:
-            set_hot(self, 0.45)           # vu du drone : le corps refroidit
+        if self.game.player.drone is not None and self.game.player.drone.thermal:
+            set_hot(self, 0.45)           # vu du drone en thermique : le corps refroidit
         self.game.corpses.append(self)
         self.game.on_enemy_killed(self, zone == 'head')
         for a in self.allies(20):
@@ -2972,8 +2974,9 @@ WEAPONS = {
     # trouvé sur un ennemi : 2 roquettes en tout (pas de rechargement), explosion de 3 m de rayon
     'rpg': dict(
         name='RPG', short='RPG', auto=False, cooldown=1.6, mag=2, reload=0, no_reload=True, rocket=True,
-        dmg={}, spread=0.003, move_spread=0.01, ads_spread=0.5, kick=3.0,
-        ads_fov=70, ads_sens=0.7, scope=False, sight_zoom=1.0,
+        dmg={}, spread=0.003, move_spread=0.01, ads_spread=0.15, kick=3.0,
+        ads_fov=math.degrees(2 * math.atan(math.tan(math.radians(45)) / 2.5)),    # lunette PGO-7 x2,5
+        ads_sens=0.5, scope='rpg', sight_zoom=1.0,
         flash=1.0 * 0.5, flash_intensity=0.5, flash_life=0.08 * 0.5,
         tracer=(0.0, 0.0), model='rpg',
         hip=Vec3(0.2, -0.12, 0.12), ads=Vec3(0, -0.105 * 0.42, 0.16),
@@ -3001,14 +3004,14 @@ def holo_texture(size=256):
         from PIL import Image, ImageDraw, ImageFilter
         img = Image.new('RGBA', (size, size), (255, 40, 30, 0))
         d = ImageDraw.Draw(img)
-        c, r, w = size // 2, int(size * 0.36), max(2, size // 70)
+        c, r, w = size // 2, int(size * 0.36), max(2, size // 110)     # traits fins
         red = (255, 45, 35, 255)
         d.ellipse((c - r, c - r, c + r, c + r), outline=red, width=w)
         for dx, dy in ((0, 1), (0, -1), (1, 0), (-1, 0)):       # repères à 3, 6, 9 et 12 h
             x0, y0 = c + dx * (r - w * 3), c + dy * (r - w * 3)
             x1, y1 = c + dx * (r + w * 2), c + dy * (r + w * 2)
             d.line((x0, y0, x1, y1), fill=red, width=w)
-        pr = max(2, size // 60)
+        pr = max(2, size // 75)
         d.ellipse((c - pr, c - pr, c + pr, c + pr), fill=red)
         glow = img.filter(ImageFilter.GaussianBlur(size / 120))  # léger halo lumineux
         _HOLO = Texture(Image.alpha_composite(glow, img))
@@ -3022,7 +3025,7 @@ def holo_texture(size=256):
 class Player(Entity):
     GUN_SCALE = 0.42
     DOT = Vec3(0, 0.1675, 0.08)                  # centre du réticule (repère local de l'arme), centre de la vitre
-    SIGHT = ((-0.056, 0.115), (0.056, 0.222))    # coins intérieurs de la fenêtre du viseur (repère local)
+    SIGHT = ((-0.043, 0.114), (0.043, 0.221))    # coins intérieurs de la fenêtre du viseur (repère local)
 
     def __init__(self, game):
         super().__init__(position=(0, 0, -40))      # = PLAYER_START
@@ -3199,6 +3202,12 @@ class Player(Entity):
         p((-0.03, 0.09, 0.1), (0.02, 0.05, 0.06), dark)          # hausse
         p((0.03, 0.09, 0.1), (0.02, 0.05, 0.06), dark)
         p((0, 0.095, 0.45), (0.015, 0.03, 0.02), rgb(220, 220, 200))   # guidon
+        # lunette optique PGO-7 sur le flanc gauche
+        p((-0.085, 0.06, 0.05), (0.05, 0.03, 0.14), dark)        # monture
+        p((-0.12, 0.1, 0.03), (0.055, 0.055, 0.3), dark)          # corps de la lunette
+        p((-0.12, 0.1, 0.2), (0.07, 0.07, 0.05), dark)            # objectif
+        p((-0.12, 0.1, -0.15), (0.075, 0.075, 0.07), rgb(20, 20, 20))   # œilleton caoutchouc
+        p((-0.155, 0.1, 0.02), (0.02, 0.025, 0.03), rgb(60, 62, 55))    # molette d'éclairage
         self.dot = None
         self.sight_corners = []
         self.muzzle = Entity(parent=self.gun, z=1.05)
@@ -3317,25 +3326,23 @@ class Player(Entity):
         b.cylinder((0, 0.02, 0.8), 0.021, 0.085, blk, seg=8, axis='z')
         for sx, sy in ((0, 1), (1, 0), (-1, 0)):                            # fentes du cache-flamme
             b.box((sx * 0.02, 0.02 + sy * 0.02, 0.85), (0.006, 0.006, 0.05), rgb(10, 10, 10))
-        # viseur holographique : embase, boîtier, capot autour d'une fenêtre carrée
-        b.box((0, 0.084, 0.08), (0.07, 0.024, 0.16), blk)
-        b.box((0, 0.103, 0.095), (0.12, 0.02, 0.12), dark)
-        b.box((0.066, 0.166, 0.09), (0.02, 0.118, 0.07), dark)             # capot gauche / droit
-        b.box((-0.066, 0.166, 0.09), (0.02, 0.118, 0.07), dark)
-        b.box((0, 0.231, 0.09), (0.152, 0.018, 0.07), dark)                  # capot supérieur
-        b.box((0.03, 0.108, 0.03), (0.018, 0.01, 0.012), mid)                # boutons de réglage
-        b.box((-0.005, 0.108, 0.03), (0.018, 0.01, 0.012), mid)
-        b.box((0.075, 0.108, 0.13), (0.02, 0.03, 0.06), mid)                # logement des piles
+        # viseur holographique compact : embase fine, cadre mince autour d'une petite fenêtre
+        b.box((0, 0.082, 0.08), (0.045, 0.018, 0.09), blk)                   # embase sur le rail
+        b.box((0, 0.105, 0.085), (0.075, 0.016, 0.07), dark)                 # boîtier bas
+        for sx in (-1, 1):
+            b.box((sx * 0.0465, 0.166, 0.095), (0.007, 0.112, 0.022), dark)  # montants fins
+        b.box((0, 0.2255, 0.095), (0.1, 0.007, 0.022), dark)                 # barre supérieure
+        b.box((0.05, 0.106, 0.075), (0.01, 0.012, 0.025), mid)               # molette de réglage
         b.build(self.gun, cast_shadows=False)
-        # vitre légèrement teintée
-        Entity(parent=self.gun, model='quad', color=rgb(150, 200, 235, 28), position=(0, 0.1665, 0.12),
-               scale=(0.112, 0.106), unlit=True)
+        # vitre à peine teintée
+        Entity(parent=self.gun, model='quad', color=rgb(150, 200, 235, 16), position=(0, 0.1675, 0.1),
+               scale=(0.086, 0.105), unlit=True)
         (x0, y0), (x1, y1) = self.SIGHT
-        self.sight_corners = [Entity(parent=self.gun, position=(x, y, 0.12))
+        self.sight_corners = [Entity(parent=self.gun, position=(x, y, 0.1))
                               for x in (x0, x1) for y in (y0, y1)]
-        # réticule holographique : cercle de 65 MOA et point central (le point visé)
+        # réticule holographique : cercle fin et point central (le point visé)
         self.dot = Entity(parent=self.gun, model='quad', texture=holo_texture(), position=self.DOT,
-                          scale=0.05, unlit=True, visible=False)
+                          scale=0.034, unlit=True, visible=False)
         self.muzzle = Entity(parent=self.gun, z=0.9, y=0.02)
         self.eject = Entity(parent=self.gun, x=0.05, y=0.03, z=0.03)
 
@@ -3562,7 +3569,11 @@ class Player(Entity):
         self.update_sight_zoom()
         scoped = w['scope'] and self.ads > 0.85
         self.gun.visible = not scoped and not self.tps   # dans la lunette ou en 3e personne : pas d'arme à l'écran
-        self.game.hud.scope_visible(scoped)
+        self.game.hud.scope_visible(scoped, w['scope'])
+        if scoped and w['scope'] == 'rpg':                     # télémètre de la lunette du RPG
+            hit = raycast(camera.world_position, camera.forward, 200, ignore=[self])
+            self.game.hud.set_text(self.game.hud.range_txt, f'DISTANCE  {hit.distance:.0f} m' if hit.hit
+                                   else 'DISTANCE  > 200 m')
         self.game.hud.crosshair_visible((self.ads < 0.5 or self.tps) and not scoped)
 
         pad_fire = pad.r2 > 0.35
@@ -3722,37 +3733,40 @@ PLAYER_START = Vec3(0, 0, -40)    # point de (ré)apparition au sol
 
 
 class IRMissile(Entity):
-    """Missile à autodirecteur infrarouge : se dirige vers l'ennemi verrouillé (ou vers le point visé)."""
+    """Missile à guidage infrarouge MANUEL (pas de verrouillage) : jusqu'à l'impact, il suit
+    la tache infrarouge que le drone projette au centre de sa caméra. Le pilote garde le réticule
+    sur la cible ; s'il le déplace, le missile corrige sa trajectoire."""
 
-    def __init__(self, game, start, direction, target_enemy=None, target_point=None):
+    def __init__(self, game, drone, start, direction):
         super().__init__(model='cube', color=rgb(200, 200, 195), scale=(0.18, 0.18, 0.9), position=start, shader=LIT)
         self.game = game
+        self.drone = drone
         self.dir = direction.normalized()
-        self.enemy = target_enemy
-        self.point = Vec3(target_point) if target_point is not None else start + self.dir * 100
-        self.speed = 35.0
-        self.life = 7.0
+        self.point = drone.laser
+        self.speed = 30.0
+        self.life = 8.0
         self.smoke_t = 0.0
         self.look_at(start + self.dir)
         Entity(parent=self, model='quad', texture='circle', color=rgb(255, 230, 170), z=-0.7, scale=(2.2, 2.2),
                billboard=True, unlit=True)
+        drone.in_flight.append(self)
 
     def update(self):
         if self.game.paused:
             return
         dt = time.dt
         self.life -= dt
-        self.speed = min(90.0, self.speed + 60 * dt)
-        e = self.enemy
-        if e is not None and not e.dead:
-            self.point = e.position + Vec3(0, 0.9, 0)
+        self.speed = min(80.0, self.speed + 55 * dt)
+        d = self.drone
+        if d is not None and d.enabled:
+            self.point = d.laser                   # suit le point désigné par le drone
         want = self.point - self.position
         dist = want.length()
-        if dist < 1.2:
-            self.explode(Vec3(self.position))
+        if dist < 1.0:
+            self.explode(Vec3(self.point))
             return
         want /= max(dist, 1e-4)
-        k = min(1.0, dt * 5.0)                     # guidage : virage progressif vers la cible
+        k = min(1.0, dt * 7.0)                     # guidage : virage progressif vers la tache infrarouge
         self.dir = (self.dir * (1 - k) + want * k).normalized()
         step = self.speed * dt
         hit = raycast(self.world_position, self.dir, step + 0.2, ignore=[self, self.game.player])
@@ -3774,6 +3788,9 @@ class IRMissile(Entity):
 
     def explode(self, pos):
         game = self.game
+        d = self.drone
+        if d is not None and self in d.in_flight:
+            d.in_flight.remove(self)
         destroy(self)
         blast(game, pos, 5.0, 400, 100, size=1.4)
         if game.player.drone is not None:
@@ -3781,11 +3798,14 @@ class IRMissile(Entity):
 
 
 class ReaperDrone(Entity):
-    """Drone MQ-9 Reaper piloté pendant toute une manche : il tourne au-dessus de la zone visée,
-    caméra thermique (ennemis en blanc), canon à obus explosifs et missiles infrarouges."""
+    """Drone MQ-9 Reaper piloté pendant toute une manche : il tourne au-dessus de la zone visée.
+    Caméra normale ou thermique (N / Triangle), canon à obus explosifs par paquets de 20,
+    6 missiles à guidage infrarouge manuel."""
     ALT = 48
     RADIUS = 30
-    MISSILES = 8
+    MISSILES = 6
+    PACK = 20            # obus par paquet
+    PACK_RELOAD = 3.0    # secondes pour engager un nouveau paquet
 
     def __init__(self, game):
         super().__init__()
@@ -3795,9 +3815,12 @@ class ReaperDrone(Entity):
         self.center = Vec3(self.aim)
         self.ang = math.atan2(p.z - self.aim.z, p.x - self.aim.x)
         self.missiles = self.MISSILES
+        self.shells = self.PACK
+        self.pack_t = 0.0
         self.cannon_t = 0.0
         self.missile_t = 0.0
-        self.lock = None
+        self.in_flight = []
+        self.laser = Vec3(self.aim)
         self.shake = 0.0
         self.fov = 50.0
         self.saved_nv = game.nv
@@ -3806,14 +3829,27 @@ class ReaperDrone(Entity):
         camera.position = (0, 0, 0)
         camera.rotation = (0, 0, 0)
         camera.fov = self.fov
-        camera.set_shader_input('ir_on', 1.0)
         camera.set_shader_input('ir_gain', 6.0 if game.night else 1.0)
         camera.set_shader_input('zoom', 1.0)
         scene.set_shader_input('fog_density', 0.003)
-        for e in game.enemies + game.corpses:
-            set_hot(e, 0.45 if e.dead else 1.0)
+        # tache du désignateur infrarouge (visible quand un missile est en vol)
+        self.spot = Entity(model='sphere', color=rgb(255, 40, 40), scale=0.5, unlit=True, enabled=False)
         self.build_overlay()
+        self.set_vision(game.night)          # de jour : caméra normale ; de nuit : thermique
         self.update_position(0)
+
+    def set_vision(self, thermal):
+        self.thermal = thermal
+        g = self.game
+        camera.set_shader_input('ir_on', 1.0 if thermal else 0.0)
+        for e in g.enemies + g.corpses:
+            set_hot(e, (0.45 if e.dead else 1.0) if thermal else 0.0)
+        HUD.set_text(self.title, 'MQ-9 REAPER  ·  ' + ('CAMÉRA THERMIQUE (blanc = chaud)' if thermal
+                                                        else 'CAMÉRA NORMALE'))
+
+    def toggle_vision(self):
+        self.set_vision(not self.thermal)
+        PAD.rumble(0.1, 0.2, 60)
 
     # -- interface -----------------------------------------------------------
     def build_overlay(self):
@@ -3828,12 +3864,9 @@ class ReaperDrone(Entity):
             for sy in (-1, 1):
                 Entity(parent=self.ui, model='quad', color=white, position=(sx * 0.2, sy * 0.185), scale=(0.04, 0.004))
                 Entity(parent=self.ui, model='quad', color=white, position=(sx * 0.218, sy * 0.165), scale=(0.004, 0.04))
-        self.lock_box = Entity(parent=self.ui, model=Quad(mode='line', thickness=2, radius=0), color=rgb(255, 60, 50),
-                               scale=0.06, enabled=False)
-        self.lock_txt = Text(parent=self.ui, text='', origin=(0, 0), y=-0.23, scale=1.1, color=rgb(255, 80, 70))
-        Text(parent=self.ui, text='MQ-9 REAPER  ·  CAMÉRA THERMIQUE (blanc = chaud)', origin=(0, 0), y=0.42,
-             scale=1.1, color=white)
-        self.info = Text(parent=self.ui, text='', origin=(-0.5, 0.5), position=(-ar + 0.04, -0.3), scale=1.0,
+        self.guide_txt = Text(parent=self.ui, text='', origin=(0, 0), y=-0.23, scale=1.1, color=rgb(255, 80, 70))
+        self.title = Text(parent=self.ui, text='', origin=(0, 0), y=0.42, scale=1.1, color=white)
+        self.info = Text(parent=self.ui, text='', origin=(-0.5, 0.5), position=(-ar + 0.04, -0.28), scale=1.0,
                          color=white)
         self.alt = Text(parent=self.ui, text='', origin=(0.5, 0.5), position=(ar - 0.04, 0.3), scale=1.0, color=white)
         Text(parent=self.ui, text='Retour au sol à la fin de la manche', origin=(0, 0), y=0.38, scale=0.8,
@@ -3842,21 +3875,13 @@ class ReaperDrone(Entity):
     def update_overlay(self):
         g = self.game
         alive = sum(1 for e in g.enemies if not e.dead)
-        HUD.set_text(self.info, f'CANON 30 mm EXPLOSIF   [Clic G / R2]\n'
+        shells = f'RECHARGEMENT {self.pack_t:.1f} s' if self.pack_t > 0 else f'{self.shells}/{self.PACK}'
+        HUD.set_text(self.info, f'CANON 30 mm EXPLOSIF  {shells}   [Clic G / R2]\n'
                                 f'MISSILES IR  {self.missiles}/{self.MISSILES}   [Espace / R1]\n'
+                                f'VISION  {"THERMIQUE" if self.thermal else "NORMALE"}   [N / Triangle]\n'
                                 f'ZOOM   [Clic D / L2]   ·   DÉPLACER : E/S/Q/D, stick gauche')
         HUD.set_text(self.alt, f'ALT {self.ALT} m\nCAP {int(self.rotation_y) % 360:03d}°\nCIBLES {alive}')
-        e = self.lock
-        if e is not None:
-            p2 = Point2()
-            rel = application.base.cam.getRelativePoint(render_root(), e.position + Vec3(0, 0.9, 0))
-            if camera.lens.project(rel, p2):
-                self.lock_box.enabled = True
-                self.lock_box.position = (p2.x * camera.aspect_ratio / 2, p2.y / 2)
-                HUD.set_text(self.lock_txt, 'CIBLE VERROUILLÉE' if self.missiles else 'PLUS DE MISSILES')
-                return
-        self.lock_box.enabled = False
-        HUD.set_text(self.lock_txt, '')
+        HUD.set_text(self.guide_txt, 'GUIDAGE IR : gardez le réticule sur la cible' if self.in_flight else '')
 
     # -- vol -----------------------------------------------------------------
     def update_position(self, dt):
@@ -3895,39 +3920,43 @@ class ReaperDrone(Entity):
         self.update_position(dt)
         camera.set_shader_input('nv_time', g.t % 100)
 
-        # verrouillage infrarouge : l'ennemi le plus proche du centre de l'image
-        cam = camera.world_position
-        fw = self.forward
-        best, bang = None, max(1.2, self.fov * 0.07)
-        for e in g.enemies:
-            if e.dead:
-                continue
-            d = (e.position + Vec3(0, 0.9, 0) - cam).normalized()
-            ang = math.degrees(math.acos(clamp(d.dot(fw), -1, 1)))
-            lim_ang = bang * (1.8 if e is self.lock else 1.0)
-            if ang < lim_ang and (best is None or ang < best[1]):
-                best = (e, ang)
-        self.lock = best[0] if best else None
+        # désignateur infrarouge : la tache suit le centre de l'image, les missiles la suivent
+        self.laser = self.aim_point()
+        self.spot.enabled = bool(self.in_flight) and int(g.t * 8) % 2 == 0
+        self.spot.position = self.laser
 
         # armes
         self.cannon_t -= dt
         self.missile_t -= dt
+        if self.pack_t > 0:
+            self.pack_t -= dt
+            if self.pack_t <= 0:
+                self.shells = self.PACK
         pad_fire = pad.r2 > 0.35
         if (held_keys['left mouse'] or held_keys['p'] or pad_fire) and self.cannon_t <= 0 and (mouse.locked or pad_fire):
             self.fire_cannon()
         if pad.pressed['r1']:
             self.fire_missile()
+        if pad.pressed['triangle']:
+            self.toggle_vision()
         self.update_overlay()
 
     def aim_point(self):
-        hit = raycast(camera.world_position, self.forward, 250, ignore=[self.game.player])
+        hit = raycast(camera.world_position, self.forward, 250, ignore=[self.game.player, self.spot])
         return hit.world_point if hit.hit else Vec3(self.aim)
 
     def fire_cannon(self):
-        self.cannon_t = 0.35
-        target = self.aim_point() + Vec3(random.uniform(-0.6, 0.6), 0, random.uniform(-0.6, 0.6))
+        if self.pack_t > 0:
+            return
+        self.cannon_t = 0.2
+        self.shells -= 1
+        if self.shells <= 0:
+            self.pack_t = self.PACK_RELOAD
+            self.game.hud.add_feed('Canon : nouveau paquet de 20 obus en cours')
+        target = self.laser + Vec3(random.uniform(-0.8, 0.8), 0, random.uniform(-0.8, 0.8))
         start = self.position + Vec3(0, -1.5, 0)
-        tracer(start, target, rgb(255, 255, 255), thickness=0.12, life=0.08)
+        seen = start + (target - start).normalized() * 18       # traçante visible loin de la caméra
+        tracer(seen, target, rgb(255, 245, 200), thickness=0.05, life=0.06)
         self.shake = max(self.shake, 0.12)
         PAD.rumble(0.4, 0.5, 90)
         FXM.later((target - start).length() / 500, blast, self.game, Vec3(target), 3.0, 200, 50, 0.7)
@@ -3941,17 +3970,18 @@ class ReaperDrone(Entity):
         self.missiles -= 1
         self.missile_t = 1.0
         start = self.position + self.right * random.choice((-3, 3)) + Vec3(0, -1.2, 0)
-        tgt = self.lock
-        point = tgt.position + Vec3(0, 0.9, 0) if tgt is not None else self.aim_point()
-        IRMissile(self.game, start, (point - start) * 0.6 + Vec3(0, -8, 0) + self.forward * 5, tgt, point)
+        IRMissile(self.game, self, start, (self.laser - start) * 0.6 + Vec3(0, -8, 0) + self.forward * 5)
         PAD.rumble(0.6, 0.6, 200)
-        self.game.hud.add_feed('Missile IR tiré' + (' — cible verrouillée' if tgt is not None else ''))
+        self.game.hud.add_feed(f'Missile IR tiré ({self.missiles} restants) — guidez-le avec le réticule')
 
     def finish(self):
         """Fin de la manche : on rend l'antenne, le joueur réapparaît au sol."""
         g = self.game
         p = g.player
         destroy(self.ui)
+        destroy(self.spot)
+        for m in list(self.in_flight):
+            m.drone = None                     # les missiles encore en vol finissent tout droit
         camera.set_shader_input('ir_on', 0.0)
         for e in g.enemies + g.corpses:
             set_hot(e, 0.0)
@@ -4179,7 +4209,7 @@ CONTROLS_PAUSE = ('E avancer   ·   S reculer   ·   Q gauche   ·   D droite   
                   'T vue 3e personne   ·   N vision nocturne (la nuit)   ·   M carte   ·   G graphismes\n'
                   'Manette PS5 : stick gauche bouger (L3 courir) · stick droit regarder · R2 tirer · L2 viser\n'
                   'Rond accroupi · en visant L3 / R3 se pencher · Croix sauter · Carré recharger / ramasser / utiliser\n'
-                  'R1 grenade · flèche gauche : drone Reaper · drone : R2 canon, R1 missile IR, L2 zoom\n'
+                  'R1 grenade · flèche gauche : drone Reaper · drone : R2 canon, R1 missile IR, L2 zoom, Triangle vision\n'
                   'Triangle changer d\'arme · flèche bas : vue 3e personne · flèche haut : vision nocturne\n\n'
                   'Échap / Options : reprendre    ·    X / Create : quitter')
 
@@ -4258,6 +4288,14 @@ class HUD:
         side = ar - 0.5 + 0.05
         for sgn in (-1, 1):
             Entity(parent=self.scope, model='quad', color=color.black, scale=(side, 1.02), x=sgn * (0.5 + side / 2 - 0.001))
+        # lunette du RPG : réticule PGO-7 (chevrons de distance) + télémètre
+        self.scope_rpg = Entity(parent=ui, z=0.8, enabled=False)
+        Entity(parent=self.scope_rpg, model='quad', texture=self.rpg_scope_texture(), scale=1)
+        for sgn in (-1, 1):
+            Entity(parent=self.scope_rpg, model='quad', color=color.black, scale=(side, 1.02),
+                   x=sgn * (0.5 + side / 2 - 0.001))
+        self.range_txt = Text(parent=self.scope_rpg, text='', origin=(0, 0), y=-0.3, scale=1.2, z=-0.01,
+                              color=rgb(255, 150, 60))
         self.info = Text(parent=ui, text='', position=(-ar + 0.04, 0.477), scale=1)
         self.msg = Text(parent=ui, text='', origin=(0, 0), y=0.17, scale=2, color=color.white)
         self.sub_msg = Text(parent=ui, text='', origin=(0, 0), y=0.1, scale=1.1, color=color.rgba(1, 1, 1, 0.85))
@@ -4303,9 +4341,46 @@ class HUD:
         d.ellipse((c - 3, c - 3, c + 3, c + 3), fill=(230, 30, 30, 255))   # point central rouge
         return Texture(img)
 
-    def scope_visible(self, v):
-        if self.scope.enabled != v:
-            self.scope.enabled = v
+    @staticmethod
+    def rpg_scope_texture(size=1024):
+        """Réticule de la lunette PGO-7 du RPG : chevron de visée, chevrons de distance,
+        échelle de correction latérale et télémètre, éclairés en orange."""
+        from PIL import Image, ImageDraw
+        img = Image.new('RGBA', (size, size), (0, 0, 0, 255))
+        d = ImageDraw.Draw(img)
+        c, r = size // 2, int(size * 0.48)
+        d.ellipse((c - r, c - r, c + r, c + r), fill=(0, 0, 0, 0))
+        d.ellipse((c - r, c - r, c + r, c + r), outline=(0, 0, 0, 255), width=int(size * 0.012))
+        o = (15, 12, 10, 255)                 # traits noirs, comme la vraie lunette
+        w = max(3, size // 220)
+
+        def chevron(y, k):
+            d.line((c - k, y + k, c, y, c + k, y + k), fill=o, width=w, joint='curve')
+        chevron(c, int(size * 0.02))                          # point visé : pointe du chevron
+        for i in range(1, 4):                                   # chevrons de distance (hausse)
+            chevron(c + int(size * 0.06 * i), int(size * 0.014))
+        tick = int(size * 0.035)                                # échelle latérale (correction du vent / mobile)
+        for i in range(-5, 6):
+            if i == 0:
+                continue
+            x = c + i * tick
+            h = int(size * (0.018 if i % 2 == 0 else 0.01))
+            d.line((x, c + int(size * 0.02) - h, x, c + int(size * 0.02)), fill=o, width=w)
+        d.line((c - 5 * tick, c + int(size * 0.02), c - int(size * 0.035), c + int(size * 0.02)), fill=o, width=w)
+        d.line((c + int(size * 0.035), c + int(size * 0.02), c + 5 * tick, c + int(size * 0.02)), fill=o, width=w)
+        # télémètre (en bas à gauche) : on encadre un véhicule de 2,7 m de haut
+        x0, y0 = c - int(size * 0.3), c + int(size * 0.28)
+        pts = [(x0 + i * size * 0.035, y0 - size * 0.11 / (1 + i * 0.6)) for i in range(6)]
+        d.line([(x0, y0)] + [(x0 + i * size * 0.035, y0) for i in range(1, 6)], fill=o, width=w)
+        d.line(pts, fill=o, width=w)
+        return Texture(img)
+
+    def scope_visible(self, v, kind=True):
+        sniper, rpg = v and kind != 'rpg', v and kind == 'rpg'
+        if self.scope.enabled != sniper:
+            self.scope.enabled = sniper
+        if self.scope_rpg.enabled != rpg:
+            self.scope_rpg.enabled = rpg
 
     def crosshair_visible(self, v):
         if getattr(self, '_cross_on', None) is v:
@@ -4702,7 +4777,8 @@ class Game(Entity):
         p._zoom_on = False
         p.drone = ReaperDrone(self)
         self.hud.set_text(self.hud.nv_label, '')
-        self.hud.message('DRONE REAPER', 2.5, 'Canon explosif : clic gauche / R2 · missiles IR : Espace / R1')
+        self.hud.message('DRONE REAPER', 2.5, 'Canon : clic gauche / R2 · missiles IR guidés au réticule : Espace / R1'
+                                              ' · vision : N / Triangle')
         PAD.rumble(0.4, 0.4, 250)
 
     def end_drone(self):
@@ -4977,6 +5053,8 @@ class Game(Entity):
         elif self.player.drone is not None:
             if key == 'space':
                 self.player.drone.fire_missile()
+            elif key == 'n':
+                self.player.drone.toggle_vision()
             elif key == 'm':
                 self.hud.minimap.root.enabled = not self.hud.minimap.root.enabled
             elif key == 'left mouse down' and not mouse.locked:
