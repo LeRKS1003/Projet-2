@@ -1,0 +1,4 @@
+# Correspondances ticker -> CIK forcées à la main, prioritaires sur la résolution automatique.
+# À compléter à partir de sorties/non_resolus.csv (recherche du CIK sur https://www.sec.gov/edgar/search/).
+# Le ticker s'écrit comme dans la composition fja05680 (ex. BRK.B).
+ticker,cik
