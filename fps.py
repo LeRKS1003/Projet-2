@@ -4,9 +4,9 @@ Petit FPS avec Ursina — ennemis humanoïdes dotés d'une IA tactique qui progr
 Lancement :  python fps.py                 (vsync activé, FPS limités à 60)
              python fps.py --sans-limite   (vsync coupé, FPS non plafonnés : pour mesurer)
 
-Au lancement : choix de l'arme (clic sur le menu, ou touches 1 / 2), du moment (3 ou N : jour / nuit)
-et de la carte (4 : village ou désert)
-    1 : fusil d'assaut type M4 (tir automatique, viseur holographique compact grossissant x1,4 dans la fenêtre)
+Au lancement : choix de l'arme (clic sur le menu, ou touches 1 / 2), du moment (3 ou N : jour / nuit),
+de la carte (4 : village ou désert) et du mode (5 : survie ou défense du village)
+    1 : fusil d'assaut type M4 (tir automatique, viseur point rouge à tube rond grossissant x1,4 dans la lentille)
     2 : sniper (un tir par clic, gros dégâts, lunette zoom x2)
     Carte désert : dunes, tranchées en zigzag, char détruit au centre (il fume encore),
                    batterie anti-aérienne bitube utilisable (obus explosifs, surchauffe)
@@ -52,12 +52,21 @@ Installer une fois :  pip install pygame      (sans pygame, le jeu se joue au cl
     Croix directionnelle ou stick gauche : choisir l'arme, le moment et la carte dans le menu
     Vibrations au tir, aux dégâts et aux explosions. La manette peut être branchée en cours de partie.
 
+Mode DÉFENSE DU VILLAGE : une colonne ennemie descend le village vers la ligne rouge et blanche (sud).
+    - chars (canon + mitrailleuse, presque insensibles aux balles : RPG, grenades, missiles du drone)
+    - blindés anti-aériens bitubes : tirent sur le drone (et sur vous quand il n'est pas en l'air)
+    - fantassins en escouades, dont un porteur de MANPADS (missile sol-air contre le drone) par escouade
+    - le RPG est l'arme secondaire (Triangle / Tab) ; roquettes illimitées à la caisse verte (Carré / V)
+    - 3 percées de la ligne = le village tombe
+
 Drone Reaper (ultime, pendant toute la manche ; vous réapparaissez au sol à la fin de la manche) :
     Souris / stick droit : viser · E/S/Q/D / stick gauche : déplacer la zone survolée
     Clic gauche / R2 : canon à obus explosifs (paquets de 20 obus, 3 s pour engager le paquet suivant)
     Espace / R1 : missile à guidage infrarouge manuel (6 en tout) : pas de verrouillage, il suit jusqu'à
                   l'impact la tache infrarouge projetée au centre du réticule — gardez la cible dans le viseur
     Clic droit / L2 : zoom · N / Triangle : caméra normale ou thermique (corps chauds en blanc)
+    F / L1 : leurres thermiques contre les missiles sol-air · le drone a 100 % de vie (DCA, MANPADS)
+    Sticks : droit = visée fine (accélère en butée, ralentit sur une cible), gauche = déplacement rapide
 
 Batterie anti-aérienne (désert) : souris / stick droit pour pointer, clic gauche / R2 pour tirer,
     clic droit / L2 pour zoomer, V / Carré pour descendre.
@@ -95,7 +104,7 @@ from panda3d.core import loadPrcFileData, Point3, Point2
 # Panda3D balaie par défaut tout son cache d'états de rendu à chaque image (~2 ms) ;
 # sans ce balayage, chaque état est libéré dès qu'il ne sert plus.
 loadPrcFileData('', 'garbage-collect-states 0')
-from ursina.collider import Collider
+from ursina.collider import Collider, BoxCollider
 from panda3d.core import CollisionBox
 
 
@@ -273,6 +282,7 @@ uniform float nv_time;      // fait bouger le grain de l'image
 uniform float zoom;         // grossissement dans la vitre du viseur (1 = aucun)
 uniform vec4 zoom_rect;     // vitre du viseur à l'écran : umin, vmin, umax, vmax
 uniform vec2 zoom_center;   // point visé (centre du grossissement)
+uniform float zoom_round;   // 1 = fenêtre ronde (ellipse inscrite dans zoom_rect)
 uniform float ir_on;        // caméra infrarouge du drone (blanc = chaud)
 uniform float ir_gain;      // amplification du décor (plus forte la nuit)
 in vec2 uv;
@@ -281,8 +291,11 @@ out vec4 out_color;
 void main() {
     // loupe : seule la vitre du viseur est grossie, la vision périphérique reste normale
     vec2 suv = uv;
-    if (zoom > 1.001 && uv.x > zoom_rect.x && uv.x < zoom_rect.z && uv.y > zoom_rect.y && uv.y < zoom_rect.w)
-        suv = zoom_center + (uv - zoom_center) / zoom;
+    if (zoom > 1.001 && uv.x > zoom_rect.x && uv.x < zoom_rect.z && uv.y > zoom_rect.y && uv.y < zoom_rect.w) {
+        vec2 e = (uv - (zoom_rect.xy + zoom_rect.zw) * 0.5) / ((zoom_rect.zw - zoom_rect.xy) * 0.5);
+        if (zoom_round < 0.5 || dot(e, e) < 1.0)
+            suv = zoom_center + (uv - zoom_center) / zoom;
+    }
     vec3 c = texture(tex, suv).rgb;
 
     if (fx_on > 0.5) {
@@ -329,6 +342,7 @@ void main() {
     'zoom': 1.0,
     'zoom_rect': Vec4(0, 0, 0, 0),
     'zoom_center': Vec2(0.5, 0.5),
+    'zoom_round': 1.0,
     'ir_on': 0.0,
     'ir_gain': 1.0,
 })
@@ -535,6 +549,24 @@ class MeshBuilder:
                 self.tri(c1, p01, p11, col_cap or col, axis_v)
                 self.tri(c0, p00, p10, col_cap or col, -axis_v)
 
+    def tube(self, center, r_in, r_out, length, col, seg=20, col_in=None):
+        """Tube creux le long de z (corps de viseur rond) : parois extérieure et intérieure + deux bagues."""
+        cx, cy, cz = center
+        z0, z1 = cz - length / 2, cz + length / 2
+        for i in range(seg):
+            a0, a1 = 2 * math.pi * i / seg, 2 * math.pi * (i + 1) / seg
+            c0, s0, c1, s1 = math.cos(a0), math.sin(a0), math.cos(a1), math.sin(a1)
+            n0, n1 = Vec3(c0, s0, 0), Vec3(c1, s1, 0)
+            nm = (n0 + n1).normalized()
+
+            def p(r, c, s_, z):
+                return Vec3(cx + c * r, cy + s_ * r, z)
+            self.quad(p(r_out, c0, s0, z0), p(r_out, c1, s1, z0), p(r_out, c1, s1, z1), p(r_out, c0, s0, z1), col, nm)
+            self.quad(p(r_in, c0, s0, z0), p(r_in, c1, s1, z0), p(r_in, c1, s1, z1), p(r_in, c0, s0, z1),
+                      col_in or shade(col, 0.6), -nm)
+            for z, n in ((z1, Vec3(0, 0, 1)), (z0, Vec3(0, 0, -1))):
+                self.quad(p(r_in, c0, s0, z), p(r_out, c0, s0, z), p(r_out, c1, s1, z), p(r_in, c1, s1, z), col, n)
+
     def cone(self, base, r, h, col, seg=8, jitter=0.0):
         bx, by, bz = base
         apex = Vec3(bx, by + h, bz)
@@ -617,9 +649,13 @@ class Box:
 class World:
     CELL = 1.0
 
-    def __init__(self, map_name='village'):
+    def __init__(self, map_name='village', mode='survie'):
         self.map = map_name
+        self.mode = mode
         self.desert = map_name == 'desert'
+        # défense : deux axes dégagés pour les blindés (rien n'y est construit)
+        self.lanes = [Box(x, 0, 5.2, ARENA * 2, 1) for x in LANES] if mode == 'defense' else []
+        self.ammo_point = None     # caisse de roquettes (défense)
         self.aa = None             # batterie anti-aérienne (carte désert)
         self.smoke_points = []     # épaves qui fument
         self.boxes = []
@@ -659,8 +695,13 @@ class World:
                   for cx, cy, cz, sx, sy, sz in self._col_boxes]
         self.collision.collider = Collider(self.collision, solids)
 
+    def in_lane(self, cx, cz, sx, sz):
+        return any(not (cx + sx / 2 < l.x0 or cx - sx / 2 > l.x1) for l in self.lanes)
+
     def area_free(self, cx, cz, sx, sz, margin=1.2):
         probe = Box(cx, cz, sx + 2 * margin, sz + 2 * margin, 1)
+        if self.lanes and self.in_lane(cx, cz, sx + 2 * margin, sz + 2 * margin):
+            return False
         for b in self.boxes:
             if not (probe.x1 < b.x0 or probe.x0 > b.x1 or probe.z1 < b.z0 or probe.z0 > b.z1):
                 return False
@@ -754,6 +795,26 @@ class World:
                         seg=6, rings=4, jitter=0.12, rough=0.18, rng=self.rng)
         self.add_box(cx, cz, 2.0 * size, 1.7 * size, 1.25 * size)
 
+    def build_defense_line(self):
+        """Ligne à tenir (poteaux rouges et blancs), caisse de roquettes et traces de chenilles sur les axes."""
+        p = self.plain
+        p.xf()
+        for k in range(31):
+            x = -ARENA + 1.5 + k * 2.9
+            p.box((x, 0.5, DEFENSE_LINE), (0.12, 1.0, 0.12), rgb(200, 40, 35) if k % 2 else rgb(235, 235, 230))
+        up = Vec3(0, 1, 0)
+        for lx in LANES:
+            for sx in (-1.3, 1.3):         # ornières laissées par les chenilles
+                x = lx + sx
+                p.quad(Vec3(x - 0.35, 0.015, -ARENA + 1), Vec3(x + 0.35, 0.015, -ARENA + 1),
+                       Vec3(x + 0.35, 0.015, ARENA - 1), Vec3(x - 0.35, 0.015, ARENA - 1), rgb(95, 85, 65), up)
+        cx, cz = -4.0, -37.0                # caisse de roquettes près du point de départ
+        self.add_box(cx, cz, 1.6, 1.0, 0.9)
+        p.box((cx, 0.45, cz), (1.6, 0.9, 1.0), rgb(80, 90, 55), jitter=0.05)
+        p.box((cx, 0.92, cz), (1.64, 0.06, 1.04), rgb(65, 72, 45))
+        p.box((cx, 0.6, cz + 0.51), (0.9, 0.25, 0.02), rgb(220, 200, 60))    # marquage jaune
+        self.ammo_point = Vec3(cx, 0, cz)
+
     # -- terrain -------------------------------------------------------------
     def build_ground(self):
         """Sol limité à l'arène (rien n'est construit hors des murs)."""
@@ -846,7 +907,8 @@ class World:
                                (-9, -16, 9, 1), (9, -16, 9, 1), (-31, 25, 13, 1), (31, 25, 13, 1),
                                (-34, -27, 1, 11), (34, -27, 1, 11),
                                (-7, 32, 1, 9), (7, 32, 1, 9), (-4.75, 36.5, 5.5, 1), (4.75, 36.5, 5.5, 1)]:
-            self.wall(cx, cz, sx, sz, 3)
+            if not self.in_lane(cx, cz, sx, sz):
+                self.wall(cx, cz, sx, sz, 3)
         # toit de la maison du nord (au-dessus des têtes)
         self.plain.xf()
         self.plain.box((0, 3.2, 32), (15.2, 0.25, 10), rgb(140, 70, 55), jitter=0.02, bottom=True)
@@ -854,7 +916,10 @@ class World:
         # murets bas
         for cx, cz, sx, sz in [(0, 0, 7, 0.8), (-18, 22, 5, 0.8), (18, 22, 5, 0.8), (-16, -29, 0.8, 5),
                                (16, -29, 0.8, 5), (-37, 7, 5, 0.8), (37, 7, 5, 0.8), (0, -27, 6, 0.8)]:
-            self.wall(cx, cz, sx, sz, 1.3, low=True)
+            if not self.in_lane(cx, cz, sx, sz):
+                self.wall(cx, cz, sx, sz, 1.3, low=True)
+        if self.mode == 'defense':
+            self.build_defense_line()
 
         # voitures
         paints = [rgb(180, 30, 35), rgb(30, 70, 150), rgb(220, 220, 215), rgb(40, 40, 45),
@@ -1311,6 +1376,12 @@ class World:
             idx = far + 1
         return smooth
 
+    def free_point_near(self, p):
+        """Position libre la plus proche de p (centre de case de navigation)."""
+        c = self.nearest_free(self.cell_of(p))
+        x, z = self.cell_center(*c)
+        return Vec3(x, 0, z)
+
     def random_free_point(self, near=None, radius=15):
         for _ in range(40):
             i, j = random.choice(self.free_cells)
@@ -1450,16 +1521,20 @@ class AAGun:
         end = hit.world_point if hit.hit else origin + d * 300
         tracer(muzzle.world_position, end, rgb(255, 170, 70), thickness=0.05, life=0.05)
         if hit.hit or end.y < 0.5:
-            FXM.later((end - origin).length() / 900, blast, game, Vec3(end), self.BLAST, 140, 35, 0.35)
+            FXM.later((end - origin).length() / 900, blast, game, Vec3(end), self.BLAST, 140, 35, 0.35, False,
+                      VDMG_AA_SHELL)
         for e in game.enemies:                  # vacarme : tous les ennemis proches accourent
             if not e.dead and flat_dist(e.position, self.pos) < 60 and random.random() < 0.05:
                 FXM.later(random.uniform(0.2, 0.8), e.hear_shot, Vec3(game.player.position))
         return True
 
 
-def blast(game, pos, radius, dmax, dmin, size=1.0, hurt_player=False):
-    """Explosion (obus, missile) : dégâts dégressifs aux ennemis à découvert dans le rayon."""
+def blast(game, pos, radius, dmax, dmin, size=1.0, hurt_player=False, vdmg=None):
+    """Explosion (obus, missile) : dégâts dégressifs aux ennemis à découvert dans le rayon
+    (et aux blindés si vdmg = (dégâts au char, dégâts au camion))."""
     explosion_fx(pos, size)
+    if vdmg:
+        damage_vehicles(game, pos, radius + 0.5, vdmg)
     center = pos + Vec3(0, 0.2, 0)
     w = game.world
     for e in list(game.enemies):
@@ -1723,6 +1798,7 @@ class Grenade(Entity):
         destroy(self)
         explosion_fx(pos)
         radius = 6.0
+        damage_vehicles(g, pos, 3.5, VDMG_GRENADE)
         pl = g.player
         center = pos + Vec3(0, 0.3, 0)
         d = (pl.position + Vec3(0, 0.9, 0) - center).length()
@@ -1812,6 +1888,7 @@ class Rocket(Entity):
         g = self.game
         destroy(self)
         explosion_fx(pos, 0.8)
+        damage_vehicles(g, pos, ROCKET_RADIUS, VDMG_ROCKET)       # charge creuse : efficace contre les blindés
         center = pos + Vec3(0, 0.1, 0)
         w = g.world
         for e in list(g.enemies):              # tue ou blesse dans un rayon de 3 m
@@ -1939,7 +2016,8 @@ class Squad:
 
 
 class Enemy(Entity):
-    def __init__(self, game, position, skill=0.0, tier=0, weapon='rifle', look=None, rpg=False, night=False):
+    def __init__(self, game, position, skill=0.0, tier=0, weapon='rifle', look=None, rpg=False, night=False,
+                 manpads=False):
         super().__init__(position=position)
         self.game = game
         self.world = game.world
@@ -1949,6 +2027,8 @@ class Enemy(Entity):
         self.wkind = weapon
         self.wp = ENEMY_WEAPONS.get(weapon, ENEMY_WEAPONS['rifle'])
         self.carries_rpg = rpg                          # RPG dans le dos : c'est lui qu'on récupère
+        self.manpads = manpads                          # lance-missiles sol-air (tire sur le drone)
+        self.sam_t = random.uniform(4, 9)
         self.night = night                              # lunettes de vision nocturne sur le casque
         self.loot = 'rpg' if rpg else self.wp['loot']   # arme récupérable sur le cadavre
         self.loot_mag = None
@@ -2069,6 +2149,10 @@ class Enemy(Entity):
         self.part(self.torso, (0, 0.3, -0.19), (0.3, 0.38, 0.14), shade(UD, 0.9), 'body')       # sac à dos
         if detail:
             self.part(self.torso, (0, 0.52, -0.19), (0.26, 0.08, 0.13), shade(UD, 0.75), 'body', collide=False)
+        if self.manpads:         # lance-missiles sol-air (tube vert sable) en bandoulière
+            self.part(self.torso, (-0.14, 0.3, -0.3), (0.11, 1.1, 0.11), rgb(150, 140, 95), 'body', collide=False)
+            self.part(self.torso, (-0.14, 0.9, -0.3), (0.16, 0.12, 0.16), rgb(60, 60, 55), 'body', collide=False)
+            self.part(self.torso, (-0.14, 0.4, -0.22), (0.08, 0.14, 0.12), rgb(40, 40, 40), 'body', collide=False)
         if self.carries_rpg:     # lance-roquettes porté en travers du dos
             self.part(self.torso, (0.12, 0.35, -0.3), (0.1, 0.95, 0.1), rgb(70, 80, 50), 'body', collide=False)
             self.part(self.torso, (0.12, 0.88, -0.3), (0.14, 0.18, 0.14), rgb(60, 60, 55), 'body', collide=False)
@@ -2443,6 +2527,10 @@ class Enemy(Entity):
                     if flat_dist(spot, self.position) > 2.5 and (self.arrived() or self.timer <= 0):
                         self.set_path_to(spot)
                         self.timer = 1.0
+                elif g.mode == 'defense' and (self.arrived() or self.timer <= 0):
+                    self.move_speed = 2.5            # défense : ils progressent vers la ligne à tenir
+                    self.set_path_to(g.advance_point(self))
+                    self.timer = random.uniform(4, 7)
                 elif self.arrived() and self.timer <= 0:
                     self.move_speed = 1.6
                     self.set_path_to(self.world.random_free_point(self.position, 18))
@@ -2466,10 +2554,12 @@ class Enemy(Entity):
     def combat_think(self):
         g = self.game
         lost = g.t - self.last_seen
-        if g.player.dead:
+        if g.player.dead or (g.mode == 'defense' and lost > 9 and self.sub not in ('evade', 'dodge')):
+            # défense : sans nouvelles du joueur, ils reprennent leur progression
             self.state = 'patrol'
             self.sub = ''
             self.burst = 0
+            self.icon.text = ''
             self.release_cover()
             return
         if self.last_known is not None and self.sub not in ('flank', 'move_cover', 'retreat', 'evade', 'dodge'):
@@ -2758,6 +2848,14 @@ class Enemy(Entity):
 
         self.timer -= dt
         self.think_t -= dt
+        drone = self.game.player.drone
+        if self.manpads and drone is not None and not self.dead:
+            self.sam_t -= dt
+            # tir d'un missile sol-air : drone à portée (70 m au sol) et pas plus de 2 missiles en l'air
+            if self.sam_t <= 0 and flat_dist(self.position, drone.position) < 70 and len(self.game.sams) < 2:
+                self.sam_t = random.uniform(18, 26) - 5 * self.skill
+                SAMissile(self.game, self.eye + Vec3(0, 0.4, 0))
+                self.game.hud.add_feed('MANPADS : missile sol-air lancé sur le drone !')
         if self.think_t <= 0:
             self.think_t += 0.2          # l'IA réfléchit 5 fois par seconde (décalée entre ennemis)
             self.think()
@@ -3025,7 +3123,7 @@ def holo_texture(size=256):
 class Player(Entity):
     GUN_SCALE = 0.42
     DOT = Vec3(0, 0.1675, 0.08)                  # centre du réticule (repère local de l'arme), centre de la vitre
-    SIGHT = ((-0.043, 0.114), (0.043, 0.221))    # coins intérieurs de la fenêtre du viseur (repère local)
+    SIGHT = ((-0.044, 0.1235), (0.044, 0.2115))  # carré qui encadre la lentille ronde (repère local)
 
     def __init__(self, game):
         super().__init__(position=(0, 0, -40))      # = PLAYER_START
@@ -3326,23 +3424,26 @@ class Player(Entity):
         b.cylinder((0, 0.02, 0.8), 0.021, 0.085, blk, seg=8, axis='z')
         for sx, sy in ((0, 1), (1, 0), (-1, 0)):                            # fentes du cache-flamme
             b.box((sx * 0.02, 0.02 + sy * 0.02, 0.85), (0.006, 0.006, 0.05), rgb(10, 10, 10))
-        # viseur holographique compact : embase fine, cadre mince autour d'une petite fenêtre
-        b.box((0, 0.082, 0.08), (0.045, 0.018, 0.09), blk)                   # embase sur le rail
-        b.box((0, 0.105, 0.085), (0.075, 0.016, 0.07), dark)                 # boîtier bas
-        for sx in (-1, 1):
-            b.box((sx * 0.0465, 0.166, 0.095), (0.007, 0.112, 0.022), dark)  # montants fins
-        b.box((0, 0.2255, 0.095), (0.1, 0.007, 0.022), dark)                 # barre supérieure
-        b.box((0.05, 0.106, 0.075), (0.01, 0.012, 0.025), mid)               # molette de réglage
+        # viseur point rouge à tube rond (type Aimpoint) : corps cylindrique, bagues de fixation, molettes
+        cy = self.DOT.y
+        b.box((0, 0.082, 0.085), (0.045, 0.018, 0.1), blk)                   # embase sur le rail
+        for z in (0.1, 0.13):
+            b.box((0, 0.1, z), (0.03, 0.03, 0.016), blk)                     # colonnes des bagues
+            b.tube((0, cy, z), 0.049, 0.054, 0.016, blk, seg=20)             # bagues
+        b.tube((0, cy, 0.115), 0.045, 0.049, 0.05, dark, seg=24, col_in=rgb(40, 40, 44))   # corps court et fin
+        b.tube((0, cy, 0.143), 0.045, 0.051, 0.008, blk, seg=24)             # bague avant
+        b.cylinder((0.049, cy, 0.115), 0.01, 0.014, mid, seg=8, axis='x')     # molette de dérive
+        b.cylinder((0, cy + 0.049, 0.115), 0.01, 0.014, mid, seg=8)           # molette de hausse
         b.build(self.gun, cast_shadows=False)
-        # vitre à peine teintée
-        Entity(parent=self.gun, model='quad', color=rgb(150, 200, 235, 16), position=(0, 0.1675, 0.1),
-               scale=(0.086, 0.105), unlit=True)
+        # lentille à peine teintée (ronde)
+        Entity(parent=self.gun, model='circle', color=rgb(150, 200, 235, 16), position=(0, cy, 0.14),
+               scale=0.088, unlit=True)
         (x0, y0), (x1, y1) = self.SIGHT
-        self.sight_corners = [Entity(parent=self.gun, position=(x, y, 0.1))
+        self.sight_corners = [Entity(parent=self.gun, position=(x, y, 0.14))
                               for x in (x0, x1) for y in (y0, y1)]
-        # réticule holographique : cercle fin et point central (le point visé)
+        # réticule : cercle fin et point central (le point visé)
         self.dot = Entity(parent=self.gun, model='quad', texture=holo_texture(), position=self.DOT,
-                          scale=0.034, unlit=True, visible=False)
+                          scale=0.03, unlit=True, visible=False)
         self.muzzle = Entity(parent=self.gun, z=0.9, y=0.02)
         self.eject = Entity(parent=self.gun, x=0.05, y=0.03, z=0.03)
 
@@ -3495,6 +3596,8 @@ class Player(Entity):
         accel = 12 if self.grounded else 3
         self.vel = lerp(self.vel, direction * speed, min(1, dt * accel))
         new = self.world.resolve(self.position + self.vel * dt, PLAYER_RADIUS, self.y)
+        for v in self.game.vehicles:
+            new = v.push_out(new, PLAYER_RADIUS)
 
         # gravité et saut
         floor_h = self.world.floor_height(new.x, new.z, PLAYER_RADIUS, self.y)
@@ -3710,6 +3813,8 @@ class Player(Entity):
                     h[0] += w['dmg'].get(ent.zone, 25)
                     if ent.zone == 'head':
                         h[1] = 'head'
+                elif isinstance(owner, Vehicle):
+                    owner.bullet_hit(w['dmg'].get('body', 30), hit.world_point)
                 else:
                     impact(hit.world_point, hit.world_normal)
         for owner, (dmg, zone, point) in hits.items():
@@ -3792,7 +3897,7 @@ class IRMissile(Entity):
         if d is not None and self in d.in_flight:
             d.in_flight.remove(self)
         destroy(self)
-        blast(game, pos, 5.0, 400, 100, size=1.4)
+        blast(game, pos, 5.0, 400, 100, size=1.4, vdmg=VDMG_MISSILE)
         if game.player.drone is not None:
             game.player.drone.shake = 0.5
 
@@ -3821,6 +3926,11 @@ class ReaperDrone(Entity):
         self.missile_t = 0.0
         self.in_flight = []
         self.laser = Vec3(self.aim)
+        self.aim_vel = Vec3(0, 0, 0)
+        self.edge_t = 0.0
+        self.hp = 100
+        self.flares = 8
+        self.flare_t = 0.0
         self.shake = 0.0
         self.fov = 50.0
         self.saved_nv = game.nv
@@ -3844,6 +3954,8 @@ class ReaperDrone(Entity):
         camera.set_shader_input('ir_on', 1.0 if thermal else 0.0)
         for e in g.enemies + g.corpses:
             set_hot(e, (0.45 if e.dead else 1.0) if thermal else 0.0)
+        for v in g.vehicles:
+            set_hot(v, (0.8 if v.alive else 0.6) if thermal else 0.0)
         HUD.set_text(self.title, 'MQ-9 REAPER  ·  ' + ('CAMÉRA THERMIQUE (blanc = chaud)' if thermal
                                                         else 'CAMÉRA NORMALE'))
 
@@ -3865,10 +3977,11 @@ class ReaperDrone(Entity):
                 Entity(parent=self.ui, model='quad', color=white, position=(sx * 0.2, sy * 0.185), scale=(0.04, 0.004))
                 Entity(parent=self.ui, model='quad', color=white, position=(sx * 0.218, sy * 0.165), scale=(0.004, 0.04))
         self.guide_txt = Text(parent=self.ui, text='', origin=(0, 0), y=-0.23, scale=1.1, color=rgb(255, 80, 70))
+        self.threat_txt = Text(parent=self.ui, text='', origin=(0, 0), y=0.24, scale=1.5, color=rgb(255, 60, 50))
         self.title = Text(parent=self.ui, text='', origin=(0, 0), y=0.42, scale=1.1, color=white)
         self.info = Text(parent=self.ui, text='', origin=(-0.5, 0.5), position=(-ar + 0.04, -0.28), scale=1.0,
                          color=white)
-        self.alt = Text(parent=self.ui, text='', origin=(0.5, 0.5), position=(ar - 0.04, 0.3), scale=1.0, color=white)
+        self.alt = Text(parent=self.ui, text='', origin=(0.5, 0.5), position=(ar - 0.04, 0.12), scale=1.0, color=white)
         Text(parent=self.ui, text='Retour au sol à la fin de la manche', origin=(0, 0), y=0.38, scale=0.8,
              color=color.rgba(1, 1, 1, 0.6))
 
@@ -3876,17 +3989,21 @@ class ReaperDrone(Entity):
         g = self.game
         alive = sum(1 for e in g.enemies if not e.dead)
         shells = f'RECHARGEMENT {self.pack_t:.1f} s' if self.pack_t > 0 else f'{self.shells}/{self.PACK}'
-        HUD.set_text(self.info, f'CANON 30 mm EXPLOSIF  {shells}   [Clic G / R2]\n'
+        HUD.set_text(self.info, f'DRONE  {max(0, int(self.hp))} %   ·   LEURRES  {self.flares}   [F / L1]\n'
+                                f'CANON 30 mm EXPLOSIF  {shells}   [Clic G / R2]\n'
                                 f'MISSILES IR  {self.missiles}/{self.MISSILES}   [Espace / R1]\n'
                                 f'VISION  {"THERMIQUE" if self.thermal else "NORMALE"}   [N / Triangle]\n'
                                 f'ZOOM   [Clic D / L2]   ·   DÉPLACER : E/S/Q/D, stick gauche')
         HUD.set_text(self.alt, f'ALT {self.ALT} m\nCAP {int(self.rotation_y) % 360:03d}°\nCIBLES {alive}')
         HUD.set_text(self.guide_txt, 'GUIDAGE IR : gardez le réticule sur la cible' if self.in_flight else '')
+        threat = any(m.decoy is None for m in g.sams)
+        HUD.set_text(self.threat_txt, ('!  MISSILE SOL-AIR EN APPROCHE — LEURRES : F / L1  !'
+                                       if threat and int(g.t * 4) % 2 == 0 else ('' if not threat else ' ')))
 
     # -- vol -----------------------------------------------------------------
     def update_position(self, dt):
-        self.center = lerp(self.center, self.aim, min(1, dt * 0.5))
-        self.ang += dt * 0.12
+        self.center = lerp(self.center, self.aim, min(1, dt * 0.8))
+        self.ang += dt * 0.07            # orbite lente : l'image tourne peu, la visée reste stable
         self.position = self.center + Vec3(math.cos(self.ang) * self.RADIUS, self.ALT, math.sin(self.ang) * self.RADIUS)
         self.look_at(Vec3(self.aim.x, 0, self.aim.z))
         self.shake = max(0.0, self.shake - dt)
@@ -3908,13 +4025,31 @@ class ReaperDrone(Entity):
         if mouse.locked:
             k = dist * 2 * math.tan(math.radians(self.fov / 2))
             self.aim += right * mouse.velocity[0] * k + fwd * mouse.velocity[1] * k * 1.3
-        if pad.rx or pad.ry:
-            self.aim += (right * pad.rx * abs(pad.rx) + fwd * pad.ry * abs(pad.ry)) * 28 * z * dt
+        # manette : stick droit = visée fine, stick gauche = déplacement rapide de la zone survolée.
+        # Courbe progressive (précis au centre), accélération quand on garde le stick en butée,
+        # ralentissement quand le réticule passe sur un ennemi, et inertie pour un mouvement fluide.
+        want = Vec3(0, 0, 0)
+        rm = math.hypot(pad.rx, pad.ry)
+        if rm > 0:
+            self.edge_t = self.edge_t + dt if rm > 0.9 else 0.0
+            boost = 1 + min(1.5, self.edge_t * 2.5)
+            k = rm ** 1.8 / rm * 16 * boost
+            want += (right * pad.rx + fwd * pad.ry) * k
+        else:
+            self.edge_t = 0.0
         mv = clamp(held_keys['e'] + held_keys['up arrow'], 0, 1) - clamp(held_keys['s'] + held_keys['down arrow'], 0, 1)
         sd = clamp(held_keys['d'] + held_keys['right arrow'], 0, 1) - clamp(held_keys['q'] + held_keys['left arrow'], 0, 1)
-        mv = clamp(mv + pad.ly, -1, 1)
-        sd = clamp(sd + pad.lx, -1, 1)
-        self.aim += (fwd * mv + right * sd) * 22 * z * dt
+        lm = math.hypot(pad.lx, pad.ly)
+        if lm > 0:
+            k = lm ** 1.5 / lm
+            mv += pad.ly * k
+            sd += pad.lx * k
+        want += (fwd * clamp(mv, -1, 1) + right * clamp(sd, -1, 1)) * 32
+        near = any(not e.dead and flat_dist(e.position, self.laser) < 4 for e in g.enemies) or \
+            any(v.alive and flat_dist(v.position, self.laser) < 5 for v in g.vehicles)
+        want *= z * (0.45 if near and rm > 0 else 1.0)          # aide à la visée
+        self.aim_vel = lerp(self.aim_vel, want, min(1, dt * 9))
+        self.aim += self.aim_vel * dt
         lim = ARENA + 5
         self.aim = Vec3(clamp(self.aim.x, -lim, lim), 0, clamp(self.aim.z, -lim, lim))
         self.update_position(dt)
@@ -3939,6 +4074,9 @@ class ReaperDrone(Entity):
             self.fire_missile()
         if pad.pressed['triangle']:
             self.toggle_vision()
+        if pad.pressed['l1']:
+            self.drop_flares()
+        self.flare_t -= dt
         self.update_overlay()
 
     def aim_point(self):
@@ -3959,7 +4097,43 @@ class ReaperDrone(Entity):
         tracer(seen, target, rgb(255, 245, 200), thickness=0.05, life=0.06)
         self.shake = max(self.shake, 0.12)
         PAD.rumble(0.4, 0.5, 90)
-        FXM.later((target - start).length() / 500, blast, self.game, Vec3(target), 3.0, 200, 50, 0.7)
+        FXM.later((target - start).length() / 500, blast, self.game, Vec3(target), 3.0, 200, 50, 0.7, False,
+                  VDMG_DRONE_SHELL)
+
+    def drop_flares(self):
+        """F / L1 : leurres thermiques ; les missiles sol-air en vol ont de grandes chances de les suivre."""
+        if self.flare_t > 0:
+            return
+        if self.flares <= 0:
+            self.game.hud.add_feed('Plus de leurres')
+            return
+        self.flares -= 1
+        self.flare_t = 1.0
+        spots = []
+        for _ in range(6):
+            f = FXM.get('sphere')
+            f.color = rgb(255, 240, 200)
+            f.position = self.position + Vec3(random.uniform(-2, 2), -2, random.uniform(-2, 2))
+            f.scale = 0.5
+            end = f.position + Vec3(random.uniform(-8, 8), -18, random.uniform(-8, 8))
+            FXM.play(f, 2.5, pos=end, scale=Vec3(0.2, 0.2, 0.2), col=rgb(255, 150, 60, 0))
+            spots.append((f.position + end) / 2)
+        for m in self.game.sams:
+            if m.decoy is None and random.random() < 0.85:
+                m.decoy = random.choice(spots)
+        PAD.rumble(0.3, 0.3, 120)
+
+    def take_damage(self, dmg, why=''):
+        g = self.game
+        self.hp -= dmg
+        self.shake = max(self.shake, 0.6 if dmg > 20 else 0.2)
+        PAD.rumble(0.8, 0.6, 250)
+        if why:
+            g.hud.add_feed(f'{why}  Drone : {max(0, int(self.hp))} %')
+        if self.hp <= 0 and not getattr(self, 'is_shot_down', False):
+            self.is_shot_down = True
+            air_burst(Vec3(self.position), 2.0)
+            self.finish(shot_down=True)
 
     def fire_missile(self):
         if self.missile_t > 0:
@@ -3974,9 +4148,11 @@ class ReaperDrone(Entity):
         PAD.rumble(0.6, 0.6, 200)
         self.game.hud.add_feed(f'Missile IR tiré ({self.missiles} restants) — guidez-le avec le réticule')
 
-    def finish(self):
-        """Fin de la manche : on rend l'antenne, le joueur réapparaît au sol."""
+    def finish(self, shot_down=False):
+        """Fin de la manche (ou drone abattu) : on rend l'antenne, le joueur réapparaît au sol."""
         g = self.game
+        for m in list(g.sams):
+            m.explode()
         p = g.player
         destroy(self.ui)
         destroy(self.spot)
@@ -3998,8 +4174,405 @@ class ReaperDrone(Entity):
         p.hp = 100
         p.armed = False
         g.set_nv(self.saved_nv)
-        g.hud.message('Retour au sol', 3, 'Le drone rentre à la base — vous réapparaissez au point de départ')
+        if shot_down:
+            g.hud.message('Drone abattu !', 3, 'Vous reprenez le combat au sol')
+        else:
+            g.hud.message('Retour au sol', 3, 'Le drone rentre à la base — vous réapparaissez au point de départ')
         destroy(self)
+
+
+# ---------------------------------------------------------------------------
+# Mode « Défense du village » : chars, blindés anti-aériens, missiles sol-air
+# ---------------------------------------------------------------------------
+
+DEFENSE_LINE = -30.0          # ligne à tenir (z) : au-delà, l'ennemi a percé
+MAX_BREACHES = 3              # percées tolérées avant la chute du village
+LANES = (-21.5, 21.5)         # axes de progression des blindés (x), dégagés dans le village
+# dégâts contre les blindés : (char, camion anti-aérien) au point d'impact
+VDMG_ROCKET = (340, 450)
+VDMG_MISSILE = (520, 600)
+VDMG_DRONE_SHELL = (45, 140)
+VDMG_AA_SHELL = (18, 60)
+VDMG_GRENADE = (60, 160)
+
+
+def damage_vehicles(game, center, radius, vdmg):
+    """Explosion : les blindés proches encaissent (plus au contact, moins au bord du rayon)."""
+    for v in list(game.vehicles):
+        if not v.alive:
+            continue
+        d = v.box_dist(center)
+        if d < radius:
+            v.take_hit(int((vdmg[0] if v.kind == 'tank' else vdmg[1]) * (1 - 0.7 * d / radius)))
+
+
+def air_burst(pos, size=1.0):
+    """Explosion en l'air (missile sol-air, obus de DCA) : boule de feu et fumée, sans trace au sol."""
+    f = FXM.get('sphere')
+    f.color = rgb(255, 200, 90)
+    f.position = pos
+    f.scale = 0.4 * size
+    FXM.play(f, 0.25, scale=Vec3(3, 3, 3) * size, col=rgb(255, 120, 30, 0))
+    for _ in range(4):
+        sm = FXM.get('sphere')
+        sm.color = rgb(70, 68, 66, 200)
+        sm.position = pos + Vec3(random.uniform(-.5, .5), random.uniform(-.5, .5), random.uniform(-.5, .5)) * size
+        sm.scale = 0.8 * size
+        FXM.play(sm, 1.6, scale=Vec3(2.5, 2.5, 2.5) * size, col=rgb(110, 108, 105, 0))
+
+
+class TankShell(Entity):
+    """Obus explosif tiré par un char : vole très vite, explose au premier contact."""
+
+    def __init__(self, game, start, target, shooter):
+        super().__init__(model='sphere', color=rgb(255, 220, 150), scale=0.2, position=start, unlit=True)
+        self.game = game
+        self.shooter = shooter
+        self.dir = (target - start).normalized()
+        self.life = 2.0
+
+    def update(self):
+        if self.game.paused:
+            return
+        dt = time.dt
+        self.life -= dt
+        step = 140 * dt
+        hit = raycast(self.world_position, self.dir, step + 0.2, ignore=[self, self.shooter])
+        end = hit.world_point if hit.hit else self.position + self.dir * step
+        if (self.position - camera.world_position).length() > 6:     # pas de traînée collée à la caméra
+            tracer(self.position, end, rgb(255, 200, 120), thickness=0.03, life=0.04)
+        if hit.hit or self.life <= 0 or end.y < 0:
+            self.explode(Vec3(end))
+            return
+        self.position = end
+
+    def explode(self, pos):
+        g = self.game
+        destroy(self)
+        explosion_fx(pos, 1.0)
+        pl = g.player
+        d = (pl.position + Vec3(0, 0.9, 0) - pos).length()
+        if not pl.dead and d < 4.5 and (g.world.los(pos + Vec3(0, 0.3, 0), pl.eye)
+                                          or g.world.los(pos + Vec3(0, 0.3, 0), pl.position + Vec3(0, 0.5, 0))):
+            pl.take_damage(int(lerp(85, 20, clamp(d / 4.5, 0, 1))), pos)
+        if d < 20 and pl.drone is None:
+            pl.shake = max(pl.shake, 0.6 * (1 - d / 20))
+            PAD.rumble(0.9 * (1 - d / 20), 0.7 * (1 - d / 20), 300)
+
+
+class SAMissile(Entity):
+    """Missile sol-air (MANPADS) : poursuit le drone ; les leurres thermiques peuvent le dévier."""
+
+    def __init__(self, game, start):
+        super().__init__(model='cube', color=rgb(95, 100, 85), scale=(0.1, 0.1, 0.6), position=start, shader=LIT)
+        self.game = game
+        d = game.player.drone
+        self.dir = ((d.position - start).normalized() + Vec3(0, 0.6, 0)).normalized()
+        self.speed = 30.0
+        self.life = 9.0
+        self.decoy = None
+        self.smoke_t = 0.0
+        Entity(parent=self, model='quad', texture='circle', color=rgb(255, 230, 170), z=-0.5, scale=(2, 2),
+               billboard=True, unlit=True)
+        game.sams.append(self)
+
+    def update(self):
+        g = self.game
+        if g.paused:
+            return
+        dt = time.dt
+        d = g.player.drone
+        self.life -= dt
+        if d is None:
+            self.explode()
+            return
+        self.speed = min(95.0, self.speed + 45 * dt)
+        target = self.decoy if self.decoy is not None else d.position
+        want = target - self.position
+        dist = want.length()
+        if self.decoy is not None:
+            self.decoy_t = getattr(self, 'decoy_t', 0.0) + dt
+            if dist < 6.0 or self.decoy_t > 2.0:      # leurré : il explose sur les leurres
+                self.explode()
+                return
+        if dist < 3.0:
+            self.explode()
+            if self.decoy is None:
+                d.take_damage(34, 'Missile sol-air !')
+            return
+        k = min(1.0, dt * 2.8)
+        self.dir = (self.dir * (1 - k) + want / max(dist, 1e-4) * k).normalized()
+        self.position += self.dir * self.speed * dt
+        self.look_at(self.position + self.dir)
+        self.smoke_t -= dt
+        if self.smoke_t <= 0:
+            self.smoke_t = 0.04
+            sm = FXM.get('sphere')
+            sm.color = rgb(230, 230, 225, 150)
+            sm.position = self.position - self.dir * 0.4
+            sm.scale = 0.3
+            FXM.play(sm, 1.5, scale=Vec3(1.4, 1.4, 1.4), col=rgb(190, 190, 185, 0))
+        if self.life <= 0:
+            self.explode()
+
+    def explode(self):
+        g = self.game
+        if self in g.sams:
+            g.sams.remove(self)
+        air_burst(Vec3(self.position), 0.8)
+        destroy(self)
+
+
+class Vehicle(Entity):
+    """Blindé ennemi qui descend un axe du village vers la ligne à tenir.
+    kind 'tank' : char (canon de 125 mm + mitrailleuse), très résistant aux balles.
+    kind 'aa'   : camion anti-aérien bitube : tire sur le drone, sinon sur le joueur."""
+    HALF = {'tank': (1.9, 3.6), 'aa': (1.3, 3.3)}
+    HEIGHT = {'tank': 2.6, 'aa': 2.8}
+
+    def __init__(self, game, kind, lane_x, z, skill=0.0):
+        super().__init__(position=(lane_x, 0, z), rotation_y=180)
+        self.game = game
+        self.kind = kind
+        self.lane = lane_x
+        self.skill = skill
+        self.max_hp = 900 if kind == 'tank' else 420
+        self.hp = self.max_hp
+        self.alive = True
+        self.gone = False
+        self.speed = 1.4 if kind == 'tank' else 1.8        # ~50 s pour traverser le village
+        self.fire_t = random.uniform(3, 6)
+        self.mg_t = random.uniform(1, 3)
+        self.burn_t = 0.0
+        self.smoke_t = 0.0
+        self.owner = self
+        self.zone = 'hull'
+        hw, hl = self.HALF[kind]
+        self.collider = BoxCollider(self, center=Vec3(0, self.HEIGHT[kind] / 2, 0),
+                                    size=Vec3(hw * 2, self.HEIGHT[kind], hl * 2))
+        (self.build_tank if kind == 'tank' else self.build_aa)()
+        game.vehicles.append(self)
+        if game.player.drone is not None and game.player.drone.thermal:
+            set_hot(self, 0.8)
+
+    # -- modèles -------------------------------------------------------------
+    def build_tank(self):
+        paint, dark, track = rgb(88, 96, 66), rgb(58, 63, 46), rgb(36, 36, 34)
+        b = MeshBuilder()
+        b.box((0, 0.85, 0), (3.2, 0.8, 6.4), paint, jitter=0.03)                  # caisse
+        b.box((0, 0.95, 3.35), (3.0, 0.6, 0.8), paint, rx=-35)                    # glacis
+        b.box((0, 1.28, -0.2), (3.6, 0.1, 6.2), dark)                              # garde-boue
+        b.box((0, 1.0, -3.3), (2.6, 0.5, 0.3), dark)                               # arrière / échappement
+        for s in (-1, 1):
+            b.box((s * 1.85, 0.5, 0), (0.62, 1.0, 6.9), track)                    # chenilles
+            for k in range(6):
+                b.cylinder((s * 2.17 - 0.08, 0.45, -2.6 + k * 1.05), 0.38, 0.16, rgb(55, 56, 50), seg=8, axis='x')
+            b.box((s * 1.95, 1.05, 0.2), (0.08, 0.42, 5.8), paint)                # jupes
+            for k in range(4):
+                b.box((s * 0.9, 1.4, 2.2 - k * 0.5), (0.9, 0.12, 0.4), rgb(80, 86, 60))   # briques réactives
+        b.build(self)
+        self.turret = Entity(parent=self, y=1.33, z=-0.3)
+        t = MeshBuilder()
+        t.box((0, 0.35, 0), (2.4, 0.7, 2.8), paint, jitter=0.03)
+        t.box((0, 0.73, -0.3), (1.7, 0.1, 1.9), dark)
+        t.cylinder((0.6, 0.75, -0.4), 0.3, 0.25, dark, seg=8)                      # tourelleau
+        t.box((0, 0.35, 1.55), (1.0, 0.55, 0.4), dark)                             # masque
+        t.cylinder((0, 0.38, 1.7), 0.09, 4.1, dark, seg=8, axis='z')               # canon
+        t.cylinder((0, 0.38, 3.3), 0.13, 0.6, dark, seg=8, axis='z')               # évacuateur de fumée
+        t.cylinder((0.6, 1.0, -0.4), 0.03, 0.8, rgb(30, 30, 30), seg=5, axis='z')  # mitrailleuse de tourelle
+        t.build(self.turret)
+        self.muzzle = Entity(parent=self.turret, position=(0, 0.38, 5.9))
+        self.mg = Entity(parent=self.turret, position=(0.6, 1.0, 0.5))
+
+    def build_aa(self):
+        paint, dark, tyre = rgb(150, 138, 100), rgb(70, 72, 60), rgb(30, 30, 30)
+        b = MeshBuilder()
+        b.box((0, 0.95, 0), (2.4, 0.5, 6.4), dark)                                 # châssis
+        b.box((0, 1.75, 2.35), (2.4, 1.3, 1.7), paint, jitter=0.03)                # cabine
+        b.box((0, 1.95, 3.21), (2.0, 0.5, 0.05), rgb(40, 55, 70))                  # pare-brise
+        b.box((0, 1.4, -1.0), (2.4, 0.5, 4.0), paint)                              # plateau
+        for s in (-1, 1):
+            for wz in (-2.3, -0.9, 0.9, 2.4):
+                b.cylinder((s * 1.3 - (0.3 if s > 0 else 0), 0.5, wz), 0.5, 0.3, tyre, seg=10, axis='x')
+        b.build(self)
+        self.turret = Entity(parent=self, y=1.65, z=-1.2)
+        t = MeshBuilder()
+        t.box((0, 0.45, 0), (1.9, 0.9, 1.9), paint, jitter=0.03)
+        t.box((0, 1.1, -0.6), (0.12, 0.8, 0.12), dark)                             # mât radar
+        t.box((0, 1.55, -0.6), (1.3, 0.55, 0.08), dark)                            # antenne radar
+        for sx in (-1, 1):
+            t.box((sx * 0.7, 0.9, 1.0), (0.14, 0.14, 2.4), dark, rx=-35)          # tubes pointés vers le ciel
+            t.box((sx * 0.7, 0.62, 0.3), (0.35, 0.4, 0.8), paint)                 # boîtes de culasse
+        t.build(self.turret)
+        self.muzzles = [Entity(parent=self.turret, position=(sx * 0.7, 1.6, 2.0)) for sx in (-1, 1)]
+
+    # -- géométrie -----------------------------------------------------------
+    def box_dist(self, p):
+        hw, hl = self.HALF[self.kind]
+        dx = max(0.0, abs(p.x - self.x) - hw)
+        dz = max(0.0, abs(p.z - self.z) - hl)
+        dy = max(0.0, p.y - self.HEIGHT[self.kind])
+        return math.sqrt(dx * dx + dy * dy + dz * dz)
+
+    def push_out(self, pos, r):
+        """Empêche le joueur de traverser le blindé (ou son épave)."""
+        hw, hl = self.HALF[self.kind]
+        x0, x1, z0, z1 = self.x - hw, self.x + hw, self.z - hl, self.z + hl
+        px, pz = clamp(pos.x, x0, x1), clamp(pos.z, z0, z1)
+        dx, dz = pos.x - px, pos.z - pz
+        d2 = dx * dx + dz * dz
+        if d2 >= r * r or pos.y > self.HEIGHT[self.kind] - 0.3:
+            return pos
+        if d2 > 1e-8:
+            d = math.sqrt(d2)
+            return Vec3(pos.x + dx / d * (r - d), pos.y, pos.z + dz / d * (r - d))
+        opts = [(pos.x - x0 + r, -1, 0), (x1 - pos.x + r, 1, 0), (pos.z - z0 + r, 0, -1), (z1 - pos.z + r, 0, 1)]
+        pen, sx, sz = min(opts)
+        return Vec3(pos.x + sx * pen, pos.y, pos.z + sz * pen)
+
+    # -- dégâts --------------------------------------------------------------
+    def bullet_hit(self, dmg, point):
+        """Balles : ricochent presque sans effet sur le char, entament le camion."""
+        impact(point, None, rgb(255, 220, 140))
+        self.take_hit(dmg * (0.03 if self.kind == 'tank' else 0.3))
+
+    def take_hit(self, dmg):
+        if not self.alive:
+            return
+        self.hp -= dmg
+        if self.hp <= 0:
+            self.destroyed()
+
+    def destroyed(self):
+        g = self.game
+        self.alive = False
+        explosion_fx(self.position + Vec3(0, 1.5, 0), 2.0)
+        for part in list(self.children) + list(self.turret.children):
+            if part.model is not None:
+                part.color = rgb(70, 60, 50)          # calciné
+        self.turret.rotation_y += random.uniform(-40, 40)
+        self.turret.rotation_z = random.uniform(-8, 8)
+        self.burn_t = 10.0
+        set_hot(self, 0.6 if g.player.drone is not None and g.player.drone.thermal else 0.0)
+        pts = 500 if self.kind == 'tank' else 350
+        g.add_score(pts + g.wave * 20, ('Char détruit' if self.kind == 'tank' else 'Blindé anti-aérien détruit')
+                    + f' +{pts + g.wave * 20}')
+        g.hud.hitmarker(True)
+        PAD.rumble(0.8, 0.8, 350)
+        g.check_wave_end()
+
+    # -- comportement --------------------------------------------------------
+    def update(self):
+        g = self.game
+        if g.paused or self.gone:
+            return
+        dt = time.dt
+        if not self.alive:                        # épave qui brûle puis disparaît
+            self.burn_t -= dt
+            self.smoke_t -= dt
+            if self.smoke_t <= 0:
+                self.smoke_t = 0.3
+                sm = FXM.get('sphere')
+                sm.color = rgb(35, 33, 31, 190)
+                sm.position = self.position + Vec3(random.uniform(-.8, .8), 2.0, random.uniform(-.8, .8))
+                sm.scale = 1.0
+                FXM.play(sm, 3.0, pos=sm.position + Vec3(random.uniform(1, 3), 8, 0), scale=Vec3(3, 3, 3),
+                         col=rgb(90, 88, 85, 0))
+            if self.burn_t <= 0:
+                self.y -= dt * 0.6                # l'épave « s'enfonce » : elle libère l'axe
+                if self.y < -3:
+                    self.remove()
+            return
+        # progression : on attend si un blindé nous précède de trop près
+        blocked = any(o is not self and not o.gone and o.lane == self.lane and 0 < self.z - o.z < 9.5
+                      for o in g.vehicles)
+        if not blocked:
+            self.z -= self.speed * dt
+            self.y = abs(math.sin(g.t * 9)) * 0.02
+        if self.z <= DEFENSE_LINE:
+            g.breach(self)
+            self.remove()
+            return
+        pl = g.player
+        drone = pl.drone
+        self.fire_t -= dt
+        self.mg_t -= dt
+        if self.kind == 'aa' and drone is not None:
+            self.aim_turret(drone.position, dt, 60)
+            if self.fire_t <= 0:
+                self.fire_t = random.uniform(1.0, 1.6)
+                self.burst_at(drone.position, 3.5, stop=12)
+                dist = (drone.position - self.position).length()
+                if random.random() < 0.35 * clamp(1.4 - dist / 110, 0.2, 1):
+                    drone.take_damage(5, 'Tirs de DCA !')
+            return
+        if pl.dead or drone is not None:
+            return
+        eye = self.position + Vec3(0, 2.3, 0)
+        dist = flat_dist(self.position, pl.position)
+        if dist > 85 or not g.world.los(eye, pl.eye):
+            self.aim_turret(self.position + Vec3(0, 0, -10), dt, 20)
+            return
+        aligned = self.aim_turret(pl.position, dt, 32 + 20 * self.skill)
+        if self.kind == 'tank':
+            if aligned and self.fire_t <= 0:
+                self.fire_t = random.uniform(6.5, 8.5) - 2.5 * self.skill
+                err = lerp(3.2, 1.2, self.skill) * clamp(dist / 35, 0.4, 1.5)
+                target = pl.position + Vec3(random.uniform(-err, err), random.uniform(0.2, 1.4), random.uniform(-err, err))
+                start = self.muzzle.world_position
+                muzzle_flash(self.muzzle, scale=1.6, intensity=0.8, life=0.08)
+                TankShell(g, start, target, self)
+                g.hud.add_feed('Le char fait feu !')
+            if self.mg_t <= 0:
+                self.mg_t = random.uniform(2.5, 4)
+                self.mg_burst(pl, dist)
+        elif self.fire_t <= 0 and aligned and dist < 60:
+            self.fire_t = random.uniform(1.8, 2.6)
+            self.burst_at(pl.eye - Vec3(0, 0.4, 0), 1.5)
+            if random.random() < 0.3 * clamp(1.3 - dist / 60, 0.3, 1):
+                pl.take_damage(9, self.position)
+            else:
+                g.flyby(pl.position)
+
+    def aim_turret(self, target, dt, rate):
+        want = angle_diff(self.rotation_y, yaw_to(self.position, target))
+        self.turret.rotation_y = approach_angle(self.turret.rotation_y, want, rate * dt)
+        return abs(angle_diff(self.turret.rotation_y, want)) < 5
+
+    def burst_at(self, target, scatter, stop=0.0):
+        """Rafale de traçantes ; stop : elles s'arrêtent avant la cible (tirs vers le drone = la caméra)."""
+        for m in self.muzzles:
+            muzzle_flash(m, scale=0.5, intensity=0.6, life=0.04)
+            start = m.world_position
+            for _ in range(2):
+                end = target + Vec3(random.uniform(-scatter, scatter), random.uniform(-scatter, scatter),
+                                    random.uniform(-scatter, scatter))
+                if stop:
+                    d = end - start
+                    end = start + d * max(0.1, 1 - stop / max(d.length(), 1e-3))
+                tracer(start, end, rgb(255, 170, 80), thickness=0.04, life=0.07)
+
+    def mg_burst(self, pl, dist):
+        start = self.mg.world_position
+        for _ in range(3):
+            end = pl.eye + Vec3(random.uniform(-1.5, 1.5), random.uniform(-1, 0.5), random.uniform(-1.5, 1.5))
+            tracer(start, end, rgb(255, 200, 80), thickness=0.02)
+        if random.random() < 0.3 * clamp(1.2 - dist / 70, 0.2, 1) and \
+                (pl.crouch_t < 0.5 or random.random() < 0.4):
+            pl.take_damage(6, self.position)
+        else:
+            self.game.flyby(pl.position)
+
+    def remove(self):
+        if self.gone:
+            return
+        self.gone = True
+        self.alive = False
+        g = self.game
+        if self in g.vehicles:
+            g.vehicles.remove(self)
+        destroy(self)
+        g.check_wave_end()
 
 
 def render_root():
@@ -4209,7 +4782,7 @@ CONTROLS_PAUSE = ('E avancer   ·   S reculer   ·   Q gauche   ·   D droite   
                   'T vue 3e personne   ·   N vision nocturne (la nuit)   ·   M carte   ·   G graphismes\n'
                   'Manette PS5 : stick gauche bouger (L3 courir) · stick droit regarder · R2 tirer · L2 viser\n'
                   'Rond accroupi · en visant L3 / R3 se pencher · Croix sauter · Carré recharger / ramasser / utiliser\n'
-                  'R1 grenade · flèche gauche : drone Reaper · drone : R2 canon, R1 missile IR, L2 zoom, Triangle vision\n'
+                  'R1 grenade · flèche gauche : drone · drone : R2 canon, R1 missile, L1 leurres, L2 zoom, Triangle vision\n'
                   'Triangle changer d\'arme · flèche bas : vue 3e personne · flèche haut : vision nocturne\n\n'
                   'Échap / Options : reprendre    ·    X / Create : quitter')
 
@@ -4229,6 +4802,9 @@ class MiniMap:
         self.player_icon = Entity(parent=self.root, model=arrow, color=rgb(90, 220, 255), scale=0.045,
                                   double_sided=True, z=-0.02)
         self.dots = []
+        self.vdots = []             # blindés : rectangles orange
+        self.line = Entity(parent=self.root, model='quad', color=rgb(255, 80, 70), scale=(1.0, 0.006), z=-0.005,
+                           enabled=False)   # ligne à tenir
 
     def update(self):
         if not self.root.enabled:
@@ -4245,6 +4821,17 @@ class MiniMap:
             d.position = (e.x * k, e.z * k, -0.01)
         for d in self.dots[len(alive):]:
             d.enabled = False
+        vs = [v for v in self.game.vehicles if v.alive]
+        while len(self.vdots) < len(vs):
+            self.vdots.append(Entity(parent=self.root, model='quad', color=rgb(255, 150, 40), scale=0.05, z=-0.012))
+        for d, v in zip(self.vdots, vs):
+            d.enabled = True
+            d.position = (v.x * k, v.z * k, -0.012)
+            d.scale = (0.05, 0.07) if v.kind == 'tank' else (0.04, 0.06)
+        for d in self.vdots[len(vs):]:
+            d.enabled = False
+        self.line.enabled = self.game.mode == 'defense'
+        self.line.y = DEFENSE_LINE * k
 
 
 class HUD:
@@ -4270,7 +4857,7 @@ class HUD:
         Entity(parent=ui, model=Quad(radius=0.2), color=panel, origin=(0.5, -0.5),
                position=(ar - 0.02, -0.49), scale=(0.3, 0.11))
         Entity(parent=ui, model=Quad(radius=0.2), color=panel, origin=(-0.5, 0.5),
-               position=(-ar + 0.02, 0.49), scale=(1.0, 0.055))
+               position=(-ar + 0.02, 0.49), scale=(1.15, 0.055))
         Entity(parent=ui, model='quad', color=color.rgba(1, 1, 1, 0.15), origin=(-0.5, 0),
                position=(-ar + 0.05, -0.455), scale=(0.4, 0.022))
         self.hp_bar = Entity(parent=ui, model='quad', color=rgb(80, 220, 90), origin=(-0.5, 0),
@@ -4417,8 +5004,14 @@ class HUD:
         self.gear.color = rgb(255, 210, 80) if g.ult_ready else rgb(235, 225, 190)
         alive = sum(1 for e in g.enemies if not e.dead)
         tier = TIERS[g.tier_index()]['name']
-        self.set_text(self.info, f'Vague {g.wave}   ·   {tier} (IA niv. {max(g.wave, 1)})   ·   Ennemis {alive}'
-                      f'   ·   Score {g.score}   ·   Éliminations {g.kills}')
+        if g.mode == 'defense':
+            tanks = sum(1 for v in g.vehicles if v.alive and v.kind == 'tank')
+            aas = sum(1 for v in g.vehicles if v.alive and v.kind == 'aa')
+            self.set_text(self.info, f'DÉFENSE · Vague {g.wave}   ·   Chars {tanks}   ·   DCA {aas}   ·   Fantassins {alive}'
+                          f'   ·   Percées {g.breaches}/{MAX_BREACHES}   ·   Score {g.score}')
+        else:
+            self.set_text(self.info, f'Vague {g.wave}   ·   {tier} (IA niv. {max(g.wave, 1)})   ·   Ennemis {alive}'
+                          f'   ·   Score {g.score}   ·   Éliminations {g.kills}')
 
         # aide : commandes de la manette si elle a servi récemment
         self.set_text(self.help, CONTROLS_PAD_LINE if PAD is not None and g.t - PAD.last_used < 10 and PAD.connected
@@ -4515,6 +5108,12 @@ class Game(Entity):
         self.night = False          # choisi dans le menu de départ
         self.nv = False             # lunettes de vision nocturne (nuit seulement)
         self.map_name = 'village'   # carte choisie dans le menu : 'village' ou 'desert'
+        self.mode = 'survie'        # 'survie' (vagues) ou 'defense' (défense du village)
+        self.vehicles = []          # blindés ennemis (défense)
+        self.sams = []              # missiles sol-air en vol
+        self.breaches = 0           # percées de la ligne (défense)
+        self.pending = 0            # blindés encore à faire entrer dans la vague
+        self.wave_over = False
         self.headshot_streak = 0    # tirs à la tête comptés pour l'ultime (drone)
         self.ult_ready = False
         self.smoke_t = 0.0
@@ -4527,7 +5126,7 @@ class Game(Entity):
         self.sky = Sky(texture='sky_default', color=Color(0.95, 0.97, 1.0, 1))
         self.sun = DirectionalLight(shadow_map_resolution=Vec2(SHADOW_RES, SHADOW_RES), color=SUN_COLOR)
         self.apply_time_of_day(False)       # avant de créer le décor : les objets héritent de l'ambiance
-        self.world = World(self.map_name)
+        self.world = World(self.map_name, self.mode)
         self.sun.look_at(Vec3(0.55, -0.75, 0.4))
         self.shadow_bounds = Entity(model='cube', scale=(ARENA * 2 + 4, 9, ARENA * 2 + 4), y=4, visible=False)
         invoke(self.fit_shadows, delay=0.1)
@@ -4542,12 +5141,12 @@ class Game(Entity):
         mouse.locked = False
         ui = camera.ui
         self.menu = Entity(parent=ui, z=-0.5)
-        Entity(parent=self.menu, model=Quad(radius=0.03), color=color.rgba(0, 0, 0, 0.72), scale=(1.1, 0.9), z=0.01,
-               y=-0.04)
+        Entity(parent=self.menu, model=Quad(radius=0.03), color=color.rgba(0, 0, 0, 0.72), scale=(1.1, 0.98), z=0.01,
+               y=-0.07)
         Text(parent=self.menu, text='CHOISISSEZ VOTRE ARME', origin=(0, 0), y=0.33, scale=2)
         choices = [
             ('rifle', "1  —  Fusil d'assaut",
-             'Tir automatique · 30 balles · viseur holographique x1,4'),
+             'Tir automatique · 30 balles · viseur point rouge rond x1,4'),
             ('sniper', '2  —  Sniper',
              'Un tir par clic · gros dégâts · 5 balles · lunette zoom x2'),
         ]
@@ -4575,12 +5174,20 @@ class Game(Entity):
         b.action = 'map'
         self.menu_buttons.append(b)
         self.menu_map_text = Text(parent=self.menu, text=self.map_label(), origin=(0, 0), y=-0.265, scale=1.2, z=-0.02)
+        b = Button(parent=self.menu, text='', scale=(0.9, 0.09), y=-0.37, radius=0.08,
+                   color=color.rgba(0.32, 0.14, 0.12, 0.95), highlight_color=color.rgba(0.48, 0.22, 0.18, 1))
+        b.on_click = self.toggle_mode_choice
+        b.action = 'mode'
+        self.menu_buttons.append(b)
+        self.menu_mode_text = Text(parent=self.menu, text=self.mode_label(), origin=(0, 0), y=-0.37, scale=1.2,
+                                   z=-0.02)
         # cadre de sélection pour la manette
         self.menu_cursor = Entity(parent=self.menu, model=Quad(radius=0.08, thickness=3, mode='line'),
                                   color=rgb(255, 210, 90), scale=(0.93, 0.18), y=0.18, z=-0.03, visible=False)
-        Text(parent=self.menu, text='Cliquez sur une arme ou appuyez sur 1 / 2  ·  3 ou N : jour / nuit  ·  4 : carte\n'
+        Text(parent=self.menu, text='Cliquez sur une arme ou appuyez sur 1 / 2  ·  3 ou N : jour / nuit  ·  4 : carte'
+                                    '  ·  5 : mode\n'
                                     'Manette : croix directionnelle ou stick gauche, puis Croix pour valider',
-             origin=(0, 0), y=-0.38, scale=0.85, color=color.rgba(1, 1, 1, 0.6))
+             origin=(0, 0), y=-0.46, scale=0.85, color=color.rgba(1, 1, 1, 0.6))
 
     def choose_weapon(self, key):
         if not self.choosing:
@@ -4588,12 +5195,17 @@ class Game(Entity):
         self.choosing = False
         destroy(self.menu)
         self.player.reset_weapons(key)
+        if self.mode == 'defense':               # défense : RPG en arme secondaire (Triangle / Tab)
+            self.player.slots[1] = 'rpg'
         mouse.locked = True
         self.hud.message('Éliminez les ennemis !', 4,
                          f"Arme : {WEAPONS[key]['name']}" + (' · Nuit : les ennemis ont la vision nocturne'
                                                              if self.night else '')
                          + ('\nDésert : Carré / V près de la batterie anti-aérienne pour l\'utiliser'
-                            if self.map_name == 'desert' else ''))
+                            if self.map_name == 'desert' else '')
+                         + ('\nDÉFENSE : arrêtez chars, DCA et fantassins avant la ligne rouge et blanche'
+                            f' ({MAX_BREACHES} percées = défaite)\nRPG : Triangle / Tab · roquettes à la caisse verte'
+                            if self.mode == 'defense' else ''))
         self.set_nv(self.night)             # la nuit, on commence lunettes allumées
         invoke(self.next_wave, delay=2)
 
@@ -4639,12 +5251,28 @@ class Game(Entity):
     def toggle_map_choice(self):
         """Change de carte dans le menu : le décor est reconstruit."""
         self.map_name = 'desert' if self.map_name == 'village' else 'village'
+        if self.map_name == 'desert':
+            self.mode = 'survie'            # la défense se joue dans le village
+        self.rebuild_world()
+
+    def mode_label(self):
+        return '5  —  Mode : ' + ('DÉFENSE DU VILLAGE (chars, DCA, MANPADS)' if self.mode == 'defense'
+                                  else 'SURVIE (vagues d\'infanterie)')
+
+    def toggle_mode_choice(self):
+        self.mode = 'defense' if self.mode == 'survie' else 'survie'
+        if self.mode == 'defense':
+            self.map_name = 'village'
+        self.rebuild_world()
+
+    def rebuild_world(self):
         destroy(self.world.level)
-        self.world = World(self.map_name)
+        self.world = World(self.map_name, self.mode)
         self.player.world = self.world
         self.apply_time_of_day(self.night)
         self.update_grass(force=True)
         self.menu_map_text.text = self.map_label()
+        self.menu_mode_text.text = self.mode_label()
 
     def time_label(self):
         return '3  —  Moment : ' + ('NUIT (vision nocturne)' if self.night else 'JOUR')
@@ -4694,6 +5322,10 @@ class Game(Entity):
     def next_wave(self):
         if self.over:
             return
+        self.wave_over = False
+        if self.mode == 'defense':
+            self.next_wave_defense()
+            return
         self.wave += 1
         sk = self.skill()
         n = min(3 + self.wave, 14)
@@ -4732,6 +5364,104 @@ class Game(Entity):
                          f'{n} ennemis en {len(self.squads)} escouades · {TIERS[tier]["name"]} · IA niveau {self.wave}'
                          + (f' — {detail}' if detail else ''))
 
+    # -- mode défense du village ---------------------------------------------
+    def next_wave_defense(self):
+        """Colonne ennemie : chars et DCA sur les deux axes, escouades à pied (une arme sol-air par escouade)."""
+        self.wave += 1
+        w = self.wave
+        sk = self.skill()
+        tier = self.tier_index()
+        tanks = min(1 + w // 2, 4)
+        aa = (1 if w >= 2 else 0) + (1 if w >= 4 else 0)
+        kinds = ['tank'] * tanks + ['aa'] * aa
+        random.shuffle(kinds)
+        self.pending = len(kinds)
+        for i, kind in enumerate(kinds):          # les blindés entrent l'un après l'autre
+            invoke(self.spawn_vehicle, kind, LANES[i % 2], sk, delay=1 + (i // 2) * 9)
+        n = min(4 + 2 * w, 14)
+        sizes = []
+        left = n
+        while left > 0:
+            k = min(left, 3 if left > 4 else left)
+            sizes.append(k)
+            left -= k
+        self.squads = []
+        rpg_index = random.randrange(n)
+        count = 0
+        for size in sizes:
+            anchor = self.world.free_point_near(Vec3(random.uniform(-38, 38), 0, random.uniform(30, 41)))
+            members = []
+            for i in range(size):
+                pos = anchor
+                for _ in range(30):
+                    cand = anchor + Vec3(random.uniform(-3.5, 3.5), 0, random.uniform(-3, 3))
+                    if i == 0 or (self.world.is_free(cand) and all(flat_dist(cand, m.position) > 1.2 for m in members)):
+                        pos = cand if i else anchor
+                        break
+                e = Enemy(self, pos, skill=sk, tier=tier, weapon=random_enemy_weapon(), rpg=(count == rpg_index),
+                          night=self.night, manpads=(i == size - 1 and count != rpg_index))
+                count += 1
+                e.rotation_y = 180
+                members.append(e)
+                self.enemies.append(e)
+            self.squads.append(Squad(members))
+        manpads = sum(1 for e in self.enemies if not e.dead and e.manpads)
+        self.hud.message(f'Vague {w} — la colonne arrive', 4,
+                         f'{tanks} char(s) · {aa} blindé(s) anti-aérien(s) · {n} fantassins dont {manpads} MANPADS\n'
+                         f'Tenez la ligne rouge et blanche ! Percées : {self.breaches}/{MAX_BREACHES}')
+
+    def spawn_vehicle(self, kind, lane, skill):
+        if self.over or self.mode != 'defense':
+            return
+        self.pending = max(0, self.pending - 1)
+        Vehicle(self, kind, lane, 40, skill)
+        self.hud.add_feed('Char en approche !' if kind == 'tank' else 'Blindé anti-aérien en approche !')
+
+    def advance_point(self, e):
+        """Étape suivante de la progression d'un fantassin vers la ligne à tenir."""
+        z = max(e.z - random.uniform(10, 16), DEFENSE_LINE - 6)
+        x = clamp(e.x + random.uniform(-6, 6), -ARENA + 3, ARENA - 3)
+        return self.world.free_point_near(Vec3(x, 0, z))
+
+    def breach(self, who):
+        """Un ennemi a franchi la ligne."""
+        if self.over:
+            return
+        self.breaches += 1
+        what = {'tank': 'Un char', 'aa': 'Un blindé anti-aérien'}.get(getattr(who, 'kind', ''), 'Un fantassin')
+        self.hud.message('PERCÉE !', 2.5, f'{what} a franchi la ligne — {self.breaches}/{MAX_BREACHES}')
+        PAD.rumble(0.6, 0.6, 400)
+        if self.breaches >= MAX_BREACHES:
+            if self.player.drone is not None:
+                self.player.drone.finish()
+            self.over = True
+            self.player.dead = True
+            self.hud.message('Le village est tombé !', 0,
+                             f'Score : {self.score}   ·   Vague : {self.wave}\n\nEntrée (ou Croix) pour recommencer')
+
+    def check_breaches(self):
+        for e in self.enemies:
+            if not e.dead and e.z < DEFENSE_LINE:
+                e.dead = True
+                e.release_cover()
+                destroy(e)
+                self.breach(e)
+        self.check_wave_end()
+
+    def wave_cleared(self):
+        return (not any(not e.dead for e in self.enemies) and self.pending == 0
+                and not any(v.alive for v in self.vehicles))
+
+    def check_wave_end(self):
+        if self.wave_over or self.over or self.wave == 0 or not self.wave_cleared():
+            return
+        self.wave_over = True
+        self.hud.message('Vague terminée !', 3, 'Santé restaurée — la prochaine sera plus coriace')
+        self.player.hp = min(100, self.player.hp + 50)
+        if self.player.drone is not None:
+            invoke(self.end_drone, delay=2.5)
+        invoke(self.cleanup_and_next, delay=4.5)
+
     def on_enemy_killed(self, enemy, headshot):
         self.kills += 1
         bonus = self.wave * 10
@@ -4746,12 +5476,7 @@ class Game(Entity):
                     PAD.rumble(0.5, 0.8, 300)
         else:
             self.add_score(100 + bonus, f'Ennemi éliminé +{100 + bonus}')
-        if all(e.dead for e in self.enemies):
-            self.hud.message('Vague terminée !', 3, 'Santé restaurée — la prochaine sera plus coriace')
-            self.player.hp = min(100, self.player.hp + 50)
-            if self.player.drone is not None:
-                invoke(self.end_drone, delay=2.5)
-            invoke(self.cleanup_and_next, delay=4.5)
+        self.check_wave_end()
 
     def activate_ult(self):
         """Flèche gauche / U : pilote le drone Reaper jusqu'à la fin de la manche."""
@@ -4761,7 +5486,7 @@ class Game(Entity):
         if not self.ult_ready:
             self.hud.add_feed(f'Ultime : {self.headshot_streak}/{ULT_HEADSHOTS} tirs à la tête')
             return
-        if not any(not e.dead for e in self.enemies):
+        if self.wave_cleared() or self.wave_over:
             self.hud.add_feed('Ultime : attendez le début de la manche')
             return
         if p.mount is not None:
@@ -4813,6 +5538,14 @@ class Game(Entity):
                 destroy(e)
         self.enemies = []
         self.squads = []
+        for v in list(self.vehicles):
+            v.remove()
+        self.vehicles = []
+        for m in list(self.sams):
+            m.explode()
+        self.breaches = 0
+        self.pending = 0
+        self.wave_over = False
         for c in list(self.corpses):
             destroy(c)
         self.corpses = []
@@ -4835,6 +5568,8 @@ class Game(Entity):
         p.pivot.position = (0, 1.65, 0)
         p.pivot.rotation = (0, 0, 0)
         p.reset_weapons(p.start_weapon)
+        if self.mode == 'defense':
+            p.slots[1] = 'rpg'
         p.hp, p.dead, p.mag, p.reload_t, p.vel, p.vy = 100, False, p.weapon['mag'], 0, Vec3(0, 0, 0), 0
         p.armed = False
         p.crouching, p.crouch_t, p.lean_pad, p.lean_t = False, 0.0, 0, 0.0
@@ -4874,13 +5609,18 @@ class Game(Entity):
         self.pickup = best
         aa = self.world.aa
         self.aa_near = None
+        self.crate_near = False
         if p.mount is not None:
             self.hud.set_text(self.hud.prompt, 'Carré / V : quitter la batterie anti-aérienne'
                               + ('   ·   SURCHAUFFE' if p.mount.overheat else ''))
         elif p.drone is not None:
             self.hud.set_text(self.hud.prompt, '')
         elif best is None:
-            if aa is not None and not p.dead and flat_dist(p.position, aa.pos) < 2.8:
+            ap = self.world.ammo_point
+            self.crate_near = ap is not None and not p.dead and flat_dist(p.position, ap) < 2.4
+            if self.crate_near:
+                self.hud.set_text(self.hud.prompt, 'Carré / V : prendre des roquettes de RPG')
+            elif aa is not None and not p.dead and flat_dist(p.position, aa.pos) < 2.8:
                 self.aa_near = aa
                 self.hud.set_text(self.hud.prompt, 'Carré / V : utiliser la batterie anti-aérienne')
             else:
@@ -4919,6 +5659,11 @@ class Game(Entity):
                 sq.update(time.dt)
             self.find_pickup()
             self.emit_smoke()
+            if self.mode == 'defense' and not self.over:
+                self.breach_t = getattr(self, 'breach_t', 0) - time.dt
+                if self.breach_t <= 0:
+                    self.breach_t = 0.5
+                    self.check_breaches()
         self.pad_actions()
         self.update_grass()
         self.hud.update()
@@ -4950,6 +5695,17 @@ class Game(Entity):
             p.take_weapon(self.pickup)
         elif getattr(self, 'aa_near', None) is not None:
             p.mount_aa(self.aa_near)
+        elif getattr(self, 'crate_near', False):
+            full = WEAPONS['rpg']['mag']
+            if 'rpg' not in p.slots:
+                p.slots[p.slot ^ 1] = 'rpg'
+                p.mags['rpg'] = full
+            elif p.weapon_key == 'rpg':
+                p.mag = full
+            else:
+                p.mags['rpg'] = full
+            self.hud.add_feed(f'RPG rechargé : {full} roquettes (Triangle / Tab pour le prendre)')
+            PAD.rumble(0.3, 0.3, 90)
         else:
             return False
         return True
@@ -4986,6 +5742,8 @@ class Game(Entity):
                     self.toggle_night_choice()
                 elif act == 'map':
                     self.toggle_map_choice()
+                elif act == 'mode':
+                    self.toggle_mode_choice()
             if move or pad.last_used == self.t:
                 self.menu_cursor.visible = True
                 sel = self.menu_buttons[self.menu_sel]
@@ -4997,6 +5755,8 @@ class Game(Entity):
                     self.toggle_night_choice()
                 elif b.action == 'map':
                     self.toggle_map_choice()
+                elif b.action == 'mode':
+                    self.toggle_mode_choice()
                 else:
                     self.choose_weapon(b.action)
             return
@@ -5037,6 +5797,8 @@ class Game(Entity):
                 self.toggle_night_choice()
             elif key == '4':
                 self.toggle_map_choice()
+            elif key == '5':
+                self.toggle_mode_choice()
             elif key == 'g':
                 self.set_quality(not self.high_quality)
             return
@@ -5055,6 +5817,8 @@ class Game(Entity):
                 self.player.drone.fire_missile()
             elif key == 'n':
                 self.player.drone.toggle_vision()
+            elif key == 'f':
+                self.player.drone.drop_flares()
             elif key == 'm':
                 self.hud.minimap.root.enabled = not self.hud.minimap.root.enabled
             elif key == 'left mouse down' and not mouse.locked:
