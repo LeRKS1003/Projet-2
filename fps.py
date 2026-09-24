@@ -20,8 +20,10 @@ Commandes (clavier AZERTY) :
     Clic droit         : viser (point rouge / lunette du sniper)
     A / F (en visant)  : se pencher à gauche / à droite
     R                  : recharger
-    Tab                : pistolet (8 balles) <-> arme principale
-    M                  : afficher / masquer la carte (ennemis en rouge)
+    Tab                : changer d'arme (arme principale <-> pistolet)
+    V                  : près d'un cadavre, prendre son arme (fusil d'assaut, fusil à pompe ou pistolet)
+    T                  : vue à la 1re / 3e personne
+    M                  : afficher / masquer la carte (position des ennemis)
     G                  : qualité graphique (effets de post-traitement + herbe) on/off
     Échap              : pause (X pour quitter pendant la pause)
     Entrée             : recommencer après la mort
@@ -33,8 +35,9 @@ Installer une fois :  pip install pygame      (sans pygame, le jeu se joue au cl
     R2 / L2            : tirer / viser ; en visant, L3 / R3 : se pencher à gauche / à droite
     Rond               : s'accroupir / se relever
     Croix              : sauter ; valider dans le menu ; recommencer après la mort
-    Carré              : recharger
-    Triangle           : pistolet (8 balles) <-> arme principale
+    Carré              : recharger ; près d'un cadavre : prendre son arme
+    Triangle           : changer d'arme (arme principale <-> pistolet)
+    Flèche bas         : vue à la 1re / 3e personne
     Options            : pause (Create pour quitter pendant la pause)
     Croix directionnelle ou stick gauche : choisir l'arme dans le menu
     Vibrations au tir, aux dégâts et aux explosions. La manette peut être branchée en cours de partie.
@@ -47,6 +50,9 @@ IA des ennemis (de plus en plus redoutable à chaque vague) :
     - tirs de couverture coordonnés quand un allié se déplace
     - contournement (flanc), prise en tenaille, repli quand ils sont blessés, esquive
     - grenades pour déloger le joueur caché, fuite devant les grenades
+    - escouades : patrouille en formation, alerte partagée, progression par bonds
+      (une moitié avance d'abri en abri pendant que l'autre la couvre)
+    - armes : fusil d'assaut, fusil à pompe (combat rapproché) ou pistolet
     - déplacement par A* sur une grille de navigation
     - corps articulé animé : marche, course, accroupi, visée, lancer, impacts, chute
 """
@@ -1338,26 +1344,118 @@ class Grenade(Entity):
 # Ennemi humanoïde
 # ---------------------------------------------------------------------------
 
-TIERS = [
-    dict(name='Recrues', uniform=rgb(85, 100, 60), dark=rgb(60, 70, 42), helmet=rgb(70, 82, 50), visor=None),
-    dict(name='Soldats', uniform=rgb(175, 155, 115), dark=rgb(135, 115, 82), helmet=rgb(150, 130, 95), visor=None),
-    dict(name='Commandos', uniform=rgb(80, 92, 108), dark=rgb(55, 62, 76), helmet=rgb(60, 66, 80),
-         visor=rgb(40, 180, 220)),
-    dict(name='Élite', uniform=rgb(38, 38, 44), dark=rgb(24, 24, 28), helmet=rgb(30, 30, 34), visor=rgb(230, 40, 40)),
-]
+TIERS = [dict(name='Recrues'), dict(name='Soldats'), dict(name='Commandos'), dict(name='Élite')]
+
+# tous les ennemis : tenue entièrement noire, seule la tête porte un casque vert
+ENEMY_LOOK = dict(uniform=rgb(26, 26, 28), dark=rgb(16, 16, 18), skin=rgb(20, 20, 22), helmet=rgb(55, 125, 45),
+                  boot=rgb(12, 12, 12), glove=rgb(14, 14, 14), belt=rgb(10, 10, 10), hair=rgb(18, 18, 20))
+# silhouette du joueur en vue à la 3e personne
+PLAYER_LOOK = dict(uniform=rgb(120, 110, 82), dark=rgb(88, 80, 60), skin=rgb(224, 172, 130), helmet=rgb(70, 85, 110),
+                   boot=rgb(40, 32, 25), glove=rgb(35, 32, 30), belt=rgb(45, 40, 32), hair=rgb(60, 42, 28))
+
+# armes des ennemis : comportement de tir, distance de combat préférée, arme ramassable
+ENEMY_WEAPONS = {
+    'rifle':   dict(name="fusil d'assaut", loot='rifle', burst=(3, 5), interval=(0.12, 0.2), dmg=(6, 10),
+                    ideal=14, mag=10, reach=45, acc=1.0, weight=0.5),
+    'shotgun': dict(name='fusil à pompe', loot='shotgun', burst=(1, 1), interval=(0.9, 1.1), dmg=(22, 36),
+                    ideal=8, mag=6, reach=18, acc=1.15, weight=0.25),
+    'pistol':  dict(name='pistolet', loot='pistol', burst=(1, 3), interval=(0.35, 0.5), dmg=(7, 11),
+                    ideal=11, mag=10, reach=30, acc=0.9, weight=0.25),
+}
+
+GUN_DARK, GUN_WOOD = rgb(35, 35, 38), rgb(90, 65, 40)
+# modèles d'armes tenues par les soldats (repère de la main) : (position, taille, couleur, collision)
+GUN_PARTS = {
+    'rifle': [((0, 0.02, 0.2), (0.06, 0.1, 0.62), GUN_DARK, True), ((0, -0.06, 0.1), (0.05, 0.14, 0.06), GUN_DARK, False),
+              ((0, -0.07, 0.3), (0.05, 0.16, 0.07), GUN_DARK, False), ((0, 0.0, -0.13), (0.06, 0.12, 0.2), GUN_WOOD, False)],
+    'shotgun': [((0, 0.03, 0.3), (0.05, 0.05, 0.8), GUN_DARK, True), ((0, -0.02, 0.38), (0.065, 0.055, 0.22), GUN_WOOD, False),
+                ((0, 0.0, 0.02), (0.06, 0.09, 0.22), GUN_DARK, False), ((0, -0.01, -0.16), (0.06, 0.12, 0.24), GUN_WOOD, False)],
+    'pistol': [((0, 0.02, 0.07), (0.045, 0.05, 0.2), GUN_DARK, True), ((0, -0.06, 0.0), (0.04, 0.1, 0.06), GUN_DARK, False)],
+    'sniper': [((0, 0.02, 0.35), (0.05, 0.07, 0.95), GUN_DARK, True), ((0, 0.1, 0.1), (0.05, 0.05, 0.3), GUN_DARK, False),
+               ((0, 0.0, -0.18), (0.06, 0.12, 0.26), GUN_WOOD, False)],
+}
+GUN_MUZZLE = {'rifle': 0.55, 'shotgun': 0.72, 'pistol': 0.18, 'sniper': 0.85}
+CORPSE_TIME = 45        # secondes pendant lesquelles un cadavre reste au sol (et peut être fouillé)
+PICKUP_RANGE = 2.5      # distance pour ramasser l'arme d'un cadavre
+
+
+def random_enemy_weapon():
+    r = random.random()
+    for k, w in ENEMY_WEAPONS.items():
+        r -= w['weight']
+        if r <= 0:
+            return k
+    return 'rifle'
+
+
+class Squad:
+    """Groupe de 2 à 4 soldats : ils patrouillent en formation, partagent l'alerte et avancent
+    par bonds — une moitié se déplace d'abri en abri vers le joueur pendant que l'autre la couvre."""
+    FORMATION = [(-2.2, -2.0), (2.2, -2.0), (0.0, -4.0)]
+
+    def __init__(self, members):
+        self.members = members
+        self.phase = 0
+        self.bound_t = random.uniform(3, 5)
+        for i, m in enumerate(members):
+            m.squad = self
+            m.squad_index = i
+            m.squad_group = i % 2
+
+    def alive(self):
+        return [m for m in self.members if not m.dead]
+
+    def leader(self):
+        a = self.alive()
+        return a[0] if a else None
+
+    def centroid(self):
+        a = self.alive()
+        if not a:
+            return None
+        return Vec3(sum(m.x for m in a) / len(a), 0, sum(m.z for m in a) / len(a))
+
+    def alert(self, pos, source):
+        for m in self.alive():
+            if m is not source and m.state != 'combat':
+                FXM.later(random.uniform(0.1, 0.4), m.receive_alert, Vec3(pos))
+
+    def update(self, dt):
+        alive = self.alive()
+        fighting = [m for m in alive if m.state == 'combat' and m.last_known is not None]
+        if len(fighting) < 2:
+            return
+        self.bound_t -= dt
+        if self.bound_t > 0:
+            return
+        self.bound_t = random.uniform(3.5, 5.5) - 1.5 * fighting[0].skill
+        movers = [m for m in fighting if m.squad_group == self.phase and m.sub == 'hide' and m.mag > 0]
+        if movers:
+            for c in fighting:            # l'autre moitié couvre la progression
+                if c.squad_group != self.phase and c.sub == 'hide' and c.mag > 0:
+                    c.cover_fire = True
+                    c.timer = min(c.timer, 0.1)
+            for m in movers:
+                m.advance()
+        self.phase ^= 1
 
 
 class Enemy(Entity):
-    SKIN = rgb(224, 172, 130)
-    BOOT = rgb(40, 32, 25)
-    GUN = rgb(35, 35, 38)
-
-    def __init__(self, game, position, skill=0.0, tier=0):
+    def __init__(self, game, position, skill=0.0, tier=0, weapon='rifle', look=None):
         super().__init__(position=position)
         self.game = game
         self.world = game.world
         self.skill = skill
         self.tier = TIERS[tier]
+        self.look = look or ENEMY_LOOK
+        self.wkind = weapon
+        self.wp = ENEMY_WEAPONS.get(weapon, ENEMY_WEAPONS['rifle'])
+        self.loot = self.wp['loot']                     # arme récupérable sur le cadavre
+        self.loot_mag = None
+        self.squad = None
+        self.squad_index = 0
+        self.squad_group = 0
+        self.aim_target = None                          # avatar du joueur : point visé imposé
         self.max_hp = 100 + int(70 * skill)
         self.hp = self.max_hp
         self.dead = False
@@ -1377,7 +1475,7 @@ class Enemy(Entity):
         self.cover = None
         self.peek_pos = None
         self.last_peek_off = None
-        self.mag = 8
+        self.mag = self.wp['mag']
         self.burst = 0
         self.shot_t = 0
         self.look_yaw = None
@@ -1440,15 +1538,23 @@ class Enemy(Entity):
             self.parts.append(bone)
         self._bone_parts = {}
 
+    def set_gun(self, kind):
+        """Change le modèle d'arme tenu (utilisé par l'avatar du joueur)."""
+        b = MeshBuilder()
+        for pos, sc, col, _ in GUN_PARTS[kind]:
+            b.box(pos, sc, col, bottom=True)
+        self.gun.model = b.mesh()
+        self.muzzle.z = GUN_MUZZLE[kind]
+
     def build_body(self):
-        t = self.tier
-        U, UD, S = t['uniform'], t['dark'], self.SKIN
-        glove = rgb(35, 32, 30)
+        t = self.look
+        U, UD, S = t['uniform'], t['dark'], t['skin']
+        glove = t['glove']
         self._bone_parts = {}
         # bassin : pivot principal (hauteur des hanches)
         self.hips = Entity(parent=self, y=0.95)
         self.part(self.hips, (0, 0.02, 0), (0.36, 0.2, 0.22), UD, 'body')
-        self.part(self.hips, (0, 0.1, 0), (0.39, 0.06, 0.25), rgb(45, 40, 32), 'body', collide=False)   # ceinture
+        self.part(self.hips, (0, 0.1, 0), (0.39, 0.06, 0.25), t['belt'], 'body', collide=False)   # ceinture
         # torse : pivote au bassin
         self.torso = Entity(parent=self.hips, y=0.08)
         self.part(self.torso, (0, 0.28, 0), (0.42, 0.5, 0.25), U, 'body')
@@ -1461,15 +1567,13 @@ class Enemy(Entity):
         # tête
         self.neck = Entity(parent=self.torso, y=0.6)
         self.part(self.neck, (0, 0.14, 0), (0.22, 0.26, 0.24), S, 'head')
+        self.part(self.neck, (0, 0.15, -0.1), (0.228, 0.2, 0.06), t['hair'], 'head', collide=False)   # arrière du crâne
         self.part(self.neck, (0, 0.26, -0.01), (0.27, 0.1, 0.29), t['helmet'], 'head')              # casque
         self.part(self.neck, (0, 0.22, 0), (0.28, 0.04, 0.3), shade(t['helmet'], 0.8), 'head', collide=False)
         self.part(self.neck, (0, 0.07, 0.12), (0.06, 0.05, 0.02), shade(S, 0.9), 'head', collide=False)  # nez
-        if t['visor'] is not None:
-            self.part(self.neck, (0, 0.17, 0.125), (0.2, 0.06, 0.02), t['visor'], 'head', collide=False, lit=False)
-        else:
-            for ex in (-0.055, 0.055):
-                self.part(self.neck, (ex, 0.17, 0.12), (0.045, 0.03, 0.01), color.black, 'head', collide=False)
-            self.part(self.neck, (0, 0.23, 0.13), (0.2, 0.025, 0.02), shade(S, 0.7), 'head', collide=False)
+        for ex in (-0.055, 0.055):
+            self.part(self.neck, (ex, 0.17, 0.12), (0.045, 0.03, 0.01), color.black, 'head', collide=False)
+        self.part(self.neck, (0, 0.23, 0.13), (0.2, 0.025, 0.02), shade(t['helmet'], 0.7), 'head', collide=False)
 
         # bras : épaule -> bras -> coude -> avant-bras -> main
         self.shoulders, self.elbows = [], []
@@ -1482,13 +1586,11 @@ class Enemy(Entity):
             self.part(el, (0, -0.31, 0), (0.09, 0.1, 0.09), glove, 'limb')                   # main
             self.shoulders.append(sh)
             self.elbows.append(el)
-        # fusil tenu dans la main droite (orienté comme l'avant-bras)
+        # arme tenue dans la main droite (orientée comme l'avant-bras) : fusil, fusil à pompe ou pistolet
         self.gun = Entity(parent=self.elbows[1], y=-0.31, rotation_x=90)
-        self.part(self.gun, (0, 0.02, 0.2), (0.06, 0.1, 0.62), self.GUN, 'gun')
-        self.part(self.gun, (0, -0.06, 0.1), (0.05, 0.14, 0.06), self.GUN, 'gun', collide=False)
-        self.part(self.gun, (0, -0.07, 0.3), (0.05, 0.16, 0.07), self.GUN, 'gun', collide=False)    # chargeur
-        self.part(self.gun, (0, 0.0, -0.13), (0.06, 0.12, 0.2), rgb(90, 65, 40), 'gun', collide=False)
-        self.muzzle = Entity(parent=self.gun, z=0.55, y=0.02)
+        for pos, sc, col, collide in GUN_PARTS[self.wkind]:
+            self.part(self.gun, pos, sc, col, 'gun', collide=collide)
+        self.muzzle = Entity(parent=self.gun, z=GUN_MUZZLE[self.wkind], y=0.02)
 
         # jambes : hanche -> cuisse -> genou -> tibia -> pied
         self.hip_joints, self.knees = [], []
@@ -1498,8 +1600,8 @@ class Enemy(Entity):
             self.part(hj, (0.08 * side, -0.25, 0.02), (0.05, 0.12, 0.1), shade(UD, 0.85), 'limb', collide=False)
             kn = Entity(parent=hj, y=-0.44)
             self.part(kn, (0, -0.2, 0), (0.13, 0.42, 0.14), UD, 'limb')
-            self.part(kn, (0, -0.03, 0.07), (0.12, 0.1, 0.04), rgb(40, 40, 40), 'limb', collide=False)  # genouillère
-            self.part(kn, (0, -0.43, 0.05), (0.14, 0.09, 0.27), self.BOOT, 'limb')
+            self.part(kn, (0, -0.03, 0.07), (0.12, 0.1, 0.04), shade(UD, 1.4), 'limb', collide=False)  # genouillère
+            self.part(kn, (0, -0.43, 0.05), (0.14, 0.09, 0.27), t['boot'], 'limb')
             self.hip_joints.append(hj)
             self.knees.append(kn)
         self.merge_bones()
@@ -1563,6 +1665,8 @@ class Enemy(Entity):
         FXM.later(1.5, self.clear_icon, '!')
         if not heard:
             self.last_seen = self.game.t
+        if self.last_known is not None and self.squad is not None:
+            self.squad.alert(self.last_known, self)
         if self.last_known is not None:
             for a in self.allies(25 + 15 * self.skill):
                 if a.state != 'combat':
@@ -1581,7 +1685,7 @@ class Enemy(Entity):
     def cover_is_safe(self, cp, threat):
         return not self.world.los(cp.pos + Vec3(0, EYE_CROUCH, 0), threat)
 
-    def choose_cover(self, far=False, avoid=None):
+    def choose_cover(self, far=False, avoid=None, ideal=None, center=None, closer_than=None):
         threat = self.threat_eye()
         tpos = flat(threat)
         best, best_score = None, -1e9
@@ -1598,10 +1702,15 @@ class Enemy(Entity):
         near.sort(key=lambda t: t[0])
         candidates = [c for _, c in near]
         others = [e.position for e in self.game.enemies if e is not self and not e.dead]
-        ideal = 14 - 3 * self.skill
+        if ideal is None:
+            ideal = self.wp['ideal'] - 2 * self.skill      # fusil à pompe : de près ; fusil : à distance
+        if center is None and self.squad is not None:
+            center = self.squad.centroid()                  # rester groupés
         for c in candidates[:50]:
             d_threat = flat_dist(c.pos, tpos)
             if d_threat < 5:
+                continue
+            if closer_than is not None and d_threat > closer_than:
                 continue
             if avoid is not None and flat_dist(c.pos, avoid) < 7:
                 continue
@@ -1622,6 +1731,8 @@ class Enemy(Entity):
                         score += min(abs(angle_diff(my_ang, yaw_to(tpos, o))), 90) * 0.05 * self.skill
             if flat_dist((c.pos + self.position) / 2, tpos) < 6:
                 score -= 15           # ne pas traverser la ligne de tir du joueur
+            if center is not None and not far:
+                score -= max(0.0, flat_dist(c.pos, center) - 10) * 1.0     # cohésion de l'escouade
             score += random.uniform(0, 2)
             if score > best_score:
                 best, best_score = c, score
@@ -1631,6 +1742,25 @@ class Enemy(Entity):
         if self.cover and self.cover.owner is self:
             self.cover.owner = None
         self.cover = None
+
+    def advance(self):
+        """Bond vers le joueur : abri plus proche, sans quitter le groupe (ordonné par l'escouade)."""
+        if self.last_known is None:
+            return
+        d = flat_dist(self.position, self.last_known)
+        if d <= self.wp['ideal'] + 1:
+            return
+        c = self.choose_cover(ideal=max(self.wp['ideal'], d - 7), closer_than=d - 2)
+        if c is not None:
+            self.take_cover(c)
+
+    def take_cover(self, c):
+        self.release_cover()
+        self.cover = c
+        c.owner = self
+        self.set_path_to(c.pos)
+        self.sub = 'move_cover'
+        self.timer = 8
 
     def go_to_cover(self, far=False, avoid=None):
         c = self.choose_cover(far, avoid)
@@ -1782,9 +1912,19 @@ class Enemy(Entity):
                 self.suspicion = max(0, self.suspicion - 0.05)
                 if self.suspicion == 0 and self.icon.text == '?':
                     self.icon.text = ''
-                if self.arrived() and self.timer <= 0:
+                lead = self.squad.leader() if self.squad is not None else None
+                if lead is not None and lead is not self and lead.state == 'patrol':
+                    # suiveur : garde sa place dans la formation derrière le chef
+                    ox, oz = Squad.FORMATION[(self.squad_index - 1) % len(Squad.FORMATION)]
+                    spot = lead.position + lead.right * ox + lead.forward * oz
+                    self.move_speed = 2.3
+                    if flat_dist(spot, self.position) > 2.5 and (self.arrived() or self.timer <= 0):
+                        self.set_path_to(spot)
+                        self.timer = 1.0
+                elif self.arrived() and self.timer <= 0:
+                    self.move_speed = 1.6
                     self.set_path_to(self.world.random_free_point(self.position, 18))
-                    self.timer = random.uniform(1, 4)
+                    self.timer = random.uniform(2, 5)
         elif self.state == 'investigate':
             self.move_speed = 2.6
             self.want_aim = 0.6
@@ -1906,7 +2046,7 @@ class Enemy(Entity):
             self.want_crouch = 1
             self.want_aim = 0
             if self.timer <= 0:
-                self.mag = 8
+                self.mag = self.wp['mag']
                 self.sub = 'hide'
                 self.timer = random.uniform(0.3, 1.0) * self.reaction
         elif sub == 'peek_move':
@@ -1924,7 +2064,7 @@ class Enemy(Entity):
             if self.timer <= 0:
                 if self.sees and self.mag > 0:
                     self.sub = 'shoot'
-                    self.burst = min(self.mag, random.randint(3, 5))
+                    self.burst = min(self.mag, random.randint(*self.wp['burst']))
                     self.shot_t = 0
                 else:
                     self.back_to_cover()
@@ -1950,10 +2090,10 @@ class Enemy(Entity):
             self.move_speed = 2.5
             self.want_crouch = 0.4 if random.random() < 0.3 else 0
             if self.sees and self.burst <= 0 and self.mag > 0 and random.random() < 0.5:
-                self.burst = min(self.mag, random.randint(2, 4))
+                self.burst = min(self.mag, random.randint(*self.wp['burst']))
                 self.shot_t = 0.3 * self.reaction
             if self.mag <= 0:
-                self.mag = 8
+                self.mag = self.wp['mag']
                 self.timer = 0
             if self.timer <= 0:
                 p = self.position + self.right * random.choice((-1, 1)) * random.uniform(2, 4)
@@ -1983,10 +2123,15 @@ class Enemy(Entity):
         pl = self.game.player
         self.mag -= 1
         muzzle = self.muzzle.world_position
-        muzzle_flash(self.muzzle, scale=0.3)
+        w = self.wp
+        muzzle_flash(self.muzzle, scale=0.45 if self.wkind == 'shotgun' else 0.3)
         target = pl.eye - Vec3(0, 0.35, 0)
         dist = flat_dist(self.position, pl.position)
-        chance = clamp(self.accuracy - dist / (45 + 25 * self.skill), 0.12, 0.85)
+        chance = clamp(self.accuracy * w['acc'] - dist / (45 + 25 * self.skill), 0.1, 0.9)
+        if dist > w['reach']:
+            chance *= 0.3                 # hors de portée efficace
+        if self.wkind == 'shotgun':
+            chance *= clamp(1.3 - dist / 15, 0.15, 1.2)
         if pl.speed_now > 5:        # les meilleurs anticipent vos déplacements
             chance *= lerp(0.55, 0.85, self.skill)
         elif pl.speed_now > 1:
@@ -1999,9 +2144,16 @@ class Enemy(Entity):
             chance *= 0.6
         if not self.world.los(muzzle, pl.eye) and not self.world.los(self.eye, pl.eye):
             chance = 0
+        if self.wkind == 'shotgun':        # gerbe de plombs
+            for _ in range(3):
+                tracer(muzzle, target + Vec3(random.uniform(-.8, .8), random.uniform(-.5, .5), random.uniform(-.8, .8)),
+                       rgb(255, 200, 80), thickness=0.012)
         if random.random() < chance:
             tracer(muzzle, target, rgb(255, 200, 80))
-            pl.take_damage(random.randint(6, 10), self.position)
+            dmg = random.randint(*w['dmg'])
+            if self.wkind == 'shotgun':
+                dmg = int(dmg * clamp(1.2 - dist / 20, 0.25, 1.0))     # dégâts qui chutent avec la distance
+            pl.take_damage(dmg, self.position)
         else:
             miss = target + Vec3(random.uniform(-1.2, 1.2), random.uniform(-0.6, 1.0), random.uniform(-1.2, 1.2))
             d = (miss - muzzle).normalized()
@@ -2060,12 +2212,14 @@ class Enemy(Entity):
             p.collider = None
         self.fall_dir = random.choice((-1, 1))
         self.fall_side = random.uniform(-25, 25)
+        self.loot_mag = random.randint(WEAPONS[self.loot]['mag'] // 2, WEAPONS[self.loot]['mag'])
+        self.game.corpses.append(self)
         self.game.on_enemy_killed(self, zone == 'head')
         for a in self.allies(20):
             a.receive_alert(self.game.player.position)
             if a.state == 'combat' and a.sub == 'hide':
                 a.timer += 1.0 * a.reaction
-        destroy(self, 8)
+        destroy(self, CORPSE_TIME)
 
     # -- mise à jour -------------------------------------------------------
     def update(self):
@@ -2098,7 +2252,7 @@ class Enemy(Entity):
                 if self.sees and self.mag > 0:
                     self.fire()
                     self.burst -= 1
-                    self.shot_t = random.uniform(0.12, 0.2)
+                    self.shot_t = random.uniform(*self.wp['interval'])
                 else:
                     self.burst = 0
 
@@ -2159,8 +2313,8 @@ class Enemy(Entity):
 
         # inclinaison de visée vers le joueur
         pitch = 0
-        if a > 0.5 and self.last_known is not None:
-            pe = self.game.player.eye - Vec3(0, 0.3, 0)
+        if a > 0.5 and (self.last_known is not None or self.aim_target is not None):
+            pe = self.aim_target if self.aim_target is not None else self.game.player.eye - Vec3(0, 0.3, 0)
             src = self.position + Vec3(0, lerp(1.45, 0.95, c), 0)
             pitch = -math.degrees(math.atan2(pe.y - src.y, max(flat_dist(pe, src), 0.1)))
         self.aim_pitch = lerp(self.aim_pitch, pitch, min(1, dt * 8))
@@ -2228,11 +2382,13 @@ class Enemy(Entity):
             self.elbows[k].rotation_x = lerp(self.elbows[k].rotation_x, -20, dt * 3)
         self.hips.y = lerp(self.hips.y, 0.95 - 0.3 * (1 - t), dt * 4)
         self.torso.rotation_x = lerp(self.torso.rotation_x, 0, dt * 4)
-        if self.death_t > 6:
+        if self.death_t > CORPSE_TIME - 2:
             self.scale = lerp(self.scale, Vec3(0.01, 0.01, 0.01), dt * 3)
 
     def on_destroy(self):
         self.release_cover()
+        if self in self.game.corpses:
+            self.game.corpses.remove(self)
 
 
 # ---------------------------------------------------------------------------
@@ -2265,6 +2421,16 @@ WEAPONS = {
         flash=0.7 * 0.5, flash_intensity=0.5, flash_life=0.06 * 0.5,
         tracer=(0.03, 0.09), model='sniper',
         hip=Vec3(0.15, -0.15, 0.2), ads=Vec3(0, -0.1, 0.12),
+    ),
+    # ramassé sur les ennemis : 8 plombs par cartouche, dévastateur de près
+    'shotgun': dict(
+        name='Fusil à pompe', short='POMPE', auto=False, cooldown=0.85, mag=6, reload=2.4, pellets=8,
+        dmg={'head': 45, 'body': 22, 'limb': 14, 'gun': 8},
+        spread=0.045, move_spread=0.02, ads_spread=0.75, kick=2.2,
+        ads_fov=80, ads_sens=0.8, scope=False, sight_zoom=1.0,
+        flash=0.6 * 0.5, flash_intensity=0.5, flash_life=0.05 * 0.5,
+        tracer=(0.01, 0.03), model='shotgun',
+        hip=Vec3(0.15, -0.15, 0.22), ads=Vec3(0, -0.075 * 0.42, 0.22),
     ),
     # arme secondaire (Triangle / Tab) : semi-automatique, 8 balles, visée aux organes de visée
     'pistol': dict(
@@ -2306,7 +2472,11 @@ class Player(Entity):
         self.hp = 100
         self.dead = False
         self.weapon_key = 'rifle'
-        self.primary = 'rifle'      # arme choisie au menu ; Triangle / Tab alterne avec le pistolet
+        self.slots = ['rifle', 'pistol']   # 2 emplacements : arme principale et arme secondaire
+        self.slot = 0                      # Triangle / Tab alterne ; Carré près d'un cadavre échange l'arme tenue
+        self.start_weapon = 'rifle'        # arme choisie au menu
+        self.avatar = None                 # corps du joueur, visible en vue à la 3e personne
+        self.tps = False
         self.weapon = WEAPONS['rifle']
         self.mag = self.weapon['mag']
         self.mags = {}              # munitions gardées pour l'arme rangée
@@ -2344,25 +2514,103 @@ class Player(Entity):
         destroy(self.gun)
         self.build_gun()
         self.mag = self.mags.get(key, self.weapon['mag'])
+        self.mags.pop(key, None)
         self.reload_t = 0
         self.cooldown = 0.3
         self.armed = False
         self.trigger_ready = False
 
     def switch_weapon(self):
-        """Triangle / Tab : arme principale <-> pistolet (chaque arme garde son chargeur)."""
+        """Triangle / Tab : passe à l'autre emplacement (chaque arme garde son chargeur)."""
         if self.dead or self.switch_t > 0:
             return
-        self.set_weapon(self.primary if self.weapon_key == 'pistol' else 'pistol')
+        self.slot ^= 1
+        self.set_weapon(self.slots[self.slot])
         self.switch_t = 0.35
         self.game.hud.add_feed(f"Arme : {self.weapon['name']}")
+
+    def reset_weapons(self, start):
+        self.start_weapon = start
+        self.slots = [start, 'pistol']
+        self.slot = 0
+        self.mags = {}
+        self.set_weapon(start)
+        self.mags = {}
+        self.mag = self.weapon['mag']
+
+    def take_weapon(self, corpse):
+        """Carré / V près d'un cadavre : échange l'arme tenue contre la sienne (qui garde ses balles)."""
+        new = corpse.loot
+        if new is None or self.dead:
+            return
+        if new == self.weapon_key:                   # même arme : on récupère juste ses munitions
+            self.mag = self.weapon['mag']
+            self.reload_t = 0
+            corpse.loot = None
+            self.game.hud.add_feed(f"Munitions récupérées : {self.weapon['name']}")
+        else:
+            old, old_mag = self.weapon_key, self.mag
+            self.slots[self.slot] = new
+            self.mags[new] = corpse.loot_mag
+            self.set_weapon(new)
+            self.switch_t = 0.35
+            corpse.loot, corpse.loot_mag = old, old_mag      # on laisse la sienne sur le cadavre
+            if self.slots[self.slot ^ 1] != old:
+                self.mags.pop(old, None)
+            self.game.hud.add_feed(f"Arme ramassée : {self.weapon['name']}")
+        PAD.rumble(0.3, 0.3, 90)
+
+    def toggle_view(self):
+        """Flèche bas / T : vue à la première ou à la troisième personne."""
+        self.tps = not self.tps
+        if self.tps and self.avatar is None:
+            self.avatar = Enemy(self.game, Vec3(self.position), look=PLAYER_LOOK, weapon='rifle')
+            self.avatar.set_gun(self.weapon['model'])
+            self.avatar.update = lambda: None            # pas d'IA : piloté par le joueur
+            for part in self.avatar.parts:
+                part.collider = None                     # ne bloque ni les balles ni la vue
+        if self.avatar is not None:
+            self.avatar.enabled = self.tps
+        self.game.hud.add_feed('Vue : 3e personne' if self.tps else 'Vue : 1re personne')
+
+    def drive_avatar(self, dt):
+        a = self.avatar
+        a.position = self.position
+        a.rotation_y = self.rotation_y
+        a.want_crouch = a.crouch = self.crouch_t
+        a.want_aim = 1.0 if self.ads > 0.3 else 0.55
+        a.real_speed = self.speed_now
+        a.aim_target = self.eye + camera.forward * 30
+        a.animate(dt)
 
     def toggle_crouch(self):
         if not self.dead:
             self.crouching = not self.crouching
 
     def build_gun(self):
-        {'sniper': self.build_sniper, 'pistol': self.build_pistol}.get(self.weapon['model'], self.build_rifle)()
+        {'sniper': self.build_sniper, 'pistol': self.build_pistol,
+         'shotgun': self.build_shotgun}.get(self.weapon['model'], self.build_rifle)()
+        if self.avatar is not None:
+            self.avatar.set_gun(self.weapon['model'])
+
+    def build_shotgun(self):
+        self.gun = Entity(parent=camera, position=self.weapon['hip'], scale=self.GUN_SCALE)
+        dark = rgb(34, 35, 38)
+        wood = rgb(110, 75, 45)
+
+        def p(pos, sc, col):
+            return Entity(parent=self.gun, model='cube', color=col, position=pos, scale=sc, shader=LIT)
+        p((0, 0.0, 0.0), (0.08, 0.11, 0.34), dark)               # boîte de culasse
+        p((0, 0.03, 0.5), (0.045, 0.045, 0.75), dark)            # canon
+        p((0, -0.025, 0.46), (0.04, 0.035, 0.62), dark)          # magasin tubulaire
+        p((0, -0.03, 0.42), (0.075, 0.06, 0.22), wood)           # pompe
+        p((0, -0.03, -0.35), (0.07, 0.13, 0.36), wood)           # crosse
+        p((0, -0.1, -0.1), (0.055, 0.13, 0.06), wood)            # poignée
+        p((0, 0.065, 0.85), (0.012, 0.02, 0.012), rgb(230, 220, 180))   # guidon (bille)
+        self.dot = None
+        self.sight_corners = []
+        self.muzzle = Entity(parent=self.gun, z=0.88, y=0.03)
+        self.eject = Entity(parent=self.gun, x=0.05, y=0.03, z=0.05)
 
     def build_pistol(self):
         self.gun = Entity(parent=camera, position=self.weapon['hip'], scale=self.GUN_SCALE)
@@ -2551,7 +2799,19 @@ class Player(Entity):
         head.y -= self.land_dip
         if self.shake > 0:
             head += Vec3(random.uniform(-1, 1), random.uniform(-1, 1), 0) * self.shake * 0.12
+        scoped_now = w['scope'] and self.ads > 0.85
+        if self.tps and not scoped_now:
+            # caméra au-dessus de l'épaule droite, rapprochée en visée ; jamais derrière un mur
+            want = Vec3(lerp(0.7, 0.5, self.ads), lerp(0.3, 0.12, self.ads), lerp(-3.2, -1.5, self.ads))
+            world_off = self.pivot.right * want.x + self.pivot.up * want.y + self.pivot.forward * want.z
+            dist = world_off.length()
+            hit = raycast(self.pivot.world_position, world_off / dist, dist + 0.3, traverse_target=self.world.level)
+            if hit.hit:
+                want *= max(0.1, (hit.distance - 0.3) / dist)
+            head += want
         camera.position = head
+        if self.avatar is not None and self.tps:
+            self.drive_avatar(dt)
 
         # arme : visée, balancement, recul
         self.recoil = max(0, self.recoil - dt * 6)
@@ -2570,9 +2830,9 @@ class Player(Entity):
             self.dot.visible = self.ads > 0.6
         self.update_sight_zoom()
         scoped = w['scope'] and self.ads > 0.85
-        self.gun.visible = not scoped                 # dans la lunette, on ne voit plus l'arme
+        self.gun.visible = not scoped and not self.tps   # dans la lunette ou en 3e personne : pas d'arme à l'écran
         self.game.hud.scope_visible(scoped)
-        self.game.hud.crosshair_visible(self.ads < 0.5)
+        self.game.hud.crosshair_visible((self.ads < 0.5 or self.tps) and not scoped)
 
         pad_fire = pad.r2 > 0.35
         trigger = held_keys['left mouse'] or held_keys['p'] or pad_fire
@@ -2596,7 +2856,7 @@ class Player(Entity):
         """Grossissement limité à la vitre du viseur : on projette ses coins à l'écran
         et le shader de caméra agrandit l'image seulement dans ce rectangle."""
         z = self.weapon['sight_zoom']
-        k = smoothstep((self.ads - 0.75) / 0.2) if z > 1 and self.reload_t <= 0 else 0
+        k = smoothstep((self.ads - 0.75) / 0.2) if z > 1 and self.reload_t <= 0 and not self.tps else 0
         if k <= 0:
             if self._zoom_on:
                 camera.set_shader_input('zoom', 1.0)
@@ -2641,35 +2901,46 @@ class Player(Entity):
         w = self.weapon
         self.mag -= 1
         self.cooldown = w['cooldown']
-        self.recoil = min(1.5, self.recoil + (1.2 if w['scope'] else 0.5))
-        muzzle_flash(self.muzzle, scale=w['flash'], intensity=w['flash_intensity'], life=w['flash_life'])
-        if w['scope']:
+        self.recoil = min(1.5, self.recoil + (1.2 if w['scope'] or w.get('pellets') else 0.5))
+        muzzle = self.avatar.muzzle if (self.tps and self.avatar is not None) else self.muzzle
+        muzzle_flash(muzzle, scale=w['flash'], intensity=w['flash_intensity'], life=w['flash_life'])
+        if w['scope'] or w.get('pellets'):
             PAD.rumble(0.9, 0.6, 180)
         else:
             PAD.rumble(0.15, 0.35, 60)
-        shell_casing(self.eject.world_position, camera.right)
+        if not self.tps:
+            shell_casing(self.eject.world_position, camera.right)
         spread = (w['spread'] + w['move_spread'] * min(1, self.speed_now / 9) + (0.02 if not self.grounded else 0)) \
             * lerp(1, w['ads_spread'], self.ads)
-        d = camera.forward + camera.right * random.uniform(-spread, spread) + camera.up * random.uniform(-spread, spread)
-        d = d.normalized()
         origin = camera.world_position
-        hit = raycast(origin, d, 200, ignore=[self])
-        end = hit.world_point if hit.hit else origin + d * 200
-        tracer(self.muzzle.world_position, end, rgb(255, 240, 160), thickness=w['tracer'][0], life=w['tracer'][1])
+        if self.tps:     # la balle part du joueur, pas de la caméra placée derrière lui
+            origin = origin + camera.forward * max(0.0, (self.eye - origin).dot(camera.forward))
+        start = muzzle.world_position
+        hits = {}        # dégâts cumulés par ennemi (plusieurs plombs)
+        for i in range(w.get('pellets', 1)):
+            d = camera.forward + camera.right * random.uniform(-spread, spread) + camera.up * random.uniform(-spread, spread)
+            d = d.normalized()
+            hit = raycast(origin, d, 200, ignore=[self])
+            end = hit.world_point if hit.hit else origin + d * 200
+            if i < 3:
+                tracer(start, end, rgb(255, 240, 160), thickness=w['tracer'][0], life=w['tracer'][1])
+            if hit.hit:
+                ent = hit.entity
+                owner = getattr(ent, 'owner', None)
+                if isinstance(owner, Enemy):
+                    h = hits.setdefault(owner, [0, ent.zone, hit.world_point])
+                    h[0] += w['dmg'].get(ent.zone, 25)
+                    if ent.zone == 'head':
+                        h[1] = 'head'
+                else:
+                    impact(hit.world_point, hit.world_normal)
+        for owner, (dmg, zone, point) in hits.items():
+            owner.take_hit(dmg, zone, point)
+            self.game.hud.hitmarker(zone == 'head' or owner.dead)
         kick = w['kick'] * lerp(1, 0.6, self.ads)
         self.pivot.rotation_x -= kick
         self.recoil_pitch = min(self.recoil_pitch + kick * 0.8, 6)
         self.rotation_y += random.uniform(-0.15, 0.15)
-        if hit.hit:
-            ent = hit.entity
-            owner = getattr(ent, 'owner', None)
-            if isinstance(owner, Enemy):
-                zone = ent.zone
-                dmg = w['dmg'].get(zone, 25)
-                owner.take_hit(dmg, zone, hit.world_point)
-                self.game.hud.hitmarker(zone == 'head' or owner.dead)
-            else:
-                impact(hit.world_point, hit.world_normal)
         for e in self.game.enemies:        # les ennemis entendent le tir
             if not e.dead and flat_dist(e.position, self.position) < e.hear_radius:
                 FXM.later(random.uniform(0.1, 0.5) * e.reaction, e.hear_shot, Vec3(self.position))
@@ -2859,56 +3130,35 @@ PAD = None       # instance unique, créée par Game
 # Interface
 # ---------------------------------------------------------------------------
 
-CONTROLS_LINE = ('E/S/Q/D bouger · Z courir · C accroupi · Espace sauter · Clic G/P tirer · Clic D viser'
-                 ' (+A/F se pencher) · R recharger · Tab pistolet · M carte · Échap pause')
-CONTROLS_PAD_LINE = ('Manette : stick G bouger · L3 courir · Rond accroupi · R2 tirer · L2 viser (+L3/R3 se pencher)'
-                     ' · Croix sauter · Carré recharger · Triangle pistolet · Options pause')
+CONTROLS_LINE = ('E/S/Q/D bouger · Z courir · C accroupi · Espace sauter · Clic G/P tirer · Clic D viser (+A/F pencher)'
+                 ' · R recharger · V ramasser · Tab changer d\'arme · T vue 3e pers. · M carte · Échap pause')
+CONTROLS_PAD_LINE = ('Manette : stick G bouger · L3 courir · Rond accroupi · R2 tirer · L2 viser (+L3/R3 pencher)'
+                     ' · Croix sauter · Carré recharger/ramasser · Triangle changer d\'arme · flèche bas vue 3e pers. · Options pause')
 CONTROLS_PAUSE = ('E avancer   ·   S reculer   ·   Q gauche   ·   D droite   ·   flèches : se déplacer\n'
                   'Z courir   ·   C accroupi   ·   Espace sauter   ·   Clic gauche ou P tirer   ·   Clic droit viser\n'
-                  'En visant : A / F se pencher   ·   R recharger   ·   Tab pistolet   ·   M carte   ·   G graphismes\n'
+                  'En visant : A / F se pencher   ·   R recharger   ·   V ramasser une arme   ·   Tab changer d\'arme\n'
+                  'T vue 3e personne   ·   M carte   ·   G graphismes\n'
                   'Manette PS5 : stick gauche bouger (L3 courir) · stick droit regarder · R2 tirer · L2 viser\n'
-                  'Rond accroupi · en visant L3 / R3 se pencher · Croix sauter · Carré recharger · Triangle pistolet\n\n'
+                  'Rond accroupi · en visant L3 / R3 se pencher · Croix sauter · Carré recharger / ramasser\n'
+                  'Triangle changer d\'arme · flèche bas : vue 3e personne\n\n'
                   'Échap / Options : reprendre    ·    X / Create : quitter')
 
 class MiniMap:
-    """Carte de l'arène (en haut à gauche) : obstacles, joueur (flèche) et ennemis (points rouges)."""
+    """Carte de l'arène (en haut à gauche) : seulement la position des ennemis (points rouges)
+    et la vôtre (flèche bleue), nord en haut."""
     SIZE = 0.3
 
     def __init__(self, game, parent, position):
         self.game = game
         self.root = Entity(parent=parent, position=position, scale=self.SIZE)
         Entity(parent=self.root, model=Quad(radius=0.04), color=color.rgba(0, 0, 0, 0.55), scale=1.06, z=0.02)
-        # tous les obstacles dans un seul maillage 2D (carte vue de dessus, nord en haut)
-        verts, tris, cols = [], [], []
-        k = 1 / (2 * ARENA)
-        for b in game.world.boxes:
-            sx, sz = b.x1 - b.x0, b.z1 - b.z0
-            if b.h >= 2.9 and max(sx, sz) > 1:
-                c = color.rgba(0.85, 0.82, 0.78, 0.95)       # murs
-            elif sx < 1 and sz < 1:
-                c = color.rgba(0.25, 0.6, 0.3, 0.95)         # arbres
-            elif b.h >= 1.4:
-                c = color.rgba(0.45, 0.55, 0.75, 0.95)       # voitures
-            else:
-                c = color.rgba(0.6, 0.55, 0.45, 0.95)        # murets, sacs de sable, caisses
-            x0, x1, z0, z1 = b.x0 * k, b.x1 * k, b.z0 * k, b.z1 * k
-            i = len(verts)
-            verts += [Vec3(x0, z0, 0), Vec3(x1, z0, 0), Vec3(x1, z1, 0), Vec3(x0, z1, 0)]
-            tris += [i, i + 1, i + 2, i, i + 2, i + 3]
-            cols += [c] * 4
-        Entity(parent=self.root, model=Mesh(vertices=verts, triangles=tris, colors=cols, mode='triangle'),
-               double_sided=True, z=0.01)
+        Entity(parent=self.root, model=Quad(radius=0.03, mode='line', thickness=2), color=color.rgba(1, 1, 1, 0.35),
+               scale=1.0, z=0.01)
         arrow = Mesh(vertices=[Vec3(0, 0.6, 0), Vec3(-0.4, -0.45, 0), Vec3(0.4, -0.45, 0)],
                      triangles=[0, 1, 2], mode='triangle')
         self.player_icon = Entity(parent=self.root, model=arrow, color=rgb(90, 220, 255), scale=0.045,
                                   double_sided=True, z=-0.02)
         self.dots = []
-        self.gdots = []
-
-    def _dots(self, pool, n, col, size):
-        while len(pool) < n:
-            pool.append(Entity(parent=self.root, model='circle', color=col, scale=size, z=-0.01))
-        return pool
 
     def update(self):
         if not self.root.enabled:
@@ -2918,18 +3168,12 @@ class MiniMap:
         self.player_icon.position = (p.x * k, p.z * k, -0.02)
         self.player_icon.rotation_z = p.rotation_y
         alive = [e for e in self.game.enemies if not e.dead]
-        dots = self._dots(self.dots, len(alive), rgb(255, 60, 50), 0.028)
-        for d, e in zip(dots, alive):
+        while len(self.dots) < len(alive):
+            self.dots.append(Entity(parent=self.root, model='circle', color=rgb(255, 60, 50), scale=0.03, z=-0.01))
+        for d, e in zip(self.dots, alive):
             d.enabled = True
             d.position = (e.x * k, e.z * k, -0.01)
-        for d in dots[len(alive):]:
-            d.enabled = False
-        gr = self.game.grenades
-        gdots = self._dots(self.gdots, len(gr), rgb(255, 170, 40), 0.02)
-        for d, g in zip(gdots, gr):
-            d.enabled = True
-            d.position = (g.x * k, g.z * k, -0.015)
-        for d in gdots[len(gr):]:
+        for d in self.dots[len(alive):]:
             d.enabled = False
 
 
@@ -2975,6 +3219,7 @@ class HUD:
         self.msg = Text(parent=ui, text='', origin=(0, 0), y=0.17, scale=2, color=color.white)
         self.sub_msg = Text(parent=ui, text='', origin=(0, 0), y=0.1, scale=1.1, color=color.rgba(1, 1, 1, 0.85))
         self.warn = Text(parent=ui, text='', origin=(0, 0), y=-0.12, scale=1.4, color=rgb(255, 90, 60))
+        self.prompt = Text(parent=ui, text='', origin=(0, 0), y=-0.22, scale=1.2, color=rgb(255, 225, 120))
         self.feed = Text(parent=ui, text='', origin=(0.5, 0.5), position=(ar - 0.03, 0.4), scale=1)
         # compteur de FPS à droite de l'écran
         Entity(parent=ui, model=Quad(radius=0.25), color=panel, origin=(0.5, 0.5),
@@ -3129,6 +3374,9 @@ class Game(Entity):
         self.kills = 0
         self.wave = 0
         self.enemies = []
+        self.squads = []
+        self.corpses = []          # ennemis morts encore au sol (arme récupérable)
+        self.pickup = None         # cadavre à portée pour Carré / V
         self.grenades = []
         self.last_grenade = -99
         self.high_quality = True
@@ -3187,9 +3435,7 @@ class Game(Entity):
             return
         self.choosing = False
         destroy(self.menu)
-        self.player.primary = key
-        self.player.mags = {}
-        self.player.set_weapon(key)
+        self.player.reset_weapons(key)
         mouse.locked = True
         self.hud.message('Éliminez les ennemis !', 4,
                          f"Arme : {WEAPONS[key]['name']}")
@@ -3244,15 +3490,34 @@ class Game(Entity):
         sk = self.skill()
         n = min(3 + self.wave, 14)
         tier = self.tier_index()
-        for s in self.spawn_points(n):
-            e = Enemy(self, s, skill=sk, tier=tier)
-            e.rotation_y = random.uniform(0, 360)
-            self.enemies.append(e)
+        # escouades de 2 à 4 soldats qui apparaissent groupés
+        sizes = []
+        left = n
+        while left > 0:
+            k = min(left, random.choice((3, 3, 4)) if left > 4 else left)
+            sizes.append(k)
+            left -= k
+        self.squads = []
+        for anchor, size in zip(self.spawn_points(len(sizes)), sizes):
+            members = []
+            yaw = random.uniform(0, 360)
+            for i in range(size):
+                pos = anchor
+                for _ in range(30):
+                    cand = anchor + Vec3(random.uniform(-3.5, 3.5), 0, random.uniform(-3.5, 3.5))
+                    if i == 0 or (self.world.is_free(cand) and all(flat_dist(cand, m.position) > 1.2 for m in members)):
+                        pos = cand if i else anchor
+                        break
+                e = Enemy(self, pos, skill=sk, tier=tier, weapon=random_enemy_weapon())
+                e.rotation_y = yaw
+                members.append(e)
+                self.enemies.append(e)
+            self.squads.append(Squad(members))
         extra = ['', 'Ils se couvrent mutuellement', 'Ils lancent des grenades',
                  'Ils vous prennent en tenaille', 'Ils esquivent et visent plus vite']
         detail = extra[min(self.wave - 1, len(extra) - 1)]
         self.hud.message(f'Vague {self.wave}', 3,
-                         f'{n} ennemis · {TIERS[tier]["name"]} · IA niveau {self.wave}'
+                         f'{n} ennemis en {len(self.squads)} escouades · {TIERS[tier]["name"]} · IA niveau {self.wave}'
                          + (f' — {detail}' if detail else ''))
 
     def on_enemy_killed(self, enemy, headshot):
@@ -3294,6 +3559,11 @@ class Game(Entity):
                 e.release_cover()
                 destroy(e)
         self.enemies = []
+        self.squads = []
+        for c in list(self.corpses):
+            destroy(c)
+        self.corpses = []
+        self.pickup = None
         FXM.clear()
         for gr in list(self.grenades):
             destroy(gr)
@@ -3305,9 +3575,7 @@ class Game(Entity):
         p.rotation_y = 0
         p.pivot.position = (0, 1.65, 0)
         p.pivot.rotation = (0, 0, 0)
-        p.mags = {}
-        p.set_weapon(p.primary)
-        p.mags = {}
+        p.reset_weapons(p.start_weapon)
         p.hp, p.dead, p.mag, p.reload_t, p.vel, p.vy = 100, False, p.weapon['mag'], 0, Vec3(0, 0, 0), 0
         p.armed = False
         p.crouching, p.crouch_t, p.lean_pad, p.lean_t = False, 0.0, 0, 0.0
@@ -3327,6 +3595,25 @@ class Game(Entity):
             application.resume()
             self.hud.msg.text = ''
             self.hud.sub_msg.text = ''
+
+    def find_pickup(self):
+        """Cadavre le plus proche avec une arme, à portée de main."""
+        p = self.player
+        best, bd = None, PICKUP_RANGE
+        if not p.dead:
+            for c in self.corpses:
+                if c.loot is not None:
+                    d = flat_dist(c.position, p.position)
+                    if d < bd:
+                        best, bd = c, d
+        self.pickup = best
+        if best is None:
+            self.hud.set_text(self.hud.prompt, '')
+        else:
+            same = best.loot == p.weapon_key
+            what = 'munitions' if same else WEAPONS[best.loot]['name'].lower()
+            self.hud.set_text(self.hud.prompt, f'Carré / V : prendre {what}'
+                              + ('' if same else f"  (remplace : {p.weapon['name'].lower()})"))
 
     GRASS_DIST = 38.0
 
@@ -3349,6 +3636,10 @@ class Game(Entity):
         if not self.paused:
             self.t += time.dt
         PAD.update(self.t)
+        if not self.paused and not self.choosing:
+            for sq in self.squads:
+                sq.update(time.dt)
+            self.find_pickup()
         self.pad_actions()
         self.update_grass()
         self.hud.update()
@@ -3395,7 +3686,12 @@ class Game(Entity):
             if pr['cross']:
                 self.player.jump()
             if pr['square']:
-                self.player.reload()
+                if self.pickup is not None:
+                    self.player.take_weapon(self.pickup)
+                else:
+                    self.player.reload()
+            if pr['down']:
+                self.player.toggle_view()
             if pr['circle']:
                 self.player.toggle_crouch()
             if pr['triangle']:
@@ -3424,6 +3720,10 @@ class Game(Entity):
             self.player.reload()
         elif key == 'c':
             self.player.toggle_crouch()
+        elif key == 'v' and self.pickup is not None:
+            self.player.take_weapon(self.pickup)
+        elif key == 't':
+            self.player.toggle_view()
         elif key == 'tab':
             self.player.switch_weapon()
         elif key == 'm':
