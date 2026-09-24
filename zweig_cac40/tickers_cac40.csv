@@ -1,0 +1,59 @@
+societe,alias_fichier,ticker_yahoo,ticker_debut,ticker_fin,place,membre_actuel,remarque,donnees_attendues,plage_dates_disponibles
+Accor,Accor,AC.PA,,,Paris,oui,,oui,non testé
+Air Liquide,,AI.PA,,,Paris,oui,,oui,non testé
+Airbus,,AIR.PA,,,Paris,oui,Airbus Group renommé Airbus en 2017 (même ticker),oui,non testé
+ArcelorMittal,ArcelorMittal,MT.AS,,,Amsterdam,oui,Cotation principale Amsterdam (aussi cotée à Paris),oui,non testé
+AXA,,CS.PA,,,Paris,oui,,oui,non testé
+BNP Paribas,,BNP.PA,,,Paris,oui,,oui,non testé
+Bouygues,,EN.PA,,,Paris,oui,,oui,non testé
+Bureau Veritas,Bureau Veritas,BVI.PA,,,Paris,oui,,oui,non testé
+Capgemini,,CAP.PA,,,Paris,oui,,oui,non testé
+Carrefour,,CA.PA,,,Paris,oui,,oui,non testé
+Crédit Agricole,,ACA.PA,,,Paris,oui,,oui,non testé
+Danone,,BN.PA,,,Paris,oui,,oui,non testé
+Dassault Systèmes,Dassault Systèmes,DSY.PA,,,Paris,oui,,oui,non testé
+Eiffage,Eiffage,FGR.PA,,,Paris,oui,,oui,non testé
+Engie,,ENGI.PA,,,Paris,oui,ex-GDF Suez (renommé 2015),oui,non testé
+EssilorLuxottica,,EL.PA,,,Paris,oui,Essilor International renommé EssilorLuxottica en 2018 (ex-ticker EI.PA),oui,non testé
+Eurofins Scientific,Eurofins Scientific,ERF.PA,,,Paris,oui,,oui,non testé
+Euronext,Euronext,ENX.PA,,,Paris,oui,,oui,non testé
+Hermès,Hermès,RMS.PA,,,Paris,oui,,oui,non testé
+Kering,,KER.PA,,,Paris,oui,,oui,non testé
+Legrand,,LR.PA,,,Paris,oui,,oui,non testé
+L'Oréal,,OR.PA,,,Paris,oui,,oui,non testé
+LVMH,,MC.PA,,,Paris,oui,,oui,non testé
+Michelin,,ML.PA,,,Paris,oui,,oui,non testé
+Orange,,ORA.PA,,,Paris,oui,,oui,non testé
+Pernod Ricard,,RI.PA,,,Paris,oui,,oui,non testé
+Publicis,,PUB.PA,,,Paris,oui,,oui,non testé
+Renault,,RNO.PA,,,Paris,oui,,oui,non testé
+Safran,,SAF.PA,,,Paris,oui,,oui,non testé
+Saint-Gobain,,SGO.PA,,,Paris,oui,,oui,non testé
+Sanofi,,SAN.PA,,,Paris,oui,Toujours membre (pas de ligne Sanofi 2022 dans ce fichier ; plus forte hausse du CAC 40 le 24/06/2022),oui,non testé
+Schneider Electric,,SU.PA,,,Paris,oui,,oui,non testé
+Société Générale,,GLE.PA,,,Paris,oui,,oui,non testé
+Stellantis (ex-PSA),PSA Peugeot Citroën,UG.PA,,2021-01-15,Paris,oui,PSA (UG.PA) jusqu'à la fusion ; titre radié en janv. 2021,probablement non (radié),non testé
+Stellantis (ex-PSA),PSA Peugeot Citroën,STLAP.PA,2021-01-18,,Paris,oui,Stellantis ; membre sans interruption (ex-ticker STLA.PA),oui,non testé
+STMicroelectronics,STMicroelectronics,STMPA.PA,,,Paris,oui,,oui,non testé
+Thales,Thales,HO.PA,,,Paris,oui,,oui,non testé
+TotalEnergies,,TTE.PA,,,Paris,oui,Total renommé TotalEnergies en 2021 (ex-ticker FP.PA),oui,non testé
+Unibail-Rodamco-Westfield,,URW.PA,,,Paris,oui,Unibail-Rodamco renommé URW en 2018 (ex-ticker UL.PA),oui (historique ancien à vérifier),non testé
+Veolia,,VIE.PA,,,Paris,oui,,oui,non testé
+Vinci,,DG.PA,,,Paris,oui,,oui,non testé
+Alcatel-Lucent,Alcatel-Lucent,ALU.PA,,2016-11-02,Paris,non,Sortie le 07/01/2016 (rachat par Nokia) ; radiée fin 2016 ; seulement 3 séances utiles,probablement non (radiée),non testé
+Alstom,Alstom,ALO.PA,,,Paris,non,Sortie 2016-03-21 ; retour 2020-09-21 ; sortie 2024-03-18,oui,non testé
+Atos,Atos,ATO.PA,,,Paris,non,Membre 2017-03-20 → 2021-09-17 ; regroupement d'actions massif en 2024 (sans effet sur le signe),oui,non testé
+Edenred,Edenred,EDEN.PA,,,Paris,non,Membre 2023-06-19 → 2025-12-22,oui,non testé
+Klépierre,Klépierre,LI.PA,,,Paris,non,Membre jusqu'au 2017-03-20,oui,non testé
+LafargeHolcim,LafargeHolcim,HOLN.SW,,,Zurich,non,Cotation principale Zurich ; renommée Holcim en 2021 ; membre jusqu'au 2018-06-18,oui,non testé
+Nokia,Nokia,NOKIA.HE,,,Helsinki,non,Cotation principale Helsinki ; membre 2016-01-07 → 2017-09-18,oui,non testé
+Sodexo,Sodexo,SW.PA,,,Paris,non,Membre 2016-03-21 → 2020-06-22,oui,non testé
+Solvay,Solvay,SOLB.BR,,,Bruxelles,non,Cotation principale Bruxelles ; membre jusqu'au 2018-09-24,oui,non testé
+Technip / TechnipFMC,,TEC.PA,,2017-01-16,Paris,non,Technip jusqu'à la fusion avec FMC Technologies (radié janv. 2017),probablement non (radié),non testé
+Technip / TechnipFMC,TechnipFMC,FTI,2017-01-17,,New York,non,TechnipFMC ; avant le 17/01/2017 le ticker FTI = FMC Technologies (à exclure) ; membre jusqu'au 2020-03-23,oui,non testé
+Teleperformance,Teleperformance,TEP.PA,,,Paris,non,Membre 2020-06-22 → 2025-09-22,oui,non testé
+Valeo,Valeo,FR.PA,,,Paris,non,Membre jusqu'au 2019-06-24,oui,non testé
+Vivendi,Vivendi,VIV.PA,,,Paris,non,Sortie 2023-06-19 ; retour 2023-12-18 ; sortie 2024-12-23 ; scission le 16/12/2024 (vérifier l'ajustement),oui,non testé
+Worldline,Worldline,WLN.PA,,,Paris,non,Membre temporaire 2019-05-03 → 2019-06-24 puis 2020-03-23 → 2023-12-18,oui,non testé
+EDF,EDF,EDF.PA,,,Paris,non,Sortie le 2015-12-21 (avant la période) ; radiée en 2023 ; inutile pour l'analyse,sans objet,non testé
+Gemalto,Gemalto,GTO.AS,,,Amsterdam,non,Sortie le 2015-03-23 (avant la période) ; radiée en 2019 ; inutile pour l'analyse,sans objet,non testé
