@@ -4,7 +4,7 @@ Petit FPS avec Ursina — ennemis humanoïdes dotés d'une IA tactique qui progr
 Lancement :  python fps.py                 (vsync activé, FPS limités à 60)
              python fps.py --sans-limite   (vsync coupé, FPS non plafonnés : pour mesurer)
 
-Au lancement : choix de l'arme (clic sur le menu, ou touches 1 / 2)
+Au lancement : choix de l'arme (clic sur le menu, ou touches 1 / 2) et du moment (3 ou N : jour / nuit)
     1 : fusil d'assaut (tir automatique, viseur point rouge grossissant x1,4 dans la vitre seulement)
     2 : sniper (un tir par clic, gros dégâts, lunette zoom x2)
 
@@ -21,8 +21,9 @@ Commandes (clavier AZERTY) :
     A / F (en visant)  : se pencher à gauche / à droite
     R                  : recharger
     Tab                : changer d'arme (arme principale <-> pistolet)
-    V                  : près d'un cadavre, prendre son arme (fusil d'assaut, fusil à pompe ou pistolet)
+    V                  : près d'un cadavre, prendre son arme (fusil d'assaut, fusil à pompe, pistolet ou RPG)
     T                  : vue à la 1re / 3e personne
+    N                  : lunettes de vision nocturne on/off (partie de nuit)
     M                  : afficher / masquer la carte (position des ennemis)
     G                  : qualité graphique (effets de post-traitement + herbe) on/off
     Échap              : pause (X pour quitter pendant la pause)
@@ -38,6 +39,7 @@ Installer une fois :  pip install pygame      (sans pygame, le jeu se joue au cl
     Carré              : recharger ; près d'un cadavre : prendre son arme
     Triangle           : changer d'arme (arme principale <-> pistolet)
     Flèche bas         : vue à la 1re / 3e personne
+    Flèche haut        : lunettes de vision nocturne on/off (partie de nuit)
     Options            : pause (Create pour quitter pendant la pause)
     Croix directionnelle ou stick gauche : choisir l'arme dans le menu
     Vibrations au tir, aux dégâts et aux explosions. La manette peut être branchée en cours de partie.
@@ -52,7 +54,9 @@ IA des ennemis (de plus en plus redoutable à chaque vague) :
     - grenades pour déloger le joueur caché, fuite devant les grenades
     - escouades : patrouille en formation, alerte partagée, progression par bonds
       (une moitié avance d'abri en abri pendant que l'autre la couvre)
-    - armes : fusil d'assaut, fusil à pompe (combat rapproché) ou pistolet
+    - armes : fusil d'assaut, fusil à pompe (combat rapproché) ou pistolet ; un soldat par vague
+      porte un RPG dans le dos (2 roquettes, explosion de 3 m) à récupérer sur son cadavre
+    - la nuit, ils portent des lunettes de vision nocturne et vous voient comme en plein jour
     - déplacement par A* sur une grille de navigation
     - corps articulé animé : marche, course, accroupi, visée, lancer, impacts, chute
 """
@@ -224,13 +228,8 @@ void main() {
 ''', default_input={
     'texture_scale': Vec2(1, 1),
     'texture_offset': Vec2(0, 0),
-    'sky_color': Color(0.50, 0.56, 0.66, 1),
-    'ground_color': Color(0.30, 0.28, 0.22, 1),
-    'fog_color': FOG_COLOR,
-    'fog_density': 0.0085,
     'specular': 0.0,
     'shadow_texel': 1 / SHADOW_RES,
-    'sun_strength': 0.95,
     'flip_backface': 1.0,
 })
 
@@ -249,6 +248,8 @@ void main() {
 #version 150
 uniform sampler2D tex;
 uniform float fx_on;        // 1 = bloom, étalonnage et vignettage ; 0 = image brute
+uniform float nv_on;        // 1 = lunettes de vision nocturne
+uniform float nv_time;      // fait bouger le grain de l'image
 uniform float zoom;         // grossissement dans la vitre du viseur (1 = aucun)
 uniform vec4 zoom_rect;     // vitre du viseur à l'écran : umin, vmin, umax, vmax
 uniform vec2 zoom_center;   // point visé (centre du grossissement)
@@ -284,14 +285,36 @@ void main() {
         float v = smoothstep(0.95, 0.30, length(d * vec2(1.0, 0.8)) * 1.25);
         c *= mix(0.62, 1.0, v);
     }
+    if (nv_on > 0.5) {
+        // vision nocturne : lumière amplifiée, image verte, grain, lignes de balayage, masque rond
+        vec2 ts = vec2(textureSize(tex, 0));
+        float l = dot(texture(tex, suv).rgb, vec3(0.3, 0.59, 0.11));
+        l = pow(clamp(l * 6.0, 0.0, 1.0), 0.75);
+        float n = fract(sin(dot(uv * ts + nv_time * 91.7, vec2(12.9898, 78.233))) * 43758.5453);
+        l = l * 0.88 + (n - 0.5) * 0.14;
+        l *= 0.92 + 0.08 * sin(uv.y * ts.y * 1.6);
+        c = vec3(0.15, 1.0, 0.3) * l;
+        vec2 q = (uv - 0.5) * vec2(ts.x / ts.y, 1.0);
+        c *= smoothstep(0.62, 0.5, length(q));
+    }
     out_color = vec4(clamp(c, 0.0, 1.0), 1.0);
 }
 ''', default_input={
+    'nv_on': 0.0,
+    'nv_time': 0.0,
     'fx_on': 1.0,
     'zoom': 1.0,
     'zoom_rect': Vec4(0, 0, 0, 0),
     'zoom_center': Vec2(0.5, 0.5),
 })
+
+
+# ambiance appliquée à toute la scène (Game.apply_time_of_day)
+DAY = dict(sky=Color(0.50, 0.56, 0.66, 1), ground=Color(0.30, 0.28, 0.22, 1), fog=FOG_COLOR, fog_density=0.0085,
+           sun_strength=0.95, sun=SUN_COLOR, sky_tint=Color(0.95, 0.97, 1.0, 1), clear=FOG_COLOR)
+NIGHT = dict(sky=Color(0.05, 0.06, 0.10, 1), ground=Color(0.02, 0.02, 0.03, 1), fog=Color(0.02, 0.03, 0.05, 1),
+             fog_density=0.018, sun_strength=0.35, sun=Color(0.45, 0.55, 0.85, 1),
+             sky_tint=Color(0.07, 0.09, 0.16, 1), clear=Color(0.02, 0.03, 0.05, 1))
 
 
 # ---------------------------------------------------------------------------
@@ -1297,31 +1320,7 @@ class Grenade(Entity):
         if self in g.grenades:
             g.grenades.remove(self)
         destroy(self)
-        flash = FXM.get('sphere')
-        flash.color = rgb(255, 200, 90)
-        flash.position = pos
-        flash.scale = 0.5
-        FXM.play(flash, 0.3, scale=Vec3(5, 5, 5), col=rgb(255, 120, 30, 0))
-        for _ in range(9):
-            sm = FXM.get('sphere')
-            sm.color = rgb(90, 85, 80, 200)
-            sm.position = pos + Vec3(random.uniform(-.8, .8), random.uniform(0, .5), random.uniform(-.8, .8))
-            sm.scale = random.uniform(0.6, 1.2)
-            FXM.play(sm, 1.8, pos=sm.position + Vec3(random.uniform(-1, 1), random.uniform(1.5, 3), random.uniform(-1, 1)),
-                     scale=sm.scale * 2.5, col=rgb(120, 115, 110, 0))
-        scorch = FXM.get('circle')
-        scorch.color = rgb(25, 22, 20, 200)
-        scorch.position = (pos.x, 0.035, pos.z)
-        scorch.rotation_x = 90
-        scorch.scale = 2.4
-        scorch.double_sided = True
-        FXM.play(scorch, 20)
-        for _ in range(12):
-            p = FXM.get('cube')
-            p.color = rgb(70, 60, 50)
-            p.position = pos
-            p.scale = 0.06
-            FXM.play(p, 0.4, pos=pos + Vec3(random.uniform(-3, 3), random.uniform(0.2, 2.5), random.uniform(-3, 3)))
+        explosion_fx(pos)
         radius = 6.0
         pl = g.player
         center = pos + Vec3(0, 0.3, 0)
@@ -1338,6 +1337,95 @@ class Grenade(Entity):
             de = (e.position + Vec3(0, 0.9, 0) - center).length()
             if de < radius and self.world.los(center, e.eye):
                 e.take_hit(int(100 * (1 - de / radius)), 'body', e.position + Vec3(0, 1, 0), explosive=True)
+
+
+def explosion_fx(pos, size=1.0):
+    """Boule de feu, fumée, trace au sol et débris (grenades et roquettes)."""
+    flash = FXM.get('sphere')
+    flash.color = rgb(255, 200, 90)
+    flash.position = pos
+    flash.scale = 0.5
+    FXM.play(flash, 0.3, scale=Vec3(5, 5, 5) * size, col=rgb(255, 120, 30, 0))
+    for _ in range(9):
+        sm = FXM.get('sphere')
+        sm.color = rgb(90, 85, 80, 200)
+        sm.position = pos + Vec3(random.uniform(-.8, .8), random.uniform(0, .5), random.uniform(-.8, .8)) * size
+        sm.scale = random.uniform(0.6, 1.2) * size
+        FXM.play(sm, 1.8, pos=sm.position + Vec3(random.uniform(-1, 1), random.uniform(1.5, 3), random.uniform(-1, 1)),
+                 scale=sm.scale * 2.5, col=rgb(120, 115, 110, 0))
+    scorch = FXM.get('circle')
+    scorch.color = rgb(25, 22, 20, 200)
+    scorch.position = (pos.x, 0.035, pos.z)
+    scorch.rotation_x = 90
+    scorch.scale = 2.4 * size
+    scorch.double_sided = True
+    FXM.play(scorch, 20)
+    for _ in range(12):
+        p = FXM.get('cube')
+        p.color = rgb(70, 60, 50)
+        p.position = pos
+        p.scale = 0.06
+        FXM.play(p, 0.4, pos=pos + Vec3(random.uniform(-3, 3), random.uniform(0.2, 2.5), random.uniform(-3, 3)) * size)
+
+
+class Rocket(Entity):
+    """Roquette de RPG : vole en ligne droite, explose au premier contact (ou au bout de 3 s)."""
+
+    def __init__(self, game, start, direction):
+        super().__init__(model='cube', color=rgb(70, 80, 50), scale=(0.09, 0.09, 0.45), position=start, shader=LIT)
+        self.game = game
+        self.dir = direction.normalized()
+        self.look_at(start + self.dir)
+        self.life = 3.0
+        self.smoke_t = 0.0
+        Entity(parent=self, model='quad', texture='circle', color=rgb(255, 190, 90), z=-0.6, scale=(3, 3),
+               billboard=True, unlit=True)       # flamme du propulseur
+
+    def update(self):
+        if self.game.paused:
+            return
+        dt = time.dt
+        self.life -= dt
+        step = ROCKET_SPEED * dt
+        hit = raycast(self.world_position, self.dir, step + 0.1, ignore=[self, self.game.player])
+        if hit.hit:
+            self.explode(hit.world_point - self.dir * 0.2)
+            return
+        self.position += self.dir * step
+        self.smoke_t -= dt
+        if self.smoke_t <= 0:          # traînée de fumée
+            self.smoke_t = 0.03
+            sm = FXM.get('sphere')
+            sm.color = rgb(200, 200, 195, 160)
+            sm.position = self.position - self.dir * 0.3
+            sm.scale = 0.15
+            FXM.play(sm, 1.2, scale=Vec3(0.9, 0.9, 0.9), col=rgb(160, 160, 155, 0),
+                     pos=sm.position + Vec3(0, 0.4, 0))
+        if self.life <= 0 or self.y < -1:
+            self.explode(Vec3(self.position))
+
+    def explode(self, pos):
+        g = self.game
+        destroy(self)
+        explosion_fx(pos, 0.8)
+        center = pos + Vec3(0, 0.1, 0)
+        w = g.world
+        for e in list(g.enemies):              # tue ou blesse dans un rayon de 3 m
+            if e.dead:
+                continue
+            de = (e.position + Vec3(0, 0.9, 0) - center).length()
+            if de < ROCKET_RADIUS + 0.4 and (w.los(center, e.eye) or w.los(center, e.position + Vec3(0, 0.4, 0))):
+                e.take_hit(int(lerp(240, 60, clamp(de / ROCKET_RADIUS, 0, 1))), 'body',
+                           e.position + Vec3(0, 1, 0), explosive=True)
+            elif de < 30:
+                e.receive_alert(g.player.position)
+        pl = g.player
+        d = (pl.position + Vec3(0, 0.9, 0) - center).length()
+        if not pl.dead and d < ROCKET_RADIUS + 0.4 and w.los(center, pl.eye):
+            pl.take_damage(int(lerp(70, 20, clamp(d / ROCKET_RADIUS, 0, 1))), pos)
+        if d < 20:
+            pl.shake = max(pl.shake, 0.7 * (1 - d / 20))
+            PAD.rumble(1.0 * (1 - d / 20), 0.9 * (1 - d / 20), 400)
 
 
 # ---------------------------------------------------------------------------
@@ -1374,7 +1462,12 @@ GUN_PARTS = {
     'sniper': [((0, 0.02, 0.35), (0.05, 0.07, 0.95), GUN_DARK, True), ((0, 0.1, 0.1), (0.05, 0.05, 0.3), GUN_DARK, False),
                ((0, 0.0, -0.18), (0.06, 0.12, 0.26), GUN_WOOD, False)],
 }
-GUN_MUZZLE = {'rifle': 0.55, 'shotgun': 0.72, 'pistol': 0.18, 'sniper': 0.85}
+GUN_PARTS['rpg'] = [((0, 0.03, 0.2), (0.1, 0.1, 1.0), rgb(70, 80, 50), True),
+                    ((0, 0.03, 0.78), (0.14, 0.14, 0.18), rgb(60, 60, 55), False),
+                    ((0, -0.07, 0.1), (0.04, 0.12, 0.05), GUN_DARK, False)]
+GUN_MUZZLE = {'rifle': 0.55, 'shotgun': 0.72, 'pistol': 0.18, 'sniper': 0.85, 'rpg': 0.9}
+ROCKET_SPEED = 38.0      # m/s
+ROCKET_RADIUS = 3.0      # rayon de l'explosion (m)
 CORPSE_TIME = 45        # secondes pendant lesquelles un cadavre reste au sol (et peut être fouillé)
 PICKUP_RANGE = 2.5      # distance pour ramasser l'arme d'un cadavre
 
@@ -1441,7 +1534,7 @@ class Squad:
 
 
 class Enemy(Entity):
-    def __init__(self, game, position, skill=0.0, tier=0, weapon='rifle', look=None):
+    def __init__(self, game, position, skill=0.0, tier=0, weapon='rifle', look=None, rpg=False, night=False):
         super().__init__(position=position)
         self.game = game
         self.world = game.world
@@ -1450,7 +1543,9 @@ class Enemy(Entity):
         self.look = look or ENEMY_LOOK
         self.wkind = weapon
         self.wp = ENEMY_WEAPONS.get(weapon, ENEMY_WEAPONS['rifle'])
-        self.loot = self.wp['loot']                     # arme récupérable sur le cadavre
+        self.carries_rpg = rpg                          # RPG dans le dos : c'est lui qu'on récupère
+        self.night = night                              # lunettes de vision nocturne sur le casque
+        self.loot = 'rpg' if rpg else self.wp['loot']   # arme récupérable sur le cadavre
         self.loot_mag = None
         self.squad = None
         self.squad_index = 0
@@ -1563,6 +1658,9 @@ class Enemy(Entity):
             self.part(self.torso, (px, 0.2, 0.16), (0.09, 0.11, 0.05), shade(UD, 0.85), 'body', collide=False)
         self.part(self.torso, (0, 0.3, -0.19), (0.3, 0.38, 0.14), shade(UD, 0.9), 'body')       # sac à dos
         self.part(self.torso, (0, 0.52, -0.19), (0.26, 0.08, 0.13), shade(UD, 0.75), 'body', collide=False)
+        if self.carries_rpg:     # lance-roquettes porté en travers du dos
+            self.part(self.torso, (0.12, 0.35, -0.3), (0.1, 0.95, 0.1), rgb(70, 80, 50), 'body', collide=False)
+            self.part(self.torso, (0.12, 0.88, -0.3), (0.14, 0.18, 0.14), rgb(60, 60, 55), 'body', collide=False)
         self.part(self.torso, (0, 0.58, 0), (0.11, 0.08, 0.11), S, 'body', collide=False)        # cou
         # tête
         self.neck = Entity(parent=self.torso, y=0.6)
@@ -1573,6 +1671,10 @@ class Enemy(Entity):
         self.part(self.neck, (0, 0.07, 0.12), (0.06, 0.05, 0.02), shade(S, 0.9), 'head', collide=False)  # nez
         for ex in (-0.055, 0.055):
             self.part(self.neck, (ex, 0.17, 0.12), (0.045, 0.03, 0.01), color.black, 'head', collide=False)
+            if self.night:       # vision nocturne : deux oculaires verts lumineux
+                self.part(self.neck, (ex, 0.19, 0.16), (0.05, 0.05, 0.07), rgb(20, 20, 22), 'head', collide=False)
+                self.part(self.neck, (ex, 0.19, 0.196), (0.035, 0.035, 0.01), rgb(90, 255, 110), 'head',
+                          collide=False, lit=False)
         self.part(self.neck, (0, 0.23, 0.13), (0.2, 0.025, 0.02), shade(t['helmet'], 0.7), 'head', collide=False)
 
         # bras : épaule -> bras -> coude -> avant-bras -> main
@@ -2212,7 +2314,8 @@ class Enemy(Entity):
             p.collider = None
         self.fall_dir = random.choice((-1, 1))
         self.fall_side = random.uniform(-25, 25)
-        self.loot_mag = random.randint(WEAPONS[self.loot]['mag'] // 2, WEAPONS[self.loot]['mag'])
+        full = WEAPONS[self.loot]['mag']
+        self.loot_mag = full if self.carries_rpg else random.randint(full // 2, full)
         self.game.corpses.append(self)
         self.game.on_enemy_killed(self, zone == 'head')
         for a in self.allies(20):
@@ -2432,6 +2535,15 @@ WEAPONS = {
         tracer=(0.01, 0.03), model='shotgun',
         hip=Vec3(0.15, -0.15, 0.22), ads=Vec3(0, -0.075 * 0.42, 0.22),
     ),
+    # trouvé sur un ennemi : 2 roquettes en tout (pas de rechargement), explosion de 3 m de rayon
+    'rpg': dict(
+        name='RPG', short='RPG', auto=False, cooldown=1.6, mag=2, reload=0, no_reload=True, rocket=True,
+        dmg={}, spread=0.003, move_spread=0.01, ads_spread=0.5, kick=3.0,
+        ads_fov=70, ads_sens=0.7, scope=False, sight_zoom=1.0,
+        flash=1.0 * 0.5, flash_intensity=0.5, flash_life=0.08 * 0.5,
+        tracer=(0.0, 0.0), model='rpg',
+        hip=Vec3(0.2, -0.12, 0.12), ads=Vec3(0, -0.105 * 0.42, 0.16),
+    ),
     # arme secondaire (Triangle / Tab) : semi-automatique, 8 balles, visée aux organes de visée
     'pistol': dict(
         name='Pistolet', short='PISTOLET', auto=False, cooldown=0.16, mag=8, reload=1.2,
@@ -2588,10 +2700,31 @@ class Player(Entity):
             self.crouching = not self.crouching
 
     def build_gun(self):
-        {'sniper': self.build_sniper, 'pistol': self.build_pistol,
-         'shotgun': self.build_shotgun}.get(self.weapon['model'], self.build_rifle)()
+        {'sniper': self.build_sniper, 'pistol': self.build_pistol, 'shotgun': self.build_shotgun,
+         'rpg': self.build_rpg}.get(self.weapon['model'], self.build_rifle)()
         if self.avatar is not None:
             self.avatar.set_gun(self.weapon['model'])
+
+    def build_rpg(self):
+        self.gun = Entity(parent=camera, position=self.weapon['hip'], scale=self.GUN_SCALE)
+        olive = rgb(70, 80, 50)
+        dark = rgb(34, 35, 38)
+
+        def p(pos, sc, col):
+            return Entity(parent=self.gun, model='cube', color=col, position=pos, scale=sc, shader=LIT)
+        p((0, 0, 0.1), (0.13, 0.13, 1.3), olive)                 # tube
+        p((0, 0, 0.82), (0.2, 0.2, 0.22), rgb(60, 62, 55))       # ogive de la roquette
+        p((0, 0, 0.98), (0.1, 0.1, 0.12), rgb(60, 62, 55))
+        p((0, 0, -0.58), (0.16, 0.16, 0.08), dark)               # tuyère arrière
+        p((0, -0.12, 0.08), (0.05, 0.14, 0.07), dark)            # poignée
+        p((0, -0.12, 0.3), (0.05, 0.12, 0.06), dark)
+        p((-0.03, 0.09, 0.1), (0.02, 0.05, 0.06), dark)          # hausse
+        p((0.03, 0.09, 0.1), (0.02, 0.05, 0.06), dark)
+        p((0, 0.095, 0.45), (0.015, 0.03, 0.02), rgb(220, 220, 200))   # guidon
+        self.dot = None
+        self.sight_corners = []
+        self.muzzle = Entity(parent=self.gun, z=1.05)
+        self.eject = Entity(parent=self.gun, z=-0.6)
 
     def build_shotgun(self):
         self.gun = Entity(parent=camera, position=self.weapon['hip'], scale=self.GUN_SCALE)
@@ -2877,6 +3010,34 @@ class Player(Entity):
         camera.set_shader_input('zoom', lerp(1.0, z, k))
         self._zoom_on = True
 
+    def fire_rocket(self):
+        w = self.weapon
+        self.mag -= 1
+        self.cooldown = w['cooldown']
+        self.recoil = 1.5
+        muzzle = self.avatar.muzzle if (self.tps and self.avatar is not None) else self.muzzle
+        muzzle_flash(muzzle, scale=w['flash'], intensity=w['flash_intensity'], life=w['flash_life'])
+        PAD.rumble(1.0, 0.8, 300)
+        origin = camera.world_position
+        if self.tps:
+            origin = origin + camera.forward * max(0.0, (self.eye - origin).dot(camera.forward))
+        spread = w['spread'] * lerp(1, w['ads_spread'], self.ads)
+        d = (camera.forward + camera.right * random.uniform(-spread, spread)
+             + camera.up * random.uniform(-spread, spread)).normalized()
+        # la roquette part du tube mais vise le centre de l'écran
+        target_hit = raycast(origin, d, 200, ignore=[self])
+        target = target_hit.world_point if target_hit.hit else origin + d * 200
+        start = muzzle.world_position + d * 0.3
+        Rocket(self.game, start, target - start)
+        self.pivot.rotation_x -= w['kick']
+        self.recoil_pitch = min(self.recoil_pitch + w['kick'] * 0.8, 6)
+        self.shake = max(self.shake, 0.2)
+        for e in self.game.enemies:
+            if not e.dead and flat_dist(e.position, self.position) < e.hear_radius:
+                FXM.later(random.uniform(0.1, 0.4) * e.reaction, e.hear_shot, Vec3(self.position))
+        if self.mag <= 0:
+            self.game.hud.add_feed('Dernière roquette tirée')
+
     def enemy_under_crosshair(self):
         """Aide à la visée manette : le regard ralentit quand un ennemi est sous le réticule."""
         hit = raycast(camera.world_position, camera.forward, 80, ignore=[self])
@@ -2891,6 +3052,10 @@ class Player(Entity):
             self.grounded = False
 
     def reload(self):
+        if self.weapon.get('no_reload'):
+            if self.mag <= 0:
+                self.game.hud.add_feed('Plus de roquettes')
+            return
         if self.reload_t <= 0 and self.mag < self.weapon['mag']:
             self.reload_t = self.weapon['reload']
 
@@ -2899,6 +3064,9 @@ class Player(Entity):
             self.reload()
             return
         w = self.weapon
+        if w.get('rocket'):
+            self.fire_rocket()
+            return
         self.mag -= 1
         self.cooldown = w['cooldown']
         self.recoil = min(1.5, self.recoil + (1.2 if w['scope'] or w.get('pellets') else 0.5))
@@ -3131,16 +3299,16 @@ PAD = None       # instance unique, créée par Game
 # ---------------------------------------------------------------------------
 
 CONTROLS_LINE = ('E/S/Q/D bouger · Z courir · C accroupi · Espace sauter · Clic G/P tirer · Clic D viser (+A/F pencher)'
-                 ' · R recharger · V ramasser · Tab changer d\'arme · T vue 3e pers. · M carte · Échap pause')
+                 ' · R recharger · V ramasser · Tab changer d\'arme · T vue 3e pers. · N vision nocturne · M carte · Échap pause')
 CONTROLS_PAD_LINE = ('Manette : stick G bouger · L3 courir · Rond accroupi · R2 tirer · L2 viser (+L3/R3 pencher)'
-                     ' · Croix sauter · Carré recharger/ramasser · Triangle changer d\'arme · flèche bas vue 3e pers. · Options pause')
+                     ' · Croix sauter · Carré recharger/ramasser · Triangle arme · flèche bas vue 3e pers. · flèche haut vision nuit · Options pause')
 CONTROLS_PAUSE = ('E avancer   ·   S reculer   ·   Q gauche   ·   D droite   ·   flèches : se déplacer\n'
                   'Z courir   ·   C accroupi   ·   Espace sauter   ·   Clic gauche ou P tirer   ·   Clic droit viser\n'
                   'En visant : A / F se pencher   ·   R recharger   ·   V ramasser une arme   ·   Tab changer d\'arme\n'
-                  'T vue 3e personne   ·   M carte   ·   G graphismes\n'
+                  'T vue 3e personne   ·   N vision nocturne (la nuit)   ·   M carte   ·   G graphismes\n'
                   'Manette PS5 : stick gauche bouger (L3 courir) · stick droit regarder · R2 tirer · L2 viser\n'
                   'Rond accroupi · en visant L3 / R3 se pencher · Croix sauter · Carré recharger / ramasser\n'
-                  'Triangle changer d\'arme · flèche bas : vue 3e personne\n\n'
+                  'Triangle changer d\'arme · flèche bas : vue 3e personne · flèche haut : vision nocturne\n\n'
                   'Échap / Options : reprendre    ·    X / Create : quitter')
 
 class MiniMap:
@@ -3220,6 +3388,7 @@ class HUD:
         self.sub_msg = Text(parent=ui, text='', origin=(0, 0), y=0.1, scale=1.1, color=color.rgba(1, 1, 1, 0.85))
         self.warn = Text(parent=ui, text='', origin=(0, 0), y=-0.12, scale=1.4, color=rgb(255, 90, 60))
         self.prompt = Text(parent=ui, text='', origin=(0, 0), y=-0.22, scale=1.2, color=rgb(255, 225, 120))
+        self.nv_label = Text(parent=ui, text='', origin=(0, 0), y=0.43, scale=1.0, color=rgb(120, 255, 140))
         self.feed = Text(parent=ui, text='', origin=(0.5, 0.5), position=(ar - 0.03, 0.4), scale=1)
         # compteur de FPS à droite de l'écran
         Entity(parent=ui, model=Quad(radius=0.25), color=panel, origin=(0.5, 0.5),
@@ -3381,15 +3550,18 @@ class Game(Entity):
         self.last_grenade = -99
         self.high_quality = True
         self.choosing = True        # menu de choix d'arme affiché
+        self.night = False          # choisi dans le menu de départ
+        self.nv = False             # lunettes de vision nocturne (nuit seulement)
 
         global FXM, PAD
         FXM = FX()
         PAD = Gamepad()
         self.menu_sel = 0
         self._pad_was = False
-        Sky(texture='sky_default', color=Color(0.95, 0.97, 1.0, 1))
-        self.world = World()
+        self.sky = Sky(texture='sky_default', color=Color(0.95, 0.97, 1.0, 1))
         self.sun = DirectionalLight(shadow_map_resolution=Vec2(SHADOW_RES, SHADOW_RES), color=SUN_COLOR)
+        self.apply_time_of_day(False)       # avant de créer le décor : les objets héritent de l'ambiance
+        self.world = World()
         self.sun.look_at(Vec3(0.55, -0.75, 0.4))
         self.shadow_bounds = Entity(model='cube', scale=(ARENA * 2 + 4, 9, ARENA * 2 + 4), y=4, visible=False)
         invoke(self.fit_shadows, delay=0.1)
@@ -3404,7 +3576,8 @@ class Game(Entity):
         mouse.locked = False
         ui = camera.ui
         self.menu = Entity(parent=ui, z=-0.5)
-        Entity(parent=self.menu, model=Quad(radius=0.03), color=color.rgba(0, 0, 0, 0.72), scale=(1.1, 0.62), z=0.01)
+        Entity(parent=self.menu, model=Quad(radius=0.03), color=color.rgba(0, 0, 0, 0.72), scale=(1.1, 0.78), z=0.01,
+               y=-0.07)
         Text(parent=self.menu, text='CHOISISSEZ VOTRE ARME', origin=(0, 0), y=0.24, scale=2)
         choices = [
             ('rifle', "1  —  Fusil d'assaut",
@@ -3423,12 +3596,19 @@ class Game(Entity):
             Text(parent=self.menu, text=title, origin=(0, 0), y=y + 0.025, scale=1.5, z=-0.02)
             Text(parent=self.menu, text=desc, origin=(0, 0), y=y - 0.035, scale=0.95, z=-0.02,
                  color=color.rgba(1, 1, 1, 0.75))
+        # 3e ligne : jour ou nuit (bascule, ne lance pas la partie)
+        b = Button(parent=self.menu, text='', scale=(0.9, 0.1), y=-0.29, radius=0.08,
+                   color=color.rgba(0.15, 0.18, 0.3, 0.95), highlight_color=color.rgba(0.25, 0.3, 0.5, 1))
+        b.on_click = self.toggle_night_choice
+        b.weapon_key = None
+        self.menu_buttons.append(b)
+        self.menu_time_text = Text(parent=self.menu, text=self.time_label(), origin=(0, 0), y=-0.29, scale=1.2, z=-0.02)
         # cadre de sélection pour la manette
         self.menu_cursor = Entity(parent=self.menu, model=Quad(radius=0.08, thickness=3, mode='line'),
                                   color=rgb(255, 210, 90), scale=(0.93, 0.18), y=0.07, z=-0.03, visible=False)
-        Text(parent=self.menu, text='Cliquez sur une arme ou appuyez sur 1 / 2\n'
+        Text(parent=self.menu, text='Cliquez sur une arme ou appuyez sur 1 / 2  ·  3 ou N : jour / nuit\n'
                                     'Manette : croix directionnelle ou stick gauche, puis Croix pour valider',
-             origin=(0, 0), y=-0.265, scale=0.85, color=color.rgba(1, 1, 1, 0.6))
+             origin=(0, 0), y=-0.4, scale=0.85, color=color.rgba(1, 1, 1, 0.6))
 
     def choose_weapon(self, key):
         if not self.choosing:
@@ -3438,8 +3618,47 @@ class Game(Entity):
         self.player.reset_weapons(key)
         mouse.locked = True
         self.hud.message('Éliminez les ennemis !', 4,
-                         f"Arme : {WEAPONS[key]['name']}")
+                         f"Arme : {WEAPONS[key]['name']}" + (' · Nuit : les ennemis ont la vision nocturne'
+                                                             if self.night else ''))
+        self.set_nv(self.night)             # la nuit, on commence lunettes allumées
         invoke(self.next_wave, delay=2)
+
+    def apply_time_of_day(self, night):
+        """Jour ou nuit : ambiance posée une fois sur toute la scène (tous les objets en héritent)."""
+        self.night = night
+        a = NIGHT if night else DAY
+        scene.set_shader_input('sky_color', a['sky'])
+        scene.set_shader_input('ground_color', a['ground'])
+        scene.set_shader_input('fog_color', a['fog'])
+        scene.set_shader_input('fog_density', a['fog_density'])
+        scene.set_shader_input('sun_strength', a['sun_strength'])
+        self.sun.color = a['sun']
+        self.sky.color = a['sky_tint']
+        window.color = a['clear']
+        if not night:
+            self.set_nv(False)
+
+    def set_nv(self, on):
+        """Lunettes de vision nocturne (flèche haut / N), seulement la nuit."""
+        self.nv = bool(on) and self.night
+        camera.set_shader_input('nv_on', 1.0 if self.nv else 0.0)
+        if hasattr(self, 'hud'):
+            self.hud.set_text(self.hud.nv_label, 'VISION NOCTURNE' if self.nv else
+                              ('Flèche haut / N : vision nocturne' if self.night and not self.choosing else ''))
+
+    def toggle_nv(self):
+        if not self.night:
+            self.hud.add_feed('Vision nocturne : seulement la nuit')
+            return
+        self.set_nv(not self.nv)
+        PAD.rumble(0.1, 0.2, 60)
+
+    def toggle_night_choice(self):
+        self.apply_time_of_day(not self.night)
+        self.menu_time_text.text = self.time_label()
+
+    def time_label(self):
+        return '3  —  Moment : ' + ('NUIT (vision nocturne)' if self.night else 'JOUR')
 
     def fit_shadows(self):
         """La carte d'ombres couvre uniquement l'arène (ombres plus nettes)."""
@@ -3498,6 +3717,8 @@ class Game(Entity):
             sizes.append(k)
             left -= k
         self.squads = []
+        rpg_index = random.randrange(n)          # un soldat par vague porte un RPG (à récupérer sur lui)
+        count = 0
         for anchor, size in zip(self.spawn_points(len(sizes)), sizes):
             members = []
             yaw = random.uniform(0, 360)
@@ -3508,7 +3729,9 @@ class Game(Entity):
                     if i == 0 or (self.world.is_free(cand) and all(flat_dist(cand, m.position) > 1.2 for m in members)):
                         pos = cand if i else anchor
                         break
-                e = Enemy(self, pos, skill=sk, tier=tier, weapon=random_enemy_weapon())
+                e = Enemy(self, pos, skill=sk, tier=tier, weapon=random_enemy_weapon(),
+                          rpg=(count == rpg_index), night=self.night)
+                count += 1
                 e.rotation_y = yaw
                 members.append(e)
                 self.enemies.append(e)
@@ -3636,6 +3859,8 @@ class Game(Entity):
         if not self.paused:
             self.t += time.dt
         PAD.update(self.t)
+        if self.nv:
+            camera.set_shader_input('nv_time', self.t % 100)
         if not self.paused and not self.choosing:
             for sq in self.squads:
                 sq.update(time.dt)
@@ -3661,18 +3886,28 @@ class Game(Entity):
         pr = pad.pressed
         if self.choosing:
             move = (pr['down'] or pr['up'] or pr['left'] or pr['right'])
-            if pr['down'] or pr['right']:
-                self.menu_sel = 1
-            elif pr['up'] or pr['left']:
-                self.menu_sel = 0
-            if abs(pad.ly) > 0.6:
-                self.menu_sel = 0 if pad.ly > 0 else 1
+            n = len(self.menu_buttons)
+            if pr['down']:
+                self.menu_sel = min(n - 1, self.menu_sel + 1)
+            elif pr['up']:
+                self.menu_sel = max(0, self.menu_sel - 1)
+            if abs(pad.ly) > 0.6 and self.t - getattr(self, '_menu_stick_t', -9) > 0.25:
+                self._menu_stick_t = self.t
+                self.menu_sel = clamp(self.menu_sel + (-1 if pad.ly > 0 else 1), 0, n - 1)
                 move = True
+            if (pr['left'] or pr['right']) and self.menu_sel == n - 1:
+                self.toggle_night_choice()
             if move or pad.last_used == self.t:
                 self.menu_cursor.visible = True
-                self.menu_cursor.y = self.menu_buttons[self.menu_sel].y
+                sel = self.menu_buttons[self.menu_sel]
+                self.menu_cursor.y = sel.y
+                self.menu_cursor.scale_y = sel.scale_y + 0.03
             if pr['cross']:
-                self.choose_weapon(self.menu_buttons[self.menu_sel].weapon_key)
+                b = self.menu_buttons[self.menu_sel]
+                if b.weapon_key is None:
+                    self.toggle_night_choice()
+                else:
+                    self.choose_weapon(b.weapon_key)
             return
         if pr['options'] and not self.over:
             self.toggle_pause()
@@ -3692,6 +3927,8 @@ class Game(Entity):
                     self.player.reload()
             if pr['down']:
                 self.player.toggle_view()
+            if pr['up']:
+                self.toggle_nv()
             if pr['circle']:
                 self.player.toggle_crouch()
             if pr['triangle']:
@@ -3701,6 +3938,8 @@ class Game(Entity):
         if self.choosing:
             if key in ('1', '2'):
                 self.choose_weapon('rifle' if key == '1' else 'sniper')
+            elif key in ('3', 'n'):
+                self.toggle_night_choice()
             elif key == 'g':
                 self.set_quality(not self.high_quality)
             return
@@ -3724,6 +3963,8 @@ class Game(Entity):
             self.player.take_weapon(self.pickup)
         elif key == 't':
             self.player.toggle_view()
+        elif key == 'n':
+            self.toggle_nv()
         elif key == 'tab':
             self.player.switch_weapon()
         elif key == 'm':
