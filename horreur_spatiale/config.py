@@ -170,18 +170,71 @@ BATTERY_MAX = 100.0
 FLASHLIGHT_DRAIN = 0.55     # % par seconde
 NIGHTVISION_DRAIN = 1.2
 BATTERY_PICKUP = 45.0
-FLASHLIGHT_FOV = 48
-FLASHLIGHT_COLOR = (1.0, 0.93, 0.8)
-FLASHLIGHT_INTENSITY = 1.7
+FLASHLIGHT_FOV = 46                 # ouverture du cône (degrés)
+FLASHLIGHT_TEMPERATURE = 7200       # température de couleur (K) : 6500 neutre, >7000 bleuté
+FLASHLIGHT_INTENSITY = 2.4
+FLASHLIGHT_ATTENUATION = (1.0, 0.07, 0.011)   # constante, linéaire, quadratique (portée utile ~18 m)
+FLASHLIGHT_EXPONENT = 14            # concentration du point chaud central
+FLASHLIGHT_OFFSET = (0.22, -0.2, 0.05)        # lampe fixée sur l'arme : à droite et en dessous de l'œil
+FLASHLIGHT_LAG = 11.0               # lissage de l'orientation (plus petit = plus de retard)
+FLASHLIGHT_RANGE = 22.0             # distance de la caméra d'ombre / du cône volumétrique
+FLASHLIGHT_LOW = 25.0               # sous ce % l'intensité baisse
+FLASHLIGHT_FLICKER = 10.0           # sous ce % la lampe scintille (Recharger = taper dessus)
+FLASHLIGHT_TAP_TIME = 3.0           # durée du répit après une tape sur la lampe
+
+# ----------------------------------------------------------------------------
+# QUALITÉ GRAPHIQUE : "basse", "moyenne" ou "haute"
+# ----------------------------------------------------------------------------
+QUALITY = __import__("os").environ.get("EPAVE_QUALITE", "moyenne")   # ou variable d'environnement EPAVE_QUALITE
+QUALITY_PRESETS = {
+    "basse": {
+        "bloom": False, "ssao": False, "gamma": 1.15, "shadows": False, "shadow_size": 512,
+        "normal_maps": False, "volumetric": False, "dust": 0, "point_lights": 4, "particles": .5,
+        "cookie": False,
+    },
+    "moyenne": {
+        "bloom": True, "ssao": False, "gamma": 1.18, "shadows": True, "shadow_size": 1024,
+        "normal_maps": True, "volumetric": True, "dust": 36, "point_lights": 6, "particles": 1.0,
+        "cookie": True,
+    },
+    "haute": {
+        "bloom": True, "ssao": True, "gamma": 1.18, "shadows": True, "shadow_size": 2048,
+        "normal_maps": True, "volumetric": True, "dust": 80, "point_lights": 8, "particles": 1.5,
+        "cookie": True,
+    },
+}
+BLOOM_INTENSITY = 1.1
+BLOOM_THRESHOLD = 0.62              # luminosité à partir de laquelle un pixel « bave »
+VIEWMODEL_FOV = 62                  # FOV propre de l'arme (couche séparée)
+
+
+def quality():
+    """Préréglage de qualité actif."""
+    return QUALITY_PRESETS.get(QUALITY, QUALITY_PRESETS["moyenne"])
+
+
+def kelvin_to_rgb(k):
+    """Approximation de la couleur d'un corps noir (Tanner Helland), normalisée."""
+    import math
+    t = k / 100.0
+    r = 255 if t <= 66 else 329.7 * ((t - 60) ** -0.1332)
+    g = 99.47 * math.log(t) - 161.12 if t <= 66 else 288.12 * ((t - 60) ** -0.0755)
+    b = 255 if t >= 66 else (0 if t <= 19 else 138.52 * math.log(t - 10) - 305.04)
+    r, g, b = (max(0, min(255, x)) / 255 for x in (r, g, b))
+    m = max(r, g, b)
+    return (r / m, g / m, b / m)
+
+
+FLASHLIGHT_COLOR = kelvin_to_rgb(FLASHLIGHT_TEMPERATURE)
 
 # ----------------------------------------------------------------------------
 # ÉCLAIRAGE / AMBIANCE
 # ----------------------------------------------------------------------------
-AMBIENT_FPS = (0.03, 0.033, 0.04)
-FOG_COLOR_FPS = (0.008, 0.009, 0.012)
-FOG_DENSITY_FPS = 0.07
+AMBIENT_FPS = (0.022, 0.025, 0.032)  # noirs profonds mais pas opaques
+FOG_COLOR_FPS = (0.006, 0.007, 0.01)
+FOG_DENSITY_FPS = 0.06
 FOG_DENSITY_TPS = 0.0009
-MAX_POINT_LIGHTS = 6        # lumières dynamiques simultanées (pool)
+MAX_POINT_LIGHTS = QUALITY_PRESETS[QUALITY]["point_lights"]   # lumières dynamiques simultanées (pool)
 LIGHT_RANGE = 9.0
 
 # ----------------------------------------------------------------------------

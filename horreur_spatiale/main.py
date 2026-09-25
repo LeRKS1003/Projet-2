@@ -49,6 +49,7 @@ from inventory import Inventory, InventoryUI  # noqa: E402
 from creature import Creature, AIDirector  # noqa: E402
 from aliens import AlienManager  # noqa: E402
 from horror import HorrorManager  # noqa: E402
+from postfx import PostFX  # noqa: E402
 from loot import NOTES  # noqa: E402
 
 
@@ -60,6 +61,23 @@ class _NoInput:
 
     def held(self, a):
         return False
+
+
+class _MaskedInput:
+    """Relais d'entrée qui masque certaines actions (ex. « recharger » utilisé pour taper la lampe)."""
+
+    def __init__(self, inp, masked):
+        self.inp = inp
+        self.masked = masked
+
+    def pressed(self, a):
+        return a not in self.masked and self.inp.pressed(a)
+
+    def held(self, a):
+        return a not in self.masked and self.inp.held(a)
+
+    def __getattr__(self, name):
+        return getattr(self.inp, name)
 
 
 ROOM_EVENTS = {
@@ -76,6 +94,7 @@ class Game(Entity):
         self.inp = InputManager()
         self.audio = AudioSystem()
         self.hud = HUD(self)
+        self.postfx = PostFX()          # bloom / SSAO / gamma + couche de l'arme
         self.state = "menu"
         self.paused = False
         self.time = 0.0
@@ -154,7 +173,7 @@ class Game(Entity):
         layout = ShipLayout(seed)
         self.layout = layout
         self.level = layout.main
-        self.lights = LightManager(self.world_root)
+        self.lights = LightManager(self.world_root, self.postfx)
         self.space = Space(seed)
         self.builder = LevelBuilder(self.level, self.lights, self.world_root, seed)
         self.builder.build()
@@ -332,7 +351,16 @@ class Game(Entity):
         p.update(dt, inp)
         if self.state != "fps":
             return
-        self.weapons.update(dt, inp if not self.ui_consumed else self._null)
+        # taper sur la lampe quand elle faiblit (bouton Recharger) : répit de quelques secondes
+        wpn_inp = inp if not self.ui_consumed else self._null
+        if (not self.ui_consumed and inp.pressed("reload") and lt.battery < C.FLASHLIGHT_FLICKER
+                and (lt.flashlight_on or lt.battery <= 0) and not lt.nightvision):
+            lt.tap_flashlight()
+            self.audio.play("flashlight_click", .8, .8)
+            self.audio.play("knife_hit", .25, 1.8)
+            self.hud.message("*tape sur la lampe*", color.rgb(.7, .7, .6))
+            wpn_inp = _MaskedInput(inp, {"reload"})
+        self.weapons.update(dt, wpn_inp)
         # --- batterie -------------------------------------------------------
         before = lt.battery
         if lt.flashlight_on:
@@ -344,6 +372,8 @@ class Game(Entity):
             lt.flashlight_on = False
             if lt.nightvision:
                 lt.set_nightvision(False)
+            self.audio.play("flashlight_click", 1.0, .7)
+            self.audio.play("spark", .5)
             self.hud.message("Batterie vide !", color.orange)
         if before >= 15 > lt.battery:
             self.audio.play("beep", .8)
@@ -633,6 +663,7 @@ class Game(Entity):
             self._optimize_entities()
         self.audio.set_listener(camera.world_position, camera.right)
         self.audio.update(dt)
+        self.postfx.update()
         self.hud.update(dt)
         self.inp.end_frame()
 

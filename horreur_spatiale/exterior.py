@@ -95,8 +95,8 @@ class ExteriorShip:
         self._solar_panels()
         self._window_lights()
         self._hangar_frame()
-        self.mb.build(parent=self.root, texture=textures.get('hull'), name='hull')
-        self.gm.build(parent=self.root, texture=textures.get('panel'), name='greebles')
+        self.mb.build(parent=self.root, material='hullplates', name='hull')
+        self.gm.build(parent=self.root, material='panel', name='greebles')
         self.em.build(parent=self.root, unlit=True, name='hull_lights')
         self._debris()
         self._beacons()
@@ -294,7 +294,7 @@ class ExteriorShip:
         hz = MeshBuilder(uv_scale=1)
         for (a0, a1, b0, b1) in ((x0 - 1, x0, 0, oh + 1), (x1, x1 + 1, 0, oh + 1), (x0 - 1, x1 + 1, oh, oh + 1)):
             hz.box(((a0 + a1) / 2, (b0 + b1) / 2, -T - .15), (a1 - a0, b1 - b0, .3), (1, 1, 1))
-        hz.build(parent=self.root, texture=textures.get('hazard'), name='hangar_frame')
+        hz.build(parent=self.root, texture=textures.get('hazard'), material='painted', name='hangar_frame')
         # parois intérieures du tunnel d'entrée
         self.gm.box((x0 + .05, oh / 2, -T / 2), (.1, oh, T), (.35, .35, .37), faces='e')
         self.gm.box((x1 - .05, oh / 2, -T / 2), (.1, oh, T), (.35, .35, .37), faces='w')

@@ -36,10 +36,11 @@ horreur_spatiale/
 ├── space.py        skybox : milliers d'étoiles, nébuleuse, planètes (dont une à anneaux), soleil
 ├── audio.py        synthèse numpy -> .wav au premier lancement, lecture 2D/3D/boucles
 ├── hud.py          HUD TPS/FPS, messages en fondu, surimpressions, écrans de menu
-├── geometry.py     (utilitaire) construction de meshes fusionnés (boîtes, cylindres, décalques)
-├── textures.py     (utilitaire) textures générées par code (panneaux, sang, grain, étoiles, planètes...)
+├── postfx.py       post-traitement (bloom, SSAO, gamma) + couche séparée de l'arme (viewmodel)
+├── geometry.py     meshes fusionnés avec tangentes (boîtes biseautées, extrusions, cônes, décalques)
+├── textures.py     textures et matériaux procéduraux (albédo + normal map + rugosité), cache disque
 ├── requirements.txt
-└── generated/      créé au premier lancement (sons .wav)
+└── generated/      créé au premier lancement (sons .wav, textures .png en cache)
 ```
 
 ## Plan technique (résumé)
@@ -115,11 +116,39 @@ Ursina lit les lettres par position physique : la configuration AZERTY est conve
 * Les cadavres se fouillent (maintenir E) : tu es vulnérable pendant la fouille, et certains sont infestés.
 * Avec le disque dur, le vaisseau se réveille : plus de parasites, la créature te cherche.
 
+## Qualité graphique
+
+`QUALITY` dans `config.py` (ou la variable d'environnement `EPAVE_QUALITE=basse|moyenne|haute`) :
+
+| Effet | Basse | Moyenne (défaut) | Haute |
+|---|---|---|---|
+| Éclairage par pixel | oui | oui | oui |
+| Normal maps + reflets spéculaires | non | oui | oui |
+| Bloom (néons, réacteurs, flash) | non | oui | oui |
+| Correction gamma | oui | oui | non (*) |
+| Occlusion ambiante (SSAO) | non | non | oui |
+| Ombres de la lampe torche | non | 1024 px | 2048 px |
+| Masque « cookie » de la lampe | non | oui | oui |
+| Cône volumétrique + poussière | non | oui (36) | oui (80) |
+| Lumières dynamiques simultanées | 4 | 6 | 8 |
+| Particules (traînées, fumée…) | ×0,5 | ×1 | ×1,5 |
+
+(*) Dans Panda3D 1.10, SSAO + bloom + gamma ensemble donnent une image délavée : en Haute, la
+correction gamma est remplacée par un éclairage ambiant un peu plus fort.
+
+**Si le jeu n'atteint pas 60 FPS en Moyenne**, baisse dans cet ordre : ombres de la lampe
+(`"shadows": False` ou `"shadow_size": 512`), nombre de lumières (`"point_lights": 4`), bloom,
+puis `WINDOW_SIZE`. `CULL_DISTANCE` (salles actives autour du joueur) aide aussi sur les petits GPU.
+
 ## Réglages utiles (`config.py`)
 
 * Difficulté : `CREATURE_SPEED_CHASE`, `CREATURE_VIEW_DIST`, `ALIEN_MAX`, `ALIEN_DAMAGE`, `PISTOL_START_*`,
   `OBJECTIVE_COMPASS = False` (plus de flèche d'objectif).
-* Performances : `MAX_POINT_LIGHTS` (4 sur un petit GPU), `CULL_DISTANCE`, `WINDOW_SIZE`, `VSYNC`, `FOG_DENSITY_FPS`.
+* Performances : `QUALITY`, `CULL_DISTANCE`, `WINDOW_SIZE`, `VSYNC`, `FOG_DENSITY_FPS`.
+* Lampe torche : `FLASHLIGHT_TEMPERATURE` (kelvins), `FLASHLIGHT_INTENSITY`, `FLASHLIGHT_ATTENUATION`
+  (constante, linéaire, quadratique), `FLASHLIGHT_FOV`, `FLASHLIGHT_OFFSET`, `FLASHLIGHT_LAG`.
+  Quand elle scintille (batterie < 10 %), **Recharger** (R / Carré) tape dessus et la rallume quelques secondes.
+* Arme : `VIEWMODEL_FOV` (champ de vision propre de l'arme). Rendu : `BLOOM_INTENSITY`, `BLOOM_THRESHOLD`.
 * Manette : `GAMEPAD_DEADZONE`, `GAMEPAD_LOOK_SPEED`, `GAMEPAD_LOOK_CURVE`, `GAMEPAD_INVERT_Y`, `GAMEPAD_RUMBLE`,
   `GAMEPAD_PROFILE` et tous les index d'axes/boutons dans `GAMEPAD_PROFILES`.
 

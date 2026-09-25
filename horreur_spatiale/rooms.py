@@ -81,13 +81,19 @@ class Group:
         self.enabled = True
 
     def build(self):
-        tex = {"struct": textures.get('panel'), "floor": textures.get('floor'),
-               "hazard": textures.get('hazard'), "decal": textures.get('blood'),
+        tex = {"hazard": textures.get('hazard'), "decal": textures.get('blood'),
                "smear": textures.get('smear'), "screen": textures.get('screen')}
+        # matériaux complets (albédo + normal map + brillance) pour les surfaces éclairées
+        mats = {"struct": ("panel", None), "floor": ("floor", None), "hazard": ("painted", tex["hazard"])}
         for k, mb in self.b.items():
             if mb.is_empty():
                 continue
-            e = mb.build(parent=self.root, texture=tex.get(k), name=f"{self.name}_{k}")
+            if k in mats:
+                mat, alb = mats[k]
+                e = mb.build(parent=self.root, texture=alb, material=mat, name=f"{self.name}_{k}")
+            else:
+                e = mb.build(parent=self.root, texture=tex.get(k), name=f"{self.name}_{k}",
+                             tangents=False)
             if k in ("decal", "smear", "glass"):
                 e.setTransparency(TransparencyAttrib.MAlpha)
                 e.setDepthWrite(False)
@@ -426,7 +432,7 @@ class LevelBuilder:
                 mb.box((0, y, 0), (.06, .06, w), bar_c)
             else:
                 mb.box((0, y, 0), (w, .06, .06), bar_c)
-        grille.entity = mb.build(parent=pivot)
+        grille.entity = mb.build(parent=pivot, material='gunmetal')
         grille.pivot = pivot
         grille.open_dir = (-dx, -dz)
         self.grille_visuals.append(grille)

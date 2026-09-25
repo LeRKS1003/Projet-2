@@ -196,6 +196,9 @@ class HUD:
         self._set_bar(self.integrity_bar, .35, sh.integrity / C.SHIP_INTEGRITY)
         self.integrity_bar[1].color = color.rgb(1, .25, .15) if sh.integrity < 35 else color.rgb(.3, .8, 1)
         self._set_bar(self.boost_bar, .25, sh.boost / C.SHIP_BOOST_MAX)
+        # le HUD vibre légèrement au boost et lors des impacts
+        j = (.004 if sh.boosting else 0) + g.shake_amount * .01
+        self.tps.position = (random.uniform(-j, j), random.uniform(-j, j))
         _tx(self.speed_text, f"{sh.speed:5.1f} m/s")
         _tx(self.warn_text, "IMPACT !" if sh.warn > 0 and (g.time * 6) % 1 < .6 else (
             "COQUE CRITIQUE" if sh.integrity < 25 and (g.time * 2) % 1 < .5 else ""))
