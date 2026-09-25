@@ -41,6 +41,34 @@ JOURNAUX = [
 ]
 
 
+# Contenu possible des casiers : quelques clins d'œil cachés (« easter eggs »)
+OEUFS_DE_PAQUES = [
+    ("Un chat roux dans une caisse de transport. Sur l'étiquette : « JONES ». "
+     "Il vous fixe avec mépris, puis se rendort.", False),
+    ("Une casquette délavée : « NOSTROMO — Weyland-Yutani Corp. » "
+     "Quelqu'un à bord avait de bonnes références.", False),
+    ("Un canard en plastique jaune. Vous appuyez dessus. Il COUINE. Très fort. Beaucoup trop fort.", True),
+    ("Un badge d'employé : « Isaac C. — ingénieur système ». Au dos, griffonné : « Viser les membres. »", False),
+    ("Un disque étiqueté « PATHOS-II — copie de conscience n°3 ». Vous préférez ne pas y penser.", False),
+    ("Une photo de l'équipage souriant devant le vaisseau. Ils étaient onze. Vous en comptez douze.", False),
+    ("Un post-it : « Le code de la navette n'est PAS 0000. Signé : la sécurité. »", False),
+    ("Une cassette : « Relaxation spatiale, vol. 3 — bruits de vagues ». L'ironie vous échappe.", False),
+    ("Un tamagotchi. Mort. Évidemment.", False),
+    ("Une boîte de céréales « Choco-Xéno ». La mascotte a beaucoup trop de dents.", False),
+    ("Un mot d'enfant : « Papa, reviens vite de l'espace. » Vous rangez le mot avec soin.", False),
+    ("Une console portable. Record : 999 999 points. Pseudo du joueur : « CLAUDE ».", False),
+]
+
+BRIC_A_BRAC = [
+    "Des vêtements sales et une odeur de sueur froide.",
+    "Une trousse de toilette renversée. Rien d'utile.",
+    "Des bottes magnétiques dépareillées.",
+    "Un casier vide, à l'exception de trois longues griffures à l'intérieur de la porte.",
+    "Une combinaison déchirée, raide de sang séché.",
+    "Des rations périmées depuis quatre ans.",
+]
+
+
 class Cadre:
     """Repère local d'un objet : origine au sol, face avant vers -z local."""
 
@@ -84,6 +112,10 @@ class Casier(Entity):
         self.position_cachee = Vec3(cadre.cx - ax * 0.02, C.YEUX_DEBOUT - 0.1, cadre.cz - az * 0.02)
         self.sortie = Vec3(cadre.cx + ax * 0.85, 0, cadre.cz + az * 0.85)
         self.lacet = math.degrees(math.atan2(ax, az))
+        self.contenu = ("rien", "")    # rempli par decorer()
+        self.fouille = False
+        self.salle = None
+        self.interactif = None
 
     def entrouvrir(self, duree=0.6):
         self.cible = 1.0
@@ -953,6 +985,8 @@ def decorer(monde, eclairage, seed):
         AMENAGEMENTS[s.type](a, infos)
         a.terminer()
         monde.ajouter_decor_salle(s.id, racine)
+        for c in a.casiers:
+            c.salle = s
         infos["casiers"] += a.casiers
         libres += [(c, s) for c in a.cases_libres()]
         if s.id == monde.vaisseau.salle_depart:
@@ -963,8 +997,9 @@ def decorer(monde, eclairage, seed):
             infos["salle_depart"] = s
     decorer_couloirs(monde, eclairage, rng)
     for c in infos["casiers"]:
-        monde.interactifs.append(Interactif(c.sortie + Vec3(0, 1.0, 0), "casier", "Se cacher dans le casier",
-                                            rayon=1.7, donnees=c))
+        c.interactif = Interactif(c.sortie + Vec3(0, 1.0, 0), "casier", "Fouiller le casier", rayon=1.7, donnees=c)
+        monde.interactifs.append(c.interactif)
+    remplir_casiers(p, infos["casiers"], rng)
 
     # piles pour la lampe : une dans la chambre de départ, les autres au hasard
     rng.shuffle(libres)
@@ -985,6 +1020,11 @@ def decorer(monde, eclairage, seed):
             salles_vues.add(s.id)
             emplacements.append(c)
     emplacements += couloirs[:C.NB_PILES - len(emplacements)]
+    # récompense : deux piles de plus dans chaque salle fermée par une serrure
+    for s in p.salles:
+        if salle_crochetee(p, s):
+            cands = [c for (c, s2) in libres if s2 is s and c not in emplacements]
+            emplacements += cands[:2]
     for (i, j) in emplacements:
         infos["piles"].append(creer_pile(monde, Vec3(i + rng.uniform(0.3, 0.7), 0, j + rng.uniform(0.3, 0.7))))
 
@@ -998,6 +1038,34 @@ def decorer(monde, eclairage, seed):
         i, j = rng.choice(cands)
         infos["journaux"].append(creer_journal(monde, Vec3(i + 0.5, 0, j + 0.5), texte))
     return infos
+
+
+def salle_crochetee(pont, salle):
+    return bool(salle.portes) and all(pont.portes[pid].verrou == "crochet" for pid in salle.portes)
+
+
+def remplir_casiers(pont, casiers, rng):
+    """Répartit couteaux, piles, easter eggs et bric-à-brac dans les casiers."""
+    dehors = [c for c in casiers if c.salle is None or not salle_crochetee(pont, c.salle)]
+    dedans = [c for c in casiers if c not in dehors]
+    rng.shuffle(dehors)
+    oeufs = list(OEUFS_DE_PAQUES)
+    rng.shuffle(oeufs)
+    # les couteaux sont toujours accessibles sans couteau
+    for c in dehors[:C.NB_COUTEAUX]:
+        c.contenu = ("couteau", "")
+    reste = dehors[C.NB_COUTEAUX:] + dedans
+    rng.shuffle(reste)
+    for c in reste:
+        r = rng.random()
+        recompense = c in dedans
+        if oeufs and (r < 0.45 or recompense and r < 0.7):
+            texte, bruyant = oeufs.pop()
+            c.contenu = ("oeuf_bruyant" if bruyant else "oeuf", texte)
+        elif r < 0.75 or recompense:
+            c.contenu = ("pile", "")
+        else:
+            c.contenu = ("rien", rng.choice(BRIC_A_BRAC))
 
 
 def creer_pile(monde, pos):

@@ -107,6 +107,8 @@ class PorteCoulissante(Entity):
             c = color.rgb(0.1, 0.9, 0.3)
         elif v == "courant":
             c = color.rgb(0.9, 0.5, 0.05)
+        elif v == "crochet":
+            c = color.rgb(0.95, 0.85, 0.1)
         else:
             c = color.rgb(0.95, 0.08, 0.05)
         for voy in self.voyants:
@@ -115,6 +117,8 @@ class PorteCoulissante(Entity):
     def deverrouiller(self):
         self.porte.verrou = None
         self._maj_voyants()
+        for obj in getattr(self, "interactifs", ()):
+            obj.actif = False
 
     @property
     def ouverte(self):
@@ -167,7 +171,7 @@ class GrilleAeration(Entity):
             return
         self.ouverte = True
         if hasattr(self, "interactif"):
-            self.interactif.actif = False
+            self.interactif.texte = "Entrer dans le conduit"
         self.monde.son("grille", self.world_position)
         self.monde.bruit(self.x, self.z, 9.0 if not par_creature else 4.0)
 
@@ -197,11 +201,22 @@ class Monde:
         self._calculer_toits()
         self._construire_structure()
         self.portes = [PorteCoulissante(self, p) for p in self.pont.portes]
+        # serrures mécaniques : un point d'interaction de chaque côté de la porte
+        for pe in self.portes:
+            pe.interactifs = []
+            if pe.porte.verrou == "crochet":
+                cx, cz = pe.porte.centre
+                nx, nz = pe.porte.normale
+                for s in (-1, 1):
+                    obj = Interactif((cx + nx * 0.75 * s, 1.1, cz + nz * 0.75 * s), "serrure",
+                                     "Crocheter la serrure (couteau)", rayon=2.0, donnees=pe)
+                    pe.interactifs.append(obj)
+                    self.interactifs.append(obj)
         self.grilles = {g.id: GrilleAeration(self, g) for g in self.pont.grilles}
         for g in self.grilles.values():
             dx, dz = g.grille.vers_sol
             g.interactif = Interactif(g.world_position + Vec3(dx * 0.15, -0.5, dz * 0.15), "grille",
-                                      "Ouvrir la grille d'aération", rayon=1.9, donnees=g)
+                                      "Ouvrir la grille et entrer dans le conduit", rayon=2.0, donnees=g)
             self.interactifs.append(g.interactif)
 
     # ------------------------------------------------------------------

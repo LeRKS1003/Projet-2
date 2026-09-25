@@ -84,7 +84,13 @@ TOUCHE_INTERAGIR = "e"
 TOUCHE_CARTE = ("tab", "m", ";")   # ";" = touche M d'un clavier AZERTY en mode brut
 TOUCHE_PAUSE = "escape"
 TOUCHE_DEBUG = "f3"
-BOUTON_LAMPE_CONCENTREE = "right mouse"
+TOUCHE_INFOS = "i"              # menu d'aide : toutes les touches, inventaire, légende
+TOUCHES_LAMPE_POINTEE = ("p", "right mouse")   # maintenir : lampe braquée (faisceau concentré)
+
+# Actions manette (noms des boutons définis dans MANETTE_PROFILS)
+MANETTE_INTERAGIR = ("croix", "carre")   # portes, grilles/conduits, casiers, objets
+MANETTE_LAMPE = "triangle"               # allumer / éteindre la lampe
+MANETTE_INFOS = "create"                 # menu d'aide des touches
 
 # ---------------------------------------------------------------------------
 # Manette PS5 DualSense (via pygame.joystick / SDL2)
@@ -124,22 +130,28 @@ LAMPE_FOV = 75                  # angle de coupure du cône (le bord est adouci 
 LAMPE_FOV_CONCENTREE = 40
 LAMPE_EXPOSANT = 26
 LAMPE_EXPOSANT_CONCENTREE = 90
-LAMPE_PUISSANCE = 1.6
-LAMPE_PUISSANCE_CONCENTREE = 3.2
+LAMPE_PUISSANCE = 1.8
+LAMPE_PUISSANCE_CONCENTREE = 3.6
 LAMPE_DUREE_BATTERIE = 240.0    # secondes d'autonomie avec une batterie pleine
 LAMPE_MULT_CONCENTREE = 3.0     # la lampe concentrée vide la batterie x fois plus vite
 BATTERIE_PILE = 0.45            # une pile recharge 45 %
 NB_PILES = 8
+NB_COUTEAUX = 3                 # couteaux cachés dans les casiers (pour crocheter les serrures)
+DUREE_CROCHETAGE = 3.0          # secondes pour crocheter une serrure (bruyant !)
+CASSE_COUTEAU = 0.35            # probabilité que le couteau se brise après usage
 
 # ---------------------------------------------------------------------------
 # Éclairage / ambiance
 # ---------------------------------------------------------------------------
 NB_LUMIERES_ACTIVES = 6         # lumières ponctuelles simultanées (les plus proches)
-AMBIANTE_SANS_COURANT = (0.03, 0.03, 0.038)
-AMBIANTE_AVEC_COURANT = (0.06, 0.06, 0.07)
-BROUILLARD_SANS_COURANT = 0.075
-BROUILLARD_AVEC_COURANT = 0.045
-COULEUR_BROUILLARD = (0.008, 0.008, 0.012)
+# Ambiance très sombre : sans la lampe, on ne voit presque rien
+AMBIANTE_SANS_COURANT = (0.01, 0.01, 0.014)
+AMBIANTE_AVEC_COURANT = (0.028, 0.028, 0.034)
+BROUILLARD_SANS_COURANT = 0.095
+BROUILLARD_AVEC_COURANT = 0.065
+COULEUR_BROUILLARD = (0.004, 0.004, 0.006)
+INTENSITE_NEONS = 0.6           # intensité des néons une fois le courant rétabli (1 = plein)
+PROBA_NEON_DEFECTUEUX = 0.45    # proportion supplémentaire de néons qui clignotent
 
 # ---------------------------------------------------------------------------
 # Espace

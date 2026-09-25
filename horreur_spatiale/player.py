@@ -10,10 +10,12 @@ la créature peut entendre.
 import math
 import random
 
+from panda3d.core import Vec4
 from ursina import Entity, Vec3, camera, held_keys, lerp, mouse
 
 import config as C
 from generator import CONDUIT, GRILLE
+from geometry import MeshBuilder
 
 
 def _touche(liste):
@@ -55,8 +57,31 @@ class Joueur(Entity):
         self._haletement = 0.0
         self.appui_interagir = False
         self.utilise_manette = False
+        self.couteaux = 0               # couteaux ramassés (pour crocheter les serrures)
+        self.bloque = False             # immobilisé (crochetage en cours)
         self.tete.rotation_y = 0
         self._appliquer_rotation()
+        self._creer_lampe()
+
+    def _creer_lampe(self):
+        """Lampe torche visible en main droite (dessinée par-dessus le décor)."""
+        # petite et proche de l'œil : elle reste à moins de 0,28 m de la caméra et ne traverse
+        # donc jamais un mur (le joueur fait 0,3 m de rayon)
+        self.lampe_modele = Entity(parent=self.tete, position=(0.1, -0.085, 0.15), scale=0.5)
+        mb = MeshBuilder(1.0)
+        mb.cylindre((0, 0, -0.14), (0, 0, 0.07), 0.021, (0.13, 0.13, 0.15), segments=10)
+        mb.cylindre((0, 0, 0.07), (0, 0, 0.13), 0.026, (0.2, 0.2, 0.22), segments=10, rayon_b=0.036)
+        for z in (-0.1, -0.06, -0.02):   # bagues antidérapantes
+            mb.cylindre((0, 0, z), (0, 0, z + 0.012), 0.023, (0.07, 0.07, 0.08), segments=10)
+        mb.boite((0, 0.022, 0.0), (0.012, 0.008, 0.025), (0.5, 0.1, 0.08))   # interrupteur
+        np_ = self.lampe_modele.attachNewNode(mb.construire("lampe"))
+        np_.setLightOff(1)
+        self.lentille = Entity(parent=self.lampe_modele)
+        mb2 = MeshBuilder(1.0)
+        mb2.cylindre((0, 0, 0.13), (0, 0, 0.133), 0.032, (1, 1, 1), segments=12)
+        self.lentille.attachNewNode(mb2.construire("lentille"))
+        self.lentille.setLightOff(1)
+        self.lampe_modele.setFogOff(1)
 
     # --------------------------------------------------------------
     # Évènements clavier (appelés par le jeu)
@@ -97,6 +122,29 @@ class Joueur(Entity):
         self.accroupi = False
         self.audio.jouer("grille", position=self.position, volume=0.35, pitch=1.4)
         self.monde.bruit(self.x, self.z, 4.0)
+
+    def entrer_conduit(self, grille):
+        """Se glisse dans le conduit derrière une grille ouverte (accroupi automatiquement)."""
+        gi, gj = grille.grille.case
+        dx, dz = grille.grille.vers_sol
+        self.position = Vec3(gi + 0.5 - dx * 0.15, 0, gj + 0.5 - dz * 0.15)
+        self.lacet = math.degrees(math.atan2(-dx, -dz))
+        self.tangage = 0.0
+        self.accroupi = True
+        self.vitesse = Vec3(0, 0, 0)
+        self.audio.jouer("grille", position=self.position, volume=0.3, pitch=0.8)
+        self.monde.bruit(self.x, self.z, 3.0)
+
+    def sortir_conduit(self, grille):
+        """Ressort du conduit dans la pièce devant la grille, et se relève."""
+        fi, fj = grille.grille.case_sol
+        dx, dz = grille.grille.vers_sol
+        self.position = Vec3(fi + 0.5 + dx * 0.1, 0, fj + 0.5 + dz * 0.1)
+        self.lacet = math.degrees(math.atan2(dx, dz))
+        self.accroupi_bascule = False
+        self.vitesse = Vec3(0, 0, 0)
+        self.audio.jouer("grille", position=self.position, volume=0.3, pitch=0.9)
+        self.monde.bruit(self.x, self.z, 3.0)
 
     def sortir(self):
         c = self.cache
@@ -147,6 +195,8 @@ class Joueur(Entity):
         mx, my = m.deplacement()
         ix += mx
         iy += my
+        if self.bloque:
+            ix = iy = 0.0   # crochetage en cours : on reste sur place
         mag = math.hypot(ix, iy)
         if mag > 1:
             ix, iy = ix / mag, iy / mag
@@ -248,17 +298,18 @@ class Joueur(Entity):
     def _finir_tick(self, dt, vitesse):
         m = self.manette
         # ---- lampe torche ----
-        if m.appui("carre"):
+        if m.appui(C.MANETTE_LAMPE):
             self.basculer_lampe()
         concentree = bool(self.lampe_allumee and (
-            m.gachette(self._nom_r2()) > C.SEUIL_GACHETTE or m.maintenu("r2b") or held_keys[C.BOUTON_LAMPE_CONCENTREE]))
+            m.gachette(self._nom_r2()) > C.SEUIL_GACHETTE or m.maintenu("r2b") or _touche(C.TOUCHES_LAMPE_POINTEE)))
         self.lampe_concentree = concentree
         if self.lampe_allumee and self.batterie > 0:
             conso = dt / C.LAMPE_DUREE_BATTERIE * (C.LAMPE_MULT_CONCENTREE if concentree else 1.0)
             self.batterie = max(0.0, self.batterie - conso)
         # ---- interaction ----
-        if m.appui("croix"):
+        if any(m.appui(b) for b in C.MANETTE_INTERAGIR):
             self.appui_interagir = True
+        self._animer_lampe(dt, vitesse)
 
         # ---- caméra : balancement de tête et secousses ----
         by = 0.0
@@ -278,30 +329,44 @@ class Joueur(Entity):
     def _nom_r2(self):
         return "r2"
 
+    def _animer_lampe(self, dt, vitesse):
+        """Position de la lampe en main : baissée au repos, levée et braquée devant quand on la pointe."""
+        self.lampe_modele.enabled = self.cache is None
+        k = min(1.0, dt * 9)
+        if self.lampe_concentree:
+            cible, rot = Vec3(0.06, -0.055, 0.17), Vec3(-3, -8, 0)
+        else:
+            cible, rot = Vec3(0.1, -0.085, 0.15), Vec3(6, -14, 0)
+        b = math.sin(self.balancement * 3.3) * (0.003 if vitesse > 0.3 else 0.0)
+        self.lampe_modele.position = lerp(self.lampe_modele.position, cible + Vec3(b, abs(b), 0), k)
+        self.lampe_modele.rotation = lerp(self.lampe_modele.rotation, rot, k)
+        p = min(1.0, self.batterie * 4) if (self.lampe_allumee and self.batterie > 0) else 0.0
+        self.lentille.setColorScale(Vec4(0.15 + p, 0.15 + p * 0.95, 0.15 + p * 0.8, 1))
+
     def recharger(self, quantite):
         self.batterie = min(1.0, self.batterie + quantite)
 
     # --------------------------------------------------------------
     def chercher_interactif(self, interactifs):
-        """Renvoie l'objet interactif visé (le plus en face, à portée, visible)."""
-        cam = camera.world_position
-        fwd = camera.forward
-        meilleur, score = None, 0.0
+        """Renvoie l'objet interactif visé : à portée, visible, et à peu près devant le joueur.
+        L'angle est mesuré à l'horizontale seulement : inutile de viser précisément une grille
+        au ras du sol ou une porte, il suffit d'être tourné vers elle."""
+        rad = math.radians(self.lacet)
+        fx, fz = math.sin(rad), math.cos(rad)
+        meilleur, score = None, -1.0
         for obj in interactifs:
             if not obj.actif:
                 continue
-            d = obj.position - cam
-            dist = d.length()
-            if dist > obj.rayon or dist < 1e-3:
+            dx, dz = obj.position.x - self.x, obj.position.z - self.z
+            dh = math.hypot(dx, dz)
+            if dh > obj.rayon:
                 continue
-            dn = d / dist
-            dot = dn.x * fwd.x + dn.y * fwd.y + dn.z * fwd.z
-            seuil = 0.55 if dist < 1.2 else 0.8
-            if dot < seuil:
+            dot = 1.0 if dh < 0.35 else (dx * fx + dz * fz) / dh
+            if dot < (0.35 if dh < 1.0 else 0.65):
                 continue
             if not self.monde.ligne_de_vue(self.x, self.z, obj.position.x, obj.position.z):
                 continue
-            s = dot - dist * 0.05
+            s = dot - dh * 0.15
             if s > score:
                 meilleur, score = obj, s
         self.cible = meilleur

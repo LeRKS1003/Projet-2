@@ -37,7 +37,8 @@ from rooms import decorer
 from space import Espace
 from world import Monde
 
-MENU, CHARGEMENT, JEU, PAUSE, MORT, VICTOIRE = "menu", "chargement", "jeu", "pause", "mort", "victoire"
+MENU, CHARGEMENT, JEU, PAUSE, MORT, VICTOIRE, INFOS = ("menu", "chargement", "jeu", "pause", "mort", "victoire",
+                                                     "infos")
 
 OBJECTIFS = [
     "Rétablir le courant  —  salle des machines",
@@ -45,10 +46,10 @@ OBJECTIFS = [
     "Fuir  —  rejoindre la navette dans le hangar",
 ]
 
-AIDE_CONTROLES = ("Clavier : ZQSD déplacement · Maj courir · Ctrl s'accroupir · F lampe · clic droit lampe concentrée · "
-                  "E interagir · Tab carte · Échap pause · F3 debug\n"
-                  "Manette : stick G déplacement · stick D regard · L3 courir · R3/Rond s'accroupir · Croix interagir · "
-                  "Carré lampe · R2 lampe concentrée · pavé tactile carte · Options pause")
+AIDE_CONTROLES = ("Clavier : ZQSD déplacement · Maj courir · Ctrl s'accroupir · E interagir · F lampe · "
+                  "P braquer la lampe · Tab carte · I toutes les commandes · Échap pause\n"
+                  "Manette : sticks déplacement/regard · L3 courir · R3/Rond s'accroupir · Croix/Carré interagir · "
+                  "Triangle lampe · R2 braquer la lampe · pavé tactile carte · Create commandes · Options pause")
 
 
 class Jeu(Entity):
@@ -72,6 +73,7 @@ class Jeu(Entity):
         self.coeur_timer = 0.0
         self.refus_timer = 0.0
         self.ambiance = None
+        self.crochetage = None          # (porte, temps écoulé, position de départ)
         self.menu()
 
     # ------------------------------------------------------------------
@@ -162,6 +164,8 @@ class Jeu(Entity):
         return [(i, j) for i in range(p.largeur) for j in range(p.profondeur) if p.type[i, j] == CONDUIT]
 
     def detruire_partie(self):
+        self.crochetage = None
+        self.hud.afficher_infos(False)
         self.audio.tout_arreter()
         self.manette.arreter_vibrations()
         if self.joueur is not None:
@@ -185,7 +189,7 @@ class Jeu(Entity):
             mouse.visible = True
             self.manette.arreter_vibrations()
             self.hud.ecran("PAUSE", OBJECTIFS[self.etape],
-                           "Échap / Options : reprendre\nM / Triangle : retour au menu", AIDE_CONTROLES, noir=0.6)
+                           "Échap / Options : reprendre\nI / Create : toutes les commandes\nM / Triangle : retour au menu", AIDE_CONTROLES, noir=0.6)
         elif not active and self.etat == PAUSE:
             self.etat = JEU
             mouse.locked = True
@@ -241,10 +245,24 @@ class Jeu(Entity):
         j = self.joueur
         g = obj.genre
         if g == "grille":
+            # un seul appui : on ouvre la grille et on se glisse dans le conduit
             obj.donnees.ouvrir()
+            j.entrer_conduit(obj.donnees)
+            self.hud.message("Vous rampez dans le conduit. E / Croix près d'une grille pour ressortir.", 3)
         elif g == "casier":
-            j.se_cacher(obj.donnees)
-            self.hud.message("Vous retenez votre souffle...", 2.5)
+            casier = obj.donnees
+            if not casier.fouille:
+                self.fouiller(casier)
+            else:
+                j.se_cacher(casier)
+                self.hud.message("Vous retenez votre souffle...", 2.5)
+        elif g == "serrure":
+            if j.couteaux <= 0:
+                self.audio.jouer("refus", volume=0.5)
+                self.hud.message("Serrure mécanique. Il faudrait une lame pour la crocheter... (fouillez les casiers)", 3.5)
+            else:
+                self.crochetage = [obj.donnees, 0.0, Vec3(j.position)]
+                j.bloque = True
         elif g == "pile":
             j.recharger(C.BATTERIE_PILE)
             obj.actif = False
@@ -282,6 +300,75 @@ class Jeu(Entity):
                 self.hud.message("Sas verrouillé. Code d'accès requis.", 3)
             else:
                 self.victoire()
+
+    def fouiller(self, casier):
+        """Ouvre un casier : couteau, pile, easter egg ou bric-à-brac."""
+        j = self.joueur
+        casier.fouille = True
+        casier.entrouvrir(1.2)
+        casier.interactif.texte = "Se cacher dans le casier"
+        self.audio.jouer("grille", position=casier.world_position + Vec3(0, 1, 0), volume=0.3, pitch=1.5)
+        self.monde.bruit(j.x, j.z, 3.0)
+        genre, texte = casier.contenu
+        if genre == "couteau":
+            j.couteaux += 1
+            self.audio.jouer("ramasser", volume=0.6)
+            self.hud.message(f"Un couteau de cuisine. Il servira à crocheter les serrures jaunes. (couteaux : {j.couteaux})", 4)
+        elif genre == "pile":
+            j.recharger(C.BATTERIE_PILE)
+            self.audio.jouer("ramasser", volume=0.6)
+            self.hud.message(f"Une pile !  (batterie {int(j.batterie * 100)} %)", 3)
+        elif genre in ("oeuf", "oeuf_bruyant"):
+            self.audio.jouer("interface", volume=0.4)
+            self.hud.message(texte, 7)
+            if genre == "oeuf_bruyant":
+                self.audio.jouer("refus", volume=0.9, pitch=2.6)
+                self.monde.bruit(j.x, j.z, 16.0)
+        else:
+            self.hud.message(texte or "Rien d'utile.", 3)
+
+    def _maj_crochetage(self, dt):
+        """Crochetage d'une serrure : quelques secondes immobile, et ça fait du bruit."""
+        porte, t, depart = self.crochetage
+        j = self.joueur
+        t += dt
+        self.crochetage[1] = t
+        if int(t / 0.5) != int((t - dt) / 0.5):
+            cx, cz = porte.porte.centre
+            self.audio.jouer("clic", position=Vec3(cx, 1.1, cz), volume=0.7, pitch=random.uniform(0.6, 1.4))
+            self.monde.bruit(j.x, j.z, 6.0)
+        self.hud.invite.text = f"Crochetage...  {int(min(1, t / C.DUREE_CROCHETAGE) * 100)} %"
+        if t >= C.DUREE_CROCHETAGE:
+            self.crochetage = None
+            j.bloque = False
+            porte.deverrouiller()
+            self.audio.jouer("porte", position=Vec3(porte.porte.centre[0], 1.2, porte.porte.centre[1]), volume=0.6)
+            if random.random() < C.CASSE_COUTEAU:
+                j.couteaux -= 1
+                self.hud.message(f"La serrure cède... et la lame se brise.  (couteaux : {j.couteaux})", 3.5)
+            else:
+                self.hud.message("La serrure cède.", 2.5)
+
+    def _grille_proche(self):
+        """Grille la plus proche quand le joueur est dans un conduit (pour en ressortir)."""
+        j = self.joueur
+        meilleure, dmin = None, 1.7
+        for g in self.monde.grilles.values():
+            gi, gj = g.grille.case
+            d = ((gi + 0.5 - j.x) ** 2 + (gj + 0.5 - j.z) ** 2) ** 0.5
+            if d < dmin:
+                meilleure, dmin = g, d
+        return meilleure
+
+    def menu_infos(self, active):
+        """Menu d'aide des touches (I / Create) : met le jeu en pause."""
+        if active and self.etat == JEU:
+            self.etat = INFOS
+            self.manette.arreter_vibrations()
+            self.hud.afficher_infos(True, self.joueur, OBJECTIFS[self.etape])
+        elif not active and self.etat == INFOS:
+            self.etat = JEU
+            self.hud.afficher_infos(False)
 
     def retablir_courant(self):
         self.etape = 1
@@ -323,13 +410,21 @@ class Jeu(Entity):
         elif e == JEU:
             if key == C.TOUCHE_PAUSE:
                 self.pause(True)
+            elif key == C.TOUCHE_INFOS:
+                self.menu_infos(True)
             elif key in C.TOUCHE_CARTE:
                 self.basculer_carte()
             elif self.joueur is not None:
                 self.joueur.touche(key)
+        elif e == INFOS:
+            if key in (C.TOUCHE_INFOS, C.TOUCHE_PAUSE):
+                self.menu_infos(False)
         elif e == PAUSE:
             if key == C.TOUCHE_PAUSE:
                 self.pause(False)
+            elif key == C.TOUCHE_INFOS:
+                self.pause(False)
+                self.menu_infos(True)
             elif key in ("m", ";"):
                 self.menu()
         elif e == MORT:
@@ -361,9 +456,17 @@ class Jeu(Entity):
                 self.pause(True)
             elif m.appui("pave"):
                 self.basculer_carte()
+            elif m.appui(C.MANETTE_INFOS):
+                self.menu_infos(True)
+        elif e == INFOS:
+            if m.appui(C.MANETTE_INFOS) or m.appui("rond") or m.appui("options"):
+                self.menu_infos(False)
         elif e == PAUSE:
             if m.appui("options"):
                 self.pause(False)
+            elif m.appui(C.MANETTE_INFOS):
+                self.pause(False)
+                self.menu_infos(True)
             elif m.appui("triangle"):
                 self.menu()
         elif e == MORT:
@@ -416,20 +519,39 @@ class Jeu(Entity):
         j, c, m = self.joueur, self.creature, self.monde
         self.temps += dt
         j.tick(dt)
+        touche = "[Croix]" if j.utilise_manette else "[E]"
         # interactions
         cible = None
-        if j.cache is None:
-            cible = j.chercher_interactif(m.interactifs)
+        sortie = None
+        if self.crochetage is not None:
+            j.appui_interagir = False
+            if (j.position - self.crochetage[2]).length() > 1.0 or j.cache is not None:
+                self.crochetage = None
+                j.bloque = False
+            else:
+                self._maj_crochetage(dt)
+        elif j.cache is None:
+            if j.dans_conduit:
+                sortie = self._grille_proche()
+            else:
+                cible = j.chercher_interactif(m.interactifs)
         if j.appui_interagir:
             j.appui_interagir = False
             if j.cache is not None:
                 j.sortir()
+            elif sortie is not None:
+                sortie.ouvrir()
+                j.sortir_conduit(sortie)
             elif cible is not None:
                 self.interagir(cible)
                 if self.etat != JEU:
                     return
-        if j.cache is not None:
-            self.hud.invite.text = ("[Croix]" if j.utilise_manette else "[E]") + "  Sortir du casier"
+        if self.crochetage is not None:
+            pass
+        elif j.cache is not None:
+            self.hud.invite.text = touche + "  Sortir du casier"
+        elif sortie is not None:
+            self.hud.invite.text = touche + "  Sortir du conduit"
         elif cible is not None:
             self.hud.invite_texte(cible, j.utilise_manette)
         else:
@@ -465,6 +587,8 @@ class Jeu(Entity):
                 if self.refus_timer <= 0:
                     self.refus_timer = 3.0
                     self.audio.jouer("refus", position=Vec3(cx, 1.5, cz), volume=0.5)
+                if v == "crochet":
+                    return "Serrure mécanique : un couteau permettrait de la crocheter"
                 return "Porte verrouillée : pas de courant" if v == "courant" else "Porte verrouillée : code d'accès requis"
         return ""
 

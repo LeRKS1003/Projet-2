@@ -39,7 +39,7 @@ class HUD:
         tex = Textures()
         # voiles plein écran
         self.vignette = Entity(parent=ui, model="quad", texture="vignette", scale=(window.aspect_ratio * 1.02, 1.02),
-                               color=color.rgba(0, 0, 0, 0.9), z=1)
+                               color=color.rgba(0, 0, 0, 0.97), z=1)
         self.danger = Entity(parent=ui, model="quad", texture="vignette", scale=(window.aspect_ratio * 1.02, 1.02),
                              color=color.rgba(0.6, 0, 0, 0), z=0.9)
         self.fentes = Entity(parent=ui, model="quad", scale=(window.aspect_ratio * 1.02, 1.02), z=0.8,
@@ -66,6 +66,9 @@ class HUD:
             e = Entity(parent=self.racine, model="quad", scale=(0.012, 0.022),
                        position=(-ar / 2 + 0.05 + k * 0.016, -0.44), color=GRIS)
             self.bat_segments.append(e)
+        # couteaux (sous la batterie, visible dès qu'on en a un)
+        self.couteaux = Text(parent=self.racine, text="", position=(-ar / 2 + 0.04, -0.46), scale=0.7,
+                             color=color.rgba(0.85, 0.8, 0.6, 0.7))
         # bruit (en bas à droite)
         self.bruit_label = Text(parent=self.racine, text="BRUIT", position=(ar / 2 - 0.13, -0.4), scale=0.7,
                                 color=color.rgba(0.8, 0.8, 0.8, 0.6))
@@ -91,6 +94,17 @@ class HUD:
         # debug
         self.debug = Text(parent=ui, text="", position=(-ar / 2 + 0.02, 0.48), scale=0.75,
                           color=color.rgb(0.5, 1.0, 0.6), enabled=False)
+        # menu d'aide (touche I / bouton Create)
+        self.panneau_infos = Entity(parent=ui, enabled=False, z=-0.7)
+        Entity(parent=self.panneau_infos, model="quad", scale=(ar * 1.1, 1.1), z=0.05, color=color.rgba(0, 0, 0, 0.96))
+        Text(parent=self.panneau_infos, text="COMMANDES", origin=(0, 0), y=0.43, z=-0.05, scale=2.2, color=GRIS)
+        self.infos_clavier = Text(parent=self.panneau_infos, text="", position=(-ar / 2 + 0.08, 0.36, -0.05), scale=0.85, font="VeraMono.ttf",
+                                  color=color.rgb(0.8, 0.82, 0.85))
+        self.infos_manette = Text(parent=self.panneau_infos, text="", position=(0.08, 0.36, -0.05), scale=0.85, font="VeraMono.ttf",
+                                  color=color.rgb(0.8, 0.82, 0.85))
+        self.infos_bas = Text(parent=self.panneau_infos, text="", origin=(0, 0), y=-0.33, z=-0.05, scale=0.9,
+                              color=color.rgb(0.65, 0.67, 0.7))
+
         # écrans
         self.noir = Entity(parent=ui, model="quad", scale=(ar * 1.1, 1.1), color=color.rgba(0, 0, 0, 0), z=-0.5)
         self.titre = Text(parent=ui, text="", origin=(0, 0), y=0.18, scale=4, z=-0.6, color=color.rgb(0.85, 0.85, 0.85))
@@ -163,6 +177,7 @@ class HUD:
                 b.color = color.rgb(0.95, 0.3, 0.2) if i >= 4 else (color.rgb(0.95, 0.75, 0.3) if i >= 2 else GRIS)
             else:
                 b.color = color.rgba(1, 1, 1, 0.08)
+        self.couteaux.text = f"COUTEAUX  x{joueur.couteaux}" if joueur.couteaux else ""
         # endurance
         r = joueur.endurance / C.ENDURANCE_MAX
         self.endu.scale_x = 0.2 * r
@@ -173,6 +188,51 @@ class HUD:
         # danger (la créature est proche)
         self.danger.color = color.rgba(0.45, 0, 0, min(0.45, tension * 0.5))
         self.fentes.enabled = joueur.cache is not None
+
+    def afficher_infos(self, visible, joueur=None, objectif=""):
+        """Menu d'aide : toutes les touches, l'inventaire et la légende des voyants."""
+        self.panneau_infos.enabled = visible
+        self.racine.enabled = not visible and self.vus is not None
+        if not visible:
+            return
+        self.infos_clavier.text = (
+            "CLAVIER / SOURIS\n\n"
+            "Z Q S D  (ou W A S D, flèches)   se déplacer\n"
+            "Souris                           regarder\n"
+            "Maj (maintenir)                  courir\n"
+            "Ctrl (maintenir)                 s'accroupir\n"
+            "E                                interagir : portes, grilles,\n"
+            "                                 conduits, casiers, objets\n"
+            "F                                allumer / éteindre la lampe\n"
+            "P ou clic droit (maintenir)      braquer la lampe\n"
+            "Tab ou M                         carte partielle\n"
+            "I                                ce menu\n"
+            "Échap                            pause\n"
+            "F3                               debug (FPS, IA, manette)")
+        self.infos_manette.text = (
+            "MANETTE PS5\n\n"
+            "Stick gauche          se déplacer\n"
+            "Stick droit           regarder\n"
+            "L3                    courir\n"
+            "R3 ou Rond            s'accroupir\n"
+            "Croix ou Carré        interagir : portes, grilles,\n"
+            "                      conduits, casiers, objets\n"
+            "Triangle              allumer / éteindre la lampe\n"
+            "R2 (maintenir)        braquer la lampe\n"
+            "Pavé tactile          carte partielle\n"
+            "Create                ce menu\n"
+            "Options               pause")
+        inventaire = ""
+        if joueur is not None:
+            inventaire = (f"Batterie de la lampe : {int(joueur.batterie * 100)} %     "
+                          f"Couteaux : {joueur.couteaux}     Objectif : {objectif}\n\n")
+        self.infos_bas.text = (
+            inventaire +
+            "Voyants des portes : vert = ouverte · orange = pas de courant · rouge = code d'accès · "
+            "jaune = serrure à crocheter (couteau)\n"
+            "Grilles au ras du sol : E / Croix pour entrer dans le conduit, et encore E pour en sortir.\n"
+            "Fouillez les casiers (couteaux, piles... et quelques surprises). Courir fait du bruit : elle entend tout.\n\n"
+            "I / Échap / Create / Rond : revenir au jeu")
 
     def invite_texte(self, obj, manette):
         if obj is None:
@@ -224,7 +284,8 @@ class HUD:
             img[t == CONDUIT] = (0.3, 0.22, 0.12, 1)
             img[t == GRILLE] = (0.6, 0.4, 0.15, 1)
             for porte in p.portes:
-                c = (0.2, 0.8, 0.3, 1) if porte.verrou is None else ((0.9, 0.5, 0.1, 1) if porte.verrou == "courant" else (0.9, 0.1, 0.1, 1))
+                c = {None: (0.2, 0.8, 0.3, 1), "courant": (0.9, 0.5, 0.1, 1), "crochet": (0.95, 0.85, 0.1, 1)}.get(
+                    porte.verrou, (0.9, 0.1, 0.1, 1))
                 for (i, j) in porte.cases:
                     img[i, j] = c
             img[~self.vus] = (0, 0, 0, 0)

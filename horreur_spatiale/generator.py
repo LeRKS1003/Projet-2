@@ -168,6 +168,7 @@ def _essayer(seed):
     _verrous(pont)
     if not _valider(pont):
         return None
+    _serrures(pont, rng)
     _fenetres(pont, rng)
     _conduits(pont, rng)
 
@@ -391,13 +392,27 @@ def _poser_murs(pont):
 
 
 def _verrous(pont):
-    """Salle de commandement : verrouillée sans courant. Hangar : code d'accès requis."""
+    """Commandement : verrouillé sans courant. Hangar : code d'accès requis."""
     for p in pont.portes:
         t = pont.salles[p.salle_id].type
         if t == "commandement":
             p.verrou = "courant"
         elif t == "hangar":
             p.verrou = "code"
+
+
+def _serrures(pont, rng):
+    """Réserves (et parfois l'infirmerie) : serrure mécanique à crocheter avec un couteau.
+    Une salle n'est verrouillée que si cela ne bloque jamais la progression."""
+    candidates = [s for s in pont.salles if s.type == "stockage"]
+    candidates += [s for s in pont.salles if s.type in ("infirmerie", "salle_a_manger") and rng.random() < 0.4]
+    rng.shuffle(candidates)
+    for s in candidates:
+        for pid in s.portes:
+            pont.portes[pid].verrou = "crochet"
+        if not _valider(pont):
+            for pid in s.portes:
+                pont.portes[pid].verrou = None
 
 
 def _atteignables(pont, depart, verrous_ouverts):
@@ -430,7 +445,7 @@ def _valider(pont):
         return False
     s0 = chambres[0]
     depart = (s0.x + 1, s0.z + 1)
-    tout = _atteignables(pont, depart, ("courant", "code"))
+    tout = _atteignables(pont, depart, ("courant", "code", "crochet"))
     for s in pont.salles:
         if not tout[s.x + 1, s.z + 1] or not s.portes:
             return False
@@ -442,9 +457,14 @@ def _valider(pont):
     for c in chambres:
         if not libre[c.x + 1, c.z + 1]:
             return False
+    # les serrures à crocheter restent optionnelles : jamais nécessaires pour finir
     avec_courant = _atteignables(pont, depart, ("courant",))
     cmd = pont.salle_de_type("commandement")[0]
-    return bool(avec_courant[cmd.x + 1, cmd.z + 1])
+    if not avec_courant[cmd.x + 1, cmd.z + 1]:
+        return False
+    avec_code = _atteignables(pont, depart, ("courant", "code"))
+    h = pont.salle_de_type("hangar")[0]
+    return bool(avec_code[h.x + 1, h.z + 1])
 
 
 def _fenetres(pont, rng):

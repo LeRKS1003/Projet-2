@@ -54,7 +54,7 @@ class SourceLumiere:
         self.couleur_actuelle = self.couleur_courant if courant else self.couleur
         if g == "neon":
             if courant:
-                v = self._clignoter(t, rng, True) if self.defectueuse else 1.0
+                v = (self._clignoter(t, rng, True) if self.defectueuse else 1.0) * C.INTENSITE_NEONS
             else:
                 # sans courant : seuls quelques néons défectueux crachent des étincelles
                 v = self._clignoter(t, rng, False) * 0.45 if self.defectueuse else 0.0
@@ -188,6 +188,9 @@ class Eclairage:
         scene.fog_color = color.rgb(*C.COULEUR_BROUILLARD)
 
     def ajouter(self, source):
+        # l'ambiance est plus sombre : davantage de néons défectueux
+        if source.genre == "neon" and not source.defectueuse and self.rng.random() < C.PROBA_NEON_DEFECTUEUX:
+            source.defectueuse = True
         self.sources.append(source)
         return source
 

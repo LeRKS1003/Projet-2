@@ -83,24 +83,38 @@ Dans le menu, **N** change de vaisseau.
 
 ## Contrôles
 
+Appuyez sur **I** (ou **Create** à la manette) en jeu pour afficher le menu de toutes les commandes,
+votre inventaire et la légende des voyants de portes.
+
 | Action | Clavier / souris (AZERTY) | Manette PS5 |
 |---|---|---|
 | Se déplacer | Z Q S D (WASD et flèches aussi) | Stick gauche |
 | Regarder | Souris | Stick droit |
 | Courir | Maj (maintenir) | L3 (bascule, tant qu'on avance) |
 | S'accroupir | Ctrl (maintenir) | R3 ou Rond (bascule) |
-| Interagir (portes, grilles, casiers, objets) | E | Croix |
-| Lampe torche | F | Carré |
-| Lampe concentrée (plus puissante, vide la batterie) | Clic droit | R2 |
+| Interagir : grilles/conduits, casiers, serrures, objets | E | Croix ou Carré |
+| Allumer / éteindre la lampe | F | Triangle |
+| Braquer la lampe (faisceau concentré, vide la batterie) | P ou clic droit (maintenir) | R2 |
 | Carte partielle | Tab (ou M) | Pavé tactile |
+| Menu des commandes | I | Create |
 | Pause | Échap | Options |
 | Debug (FPS, IA, mapping manette) | F3 | — |
 
+* **Lampe torche** : elle est visible dans votre main droite. En la braquant, vous la levez
+  devant vous et le faisceau devient plus étroit et plus puissant.
+* **Portes** : elles s'ouvrent seules quand vous approchez. Voyant vert = ouverte,
+  orange = pas de courant, rouge = code d'accès, **jaune = serrure mécanique**.
+* **Couteaux** : cachés dans les casiers. Face à une porte à voyant jaune, E / Croix pour la
+  crocheter (quelques secondes immobile, et c'est bruyant). La lame peut se briser. Les salles
+  crochetées contiennent des piles en plus.
+* **Conduits** : face à une grille au ras du sol, un seul appui sur E / Croix l'ouvre et vous
+  fait entrer (accroupi automatiquement). Près d'une grille, E / Croix pour ressortir.
+* **Casiers** : le premier appui fouille le casier (couteau, pile, bric-à-brac... et quelques
+  easter eggs), le suivant permet de s'y cacher.
+
 Conseils : courir fait beaucoup de bruit, marcher un peu, s'accroupir presque pas.
-Les conduits d'aération (grilles au ras du sol) ne sont accessibles qu'accroupi — la
-créature les emprunte aussi. Les casiers des chambres permettent de se cacher... si elle
-ne vous a pas vu y entrer. Les piles rechargent la lampe ; les journaux de bord donnent
-des indices.
+La créature emprunte aussi les conduits. Un casier ne vous protège que si elle ne vous a pas
+vu y entrer. Les journaux de bord donnent des indices.
 
 ## Réglages utiles (`config.py`)
 
@@ -109,7 +123,9 @@ des indices.
 * Performances : `ANTICRENELAGE` (0 pour désactiver), `NB_LUMIERES_ACTIVES`,
   `DISTANCE_CULLING`, `NB_ETOILES`
 * Difficulté : vitesses et portées de vue de la créature, `CREATURE_DELAI_DEPART`,
-  `DIRECTEUR_CALME_MAX`, `LAMPE_DUREE_BATTERIE`, `NB_PILES`
+  `DIRECTEUR_CALME_MAX`, `LAMPE_DUREE_BATTERIE`, `NB_PILES`, `NB_COUTEAUX`, `CASSE_COUTEAU`
+* Obscurité : `AMBIANTE_SANS_COURANT`, `AMBIANTE_AVEC_COURANT`, `BROUILLARD_*`, `INTENSITE_NEONS`
+* Boutons de la manette : `MANETTE_INTERAGIR`, `MANETTE_LAMPE`, `MANETTE_INFOS`
 
 Le jeu vise 60 FPS sur un PC de milieu de gamme : la logique Python coûte environ
 1,5 ms par image, le reste est du rendu GPU (quelques centaines d'appels de dessin grâce
