@@ -1,0 +1,4 @@
+# DÉRIVE — dépendances (Python 3.11+)
+ursina>=7.0          # moteur 3D (installe aussi panda3d et Pillow)
+pygame>=2.5          # uniquement le module joystick (SDL2) pour la manette PS5 DualSense
+numpy>=1.24          # génération procédurale, textures et sons

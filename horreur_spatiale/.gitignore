@@ -1,0 +1,4 @@
+# sons générés automatiquement au premier lancement
+sons/
+__pycache__/
+*.pyc
