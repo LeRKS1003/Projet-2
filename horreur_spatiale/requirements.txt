@@ -1,5 +1,5 @@
 # ÉPAVE — jeu d'horreur spatial (Python 3.11+)
-ursina>=7.0.0        # moteur 3D (Panda3D)
+ursina>=7.0.0,<9     # moteur 3D (Panda3D) — testé avec 7.0.0 et 8.3.0
 pygame>=2.5.0        # module joystick uniquement (SDL2) : manette PS5 DualSense
 numpy>=1.26          # génération procédurale, textures et sons
 pillow>=10.0         # conversion des textures générées (déjà requis par Ursina)

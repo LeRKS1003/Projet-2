@@ -454,7 +454,8 @@ class Shuttle:
         self.cam_up = (self.cam_up + (u - self.cam_up) * min(1, dt * 3)).normalized()
         camera.position = self.cam_pos
         look = self.root.world_position + f * 8 + u * 1.2
-        camera.look_at(look, up=self.cam_up)
+        # lookAt de Panda3D (compatible avec toutes les versions d'Ursina)
+        camera.lookAt(PVec3(look.x, look.y, look.z), PVec3(self.cam_up.x, self.cam_up.y, self.cam_up.z))
         shake = self.game.shake_amount
         if self.boosting:
             shake = max(shake, .12)               # vibration au boost
@@ -468,7 +469,8 @@ class Shuttle:
         k = 1 - math.exp(-2.0 * dt)
         self.cam_pos = self.cam_pos + (Vec3(*cam_point) - self.cam_pos) * k
         camera.position = self.cam_pos
-        camera.look_at(self.root.world_position, up=Vec3(0, 1, 0))
+        p = self.root.world_position
+        camera.lookAt(PVec3(p.x, p.y, p.z), PVec3(0, 1, 0))
 
     # ------------------------------------------------------------------
     def start_landing(self, pad, on_done):
