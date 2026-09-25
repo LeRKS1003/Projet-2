@@ -58,7 +58,19 @@ horreur_spatiale/
 
 ---
 
-## Installation
+## Lancement rapide (le plus simple)
+
+* **Windows** : double-cliquez sur **`lancer_jeu.bat`**.
+* **macOS / Linux** : double-cliquez sur **`lancer_jeu.command`** (ou `./lancer_jeu.command`).
+
+La première fois, le lanceur installe tout seul les bibliothèques (une ou deux minutes) ;
+ensuite, le jeu démarre directement. Seul Python 3.11+ doit être installé
+(sous Windows, cochez « Add python.exe to PATH » pendant l'installation).
+
+Astuce Windows : clic droit sur `lancer_jeu.bat` → *Envoyer vers* → *Bureau (créer un
+raccourci)* pour lancer le jeu depuis le Bureau.
+
+## Installation manuelle
 
 Python **3.11 ou plus récent** est requis.
 
