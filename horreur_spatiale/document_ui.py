@@ -459,7 +459,7 @@ def render_document(doc, text, level=None, seed=0):
         img = _paper(W, H, (236, 236, 232), seed + 3)
         d = ImageDraw.Draw(img)
         d.rectangle((40, 40, W - 40, 130), outline=(40, 40, 50), width=3)
-        d.text((60, 55), "KERGUELEN — SERVICE MÉDICAL", fill=(30, 30, 40), font=font("sans_bold", 30))
+        d.text((60, 55), "KERGUELEN — SERVICE MÉDICAL", fill=(30, 30, 40), font=font("sans_bold", 26))
         d.text((60, 97), doc["title"], fill=(60, 60, 70), font=font("sans", 22))
         fnt = font("mono", 25)
         y = 160
@@ -475,7 +475,7 @@ def render_document(doc, text, level=None, seed=0):
             img.paste(img_attach, (W // 2 - 215, iy))
             d.rectangle((W // 2 - 217, iy - 2, W // 2 + 217, iy + 432), outline=(30, 30, 30), width=2)
             d.text((60, iy + 440), "Pièce jointe : scanner cérébral (J15)", fill=(80, 80, 90), font=font("sans", 20))
-        _stamp(img, "QUARANTAINE" if doc["type"] == "rapport" else "MÉDICAL", (W - 330, 38), (150, 30, 30), 28, 6)
+        _stamp(img, "QUARANTAINE" if doc["type"] == "rapport" else "MÉDICAL", (W - 300, 44), (150, 30, 30), 24, 6)
         return img
     if style == "terminal":
         W, H = 1000, 1000
