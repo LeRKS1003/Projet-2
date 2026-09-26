@@ -33,6 +33,7 @@ class HorrorManager:
         self.heart_timer = 0.0
         self.tension = 0.0        # 0..1 (proximité de la grande créature)
         self.times_triggered = 0
+        self.active_time = 0.0    # durée de l'alerte en cours (plafonnée à HORROR_MAX_TIME)
         a = game.audio
         self.alarm = a.loop("alarm", "alarm", .5)
         self.music = a.loop("horror_music", "horror_music", .9, music=True)
@@ -54,6 +55,7 @@ class HorrorManager:
         self.active = True
         self.times_triggered += 1
         if not was:
+            self.active_time = 0.0
             self.wave_timer = 1.2 if not scripted else 3.0
             g.hud.message("!! ALERTE — ÇA T'A ENTENDU !!" if not scripted else "!! ALERTE GÉNÉRALE !!", color.red)
             g.inp.rumble(1, 1, 500)
@@ -86,6 +88,12 @@ class HorrorManager:
     def update(self, dt):
         g = self.game
         p = g.player
+        # une alerte ne dure jamais plus d'une minute : redescente forcée sur les 4 dernières secondes
+        if self.active:
+            self.active_time += dt
+            if self.active_time >= C.HORROR_MAX_TIME - 4:
+                self.timer = 0.0
+                self.level = max(0.0, self.level - dt / 4 - (1.0 if self.active_time >= C.HORROR_MAX_TIME else 0))
         # intensité
         if self.timer > 0:
             self.timer -= dt

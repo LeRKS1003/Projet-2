@@ -227,6 +227,16 @@ class Creature:
     def sees_player_now(self):
         return self.can_see
 
+    @property
+    def calm(self):
+        """
+        Tant que le courant n'est pas revenu, la créature erre sans attaquer
+        un joueur discret : seul un gros bruit (coup de feu -> alerte) la réveille.
+        """
+        g = self.game
+        return (C.CREATURE_CALM_UNTIL_POWER and g.power is not None and not g.power.on
+                and not g.horror.active)
+
     def hear(self, pos, radius, kind):
         if self.state in (HIDDEN, RETREAT):
             if kind == "shot" and self.state == HIDDEN and random.random() < .5:
@@ -236,6 +246,8 @@ class Creature:
         d = math.hypot(pos[0] - self.x, pos[2] - self.z)
         if d > radius:
             return
+        if self.calm and radius < C.CREATURE_PROVOKE_NOISE:
+            return          # pas assez de bruit pour la tirer de sa torpeur
         # le couteau est discret : la bête ne l'entend que tout près, et rarement
         if kind == "knife" and (d > C.KNIFE_ALERT_DIST or random.random() > C.KNIFE_ALERT_CHANCE):
             return
@@ -298,7 +310,7 @@ class Creature:
         g = self.game
         p = g.player
         self.can_see = False
-        if p is None or not p.alive or not self.visible:
+        if p is None or not p.alive or not self.visible or self.calm:
             return
         dx, dz = p.x - self.x, p.z - self.z
         d = math.hypot(dx, dz)
@@ -452,7 +464,7 @@ class Creature:
         # --- mise à mort --------------------------------------------------
         if p is not None and p.alive:
             d = math.hypot(p.x - self.x, p.z - self.z)
-            if d < C.CREATURE_KILL_DIST and self.stun <= 0:
+            if d < C.CREATURE_KILL_DIST and self.stun <= 0 and not self.calm:
                 if not p.hidden or (p.saw_hide and self.state == CHASE):
                     g.game_over("creature")
                     return

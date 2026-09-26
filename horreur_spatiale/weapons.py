@@ -318,6 +318,8 @@ class Weapons:
                 self.fire()
             elif inp.pressed("knife"):
                 self.knife_attack()
+            elif inp.pressed("melee"):
+                self.melee_kill()
         self.recoil = max(0.0, self.recoil - dt * 6)
         self.kick = max(0.0, self.kick - dt * 9)
         self.spread_bonus = max(0.0, self.spread_bonus - dt * 2)
@@ -765,6 +767,42 @@ class Weapons:
                 g.audio.play("knife_crack", .4, random.uniform(.9, 1.15))     # craquement de carapace
             g.inp.rumble(.6, .3, 120)
             self._wear()
+
+    def melee_kill(self):
+        """
+        R3 / G : mise à mort d'une araignée au corps à corps, en un seul coup,
+        couteau ou non (le couteau n'est pas usé). Discret : très peu de bruit.
+        """
+        g = self.game
+        if self.knife_cd > 0:
+            return
+        self.knife_cd = C.KNIFE_COOLDOWN
+        self.knife_anim = .35
+        g.audio.play_var("knife_swing", 2, .45)
+        cp = camera.world_position
+        fw = camera.forward
+        hit, best = None, 1e9
+        for target, center, radius in g.hit_targets(melee=True):
+            if not hasattr(target, "mgr"):
+                continue                      # seulement les araignées (la grande créature est invulnérable)
+            dx, dy, dz = center[0] - cp.x, center[1] - cp.y, center[2] - cp.z
+            dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+            if dist - radius > C.KNIFE_RANGE + .3:
+                continue
+            dot = (dx * fw.x + dy * fw.y * .3 + dz * fw.z) / max(dist, 1e-4)
+            if dot < .45 and dist > .8:
+                continue
+            if dist < best:
+                best, hit = dist, target
+        if hit is None:
+            g.noise((cp.x, cp.y, cp.z), C.NOISE_KNIFE, "knife")
+            return
+        hit.on_hit(999, hit.center3(), False, silent=True)
+        self._spawn_splat(Vec3(*hit.center3()), fw, True)
+        g.audio.play("knife_flesh", .5, random.uniform(.9, 1.05))
+        g.audio.play("knife_crack", .4, random.uniform(.9, 1.15))
+        g.inp.rumble(.6, .3, 120)
+        g.hud.message("Araignée achevée au corps à corps", color.rgb(.55, .7, .55))
 
     def _wear(self):
         g = self.game

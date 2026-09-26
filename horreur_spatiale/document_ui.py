@@ -815,6 +815,7 @@ CONTROL_ROWS = [
     ("Courir / s'accroupir", "run/crouch", "L3 / Rond"),
     ("Tirer / viser", "Clic gauche / clic droit", "R2 / L2"),
     ("Couteau / recharger", "knife/reload", "R1 / Carré"),
+    ("Tuer une araignée au corps à corps", "melee", "R3"),
     ("Lampe / vision nocturne", "flashlight/nightvision", "Triangle / L1"),
     ("Interagir, lire, forcer (maintenir)", "interact", "Croix"),
     ("Fermer un document", "Échap / E", "Rond"),

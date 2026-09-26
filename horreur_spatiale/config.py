@@ -47,6 +47,7 @@ KEYS_AZERTY = {
     "debug_power": "f4", "debug_screamer": "f5",   # touches de test (voir DEBUG_KEYS)
     "debug_docs": "f6", "debug_reveal": "f7", "debug_sound": "f8",
     "journal": "j", "controls": "i",
+    "melee": "g",               # mise à mort au corps à corps (R3 à la manette)
     # navette
     "ship_up": "space", "ship_down": "control", "ship_boost": "shift",
     "ship_roll_left": "a", "ship_roll_right": "e",
@@ -369,6 +370,7 @@ HORROR_DURATION = 20.0      # secondes à pleine intensité après un tir
 HORROR_FADE = 10.0          # temps de redescente si le joueur est discret
 HORROR_ALIEN_WAVE = (1, 3)
 HORROR_WAVE_INTERVAL = 18.0
+HORROR_MAX_TIME = 60.0      # une alerte ne dure jamais plus d'une minute (même en continuant à tirer)
 CAMERA_SHAKE = 0.35
 
 # ----------------------------------------------------------------------------
@@ -387,6 +389,8 @@ CREATURE_STUN_TIME = 2.2
 CREATURE_HITS_TO_FLEE = 3
 CREATURE_HIDE_TIME = (20.0, 40.0)
 DIRECTOR_CALM_TIME = 85.0   # secondes de calme avant que la directrice ne rapproche la créature
+CREATURE_CALM_UNTIL_POWER = True   # courant coupé : la créature n'attaque pas si l'on reste discret
+CREATURE_PROVOKE_NOISE = 20.0      # ... sauf un bruit au moins aussi fort (coup de feu) qui déclenche l'alerte
 
 # ----------------------------------------------------------------------------
 # PETITES CRÉATURES

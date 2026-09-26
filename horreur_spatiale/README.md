@@ -118,6 +118,7 @@ La seed est affichée dans le menu pause ; fixe `SEED` dans `config.py` pour rej
 | changer d'objet équipé / l'utiliser | C, V ou molette / F | Flèches gauche-droite / Flèche bas |
 | inventaire (le jeu continue !) | Tab | Pavé tactile |
 | pause | Échap | Options |
+| tuer une araignée au corps à corps (un seul coup) | G | R3 |
 | lire / ramasser un document | E | Croix |
 | fermer un document | E / Échap | Rond |
 | journal des documents | J | Create (Share) |
@@ -161,6 +162,11 @@ Ursina lit les lettres par position physique : la configuration AZERTY est conve
 * Réglages : `INFECTION_TIME`, `HALLU_INTERVAL`, `HALLU_VARIANT_AT`, `HALLU_HUM`, `REVEAL_*` dans `config.py`.
 
 ## Conseils de survie
+
+* **Tant que le courant n'est pas rétabli**, la grande créature erre sans t'attaquer si tu restes discret :
+  seul un gros bruit (un coup de feu) la réveille et déclenche l'alerte (`CREATURE_CALM_UNTIL_POWER`).
+* **Une alerte ne dure jamais plus d'une minute** (`HORROR_MAX_TIME`), même si tu continues à tirer.
+* **R3 / G** achève une araignée au corps à corps en un seul coup, sans user ton couteau.
 
 * Marcher fait du bruit, courir beaucoup, accroupi presque rien ; l'indicateur **BRUIT** du HUD te le montre.
 * La lampe te fait repérer de plus loin. La vision nocturne voit dans le noir mais les néons éblouissent.
