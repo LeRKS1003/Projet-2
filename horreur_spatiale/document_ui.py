@@ -832,6 +832,7 @@ CONTROL_ROWS = [
     ("Commandes (cet écran)", "controls", "—"),
     ("Debug : manette / courant / screamer", "debug/debug_power/debug_screamer", "—"),
     ("Debug : tous les documents / révélation", "debug_docs/debug_reveal", "—"),
+    ("Debug : son de test", "debug_sound", "—"),
 ]
 
 
@@ -870,7 +871,7 @@ class ControlsOverlay:
                 lab = kb if kb[0].isupper() else key_label(kb)
                 Text(parent=self.root, text=lab, position=(-.05, y), scale=.72, color=color.rgb(.75, .85, .95))
                 Text(parent=self.root, text=pad, position=(.37, y), scale=.72, color=color.rgb(.75, .95, .8))
-            y -= .034
+            y -= .032
         lay = "AZERTY" if C.KEYBOARD_LAYOUT == "azerty" else "QWERTY"
         Text(parent=self.root, text=f"Clavier {lay} (config.KEYBOARD_LAYOUT).   I / Échap : fermer",
              position=(0, -.46), origin=(0, 0), scale=.72, color=color.rgba(1, 1, 1, .5))

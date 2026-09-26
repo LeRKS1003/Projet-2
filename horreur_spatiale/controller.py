@@ -228,6 +228,7 @@ class InputManager:
         "ship_camera": C.KEYS["ship_camera"],
         "debug_power": C.KEYS["debug_power"], "debug_screamer": C.KEYS["debug_screamer"],
         "debug_docs": C.KEYS["debug_docs"], "debug_reveal": C.KEYS["debug_reveal"],
+        "debug_sound": C.KEYS["debug_sound"],
         "journal": C.KEYS["journal"], "controls": C.KEYS["controls"],
     }
     # alternatives clavier

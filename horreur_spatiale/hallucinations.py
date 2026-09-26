@@ -42,7 +42,7 @@ class Hallucinations:
         self.silhouette = None
         self.sil_timer = 0.0
         self.paused = False             # pendant la révélation / le screamer
-        self.hum = game.audio.loop("sinus_low", "sinus_hum", 1.0, ambient=True)
+        self.hum = game.audio.loop("sinus_low", "sinus_chant", 1.0, ambient=True)
 
     # ------------------------------------------------------------------
     def variant_active(self, doc, read_count):

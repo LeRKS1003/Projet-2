@@ -45,7 +45,7 @@ KEYS_AZERTY = {
     "prev_item": "c", "next_item": "v", "drop": "delete",
     "pause": "escape", "debug": "f3",
     "debug_power": "f4", "debug_screamer": "f5",   # touches de test (voir DEBUG_KEYS)
-    "debug_docs": "f6", "debug_reveal": "f7",
+    "debug_docs": "f6", "debug_reveal": "f7", "debug_sound": "f8",
     "journal": "j", "controls": "i",
     # navette
     "ship_up": "space", "ship_down": "control", "ship_boost": "shift",
@@ -306,7 +306,7 @@ SCREAMER_VOLUME = 1.0        # volume du cri et du stinger
 SCREAMER_FLASH = True        # flash blanc d'une image (False pour les personnes sensibles aux flashs)
 SCREAMER_MUSIC_TIME = 25.0   # durée de la musique angoissante qui suit
 CUSTOM_SOUND_DIR = "sounds"  # un fichier screamer.wav ou screamer.ogg placé ici remplace le cri généré
-DEBUG_KEYS = True            # F4 courant, F5 screamer, F6 tous les documents, F7 révélation finale (tests)
+DEBUG_KEYS = True            # F4 courant, F5 screamer, F6 documents, F7 révélation, F8 son de test
 
 # ----------------------------------------------------------------------------
 # HISTOIRE : INFECTION PAR SINUS ET HALLUCINATIONS

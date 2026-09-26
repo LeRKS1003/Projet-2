@@ -22,6 +22,11 @@ from panda3d.core import loadPrcFileData  # noqa: E402
 
 loadPrcFileData("", "sync-video %d" % (1 if C.VSYNC else 0))
 loadPrcFileData("", "texture-anisotropic-degree 4")
+# audio : OpenAL explicitement, et jamais désactivé (effets sonores et musique)
+loadPrcFileData("", "audio-library-name p3openal_audio")
+loadPrcFileData("", "audio-active #t")
+loadPrcFileData("", "audio-sfx-active #t")
+loadPrcFileData("", "audio-music-active #t")
 
 from ursina import (Ursina, Entity, Text, camera, color, mouse, window, application, invoke,  # noqa: E402
                     destroy, time as utime, Vec3)
@@ -148,8 +153,9 @@ class Game(Entity):
         if self.menu_space is None:
             self.menu_space = Space(random.randint(0, 99999))
         self.audio.stop_all_loops()
+        self.audio.reset()          # aucun « silence » (screamer, levier) ne doit rester bloqué
         # le « chant » de SINUS : bourdonnement grave pulsé à 7 Hz
-        self.menu_drone = self.audio.loop("menu", "sinus_hum", 1.0, ambient=True)
+        self.menu_drone = self.audio.loop("menu", "sinus_chant", 1.0, ambient=True)
         self.menu_drone.set(.8, fade=.5)
         camera.position = (0, 0, 0)
         camera.rotation = (0, 0, 0)
@@ -190,6 +196,7 @@ class Game(Entity):
             self.menu_space.destroy()
             self.menu_space = None
         self.audio.stop_all_loops()
+        self.audio.reset()
         random.seed(seed)
         self.world_root = Entity(name="world")
         layout = ShipLayout(seed)
@@ -683,7 +690,7 @@ class Game(Entity):
                         c.hide()
                 sh.fx_root.hide()
                 self.audio.stop_loop("sinus_low")
-                self.hum_end = self.audio.loop("sinus_end", "sinus_hum", 1.0, ambient=True)
+                self.hum_end = self.audio.loop("sinus_end", "sinus_chant", 1.0, ambient=True)
                 self.hum_end.set(.25, fade=.5)
             cam_p = sh._local_to_world((0, 1.28, 1.42))      # tête du pilote, au-dessus du siège
             ahead = sh._local_to_world((0, -3.0, 40))                # regard un peu baissé : tableau de bord
@@ -805,6 +812,9 @@ class Game(Entity):
                 closed_overlay = True
         elif self.inp.pressed("controls") and self.state in ("menu", "tps", "landing", "fps", "victory", "gameover"):
             self.controls.toggle()
+        # F8 : son de test (partout, même dans les menus)
+        if C.DEBUG_KEYS and self.inp.pressed("debug_sound"):
+            self.hud.message(self.audio.test_sound(), color.yellow)
         if playing and self.inp.pressed("pause") and not closed_overlay and not self.controls.open:
             if self.reader.is_open and not self.paused:
                 self.reader.close()

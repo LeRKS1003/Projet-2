@@ -465,8 +465,11 @@ def gen_story(rng):
     puls = .55 + .45 * np.sin(2 * np.pi * _loop_freq(7, d) * t) ** 2
     s = (np.sin(2 * np.pi * _loop_freq(49, d) * t) + .55 * np.sin(2 * np.pi * _loop_freq(98, d) * t) +
          .25 * np.sin(2 * np.pi * _loop_freq(147, d) * t) + .12 * np.sin(2 * np.pi * _loop_freq(203, d) * t))
-    s = s * puls + _periodic_noise_band(len(t), 30, 120, rng) / 25 * puls
-    out["sinus_hum"] = _norm(s, .7)
+    # harmoniques médiums : sans elles, un haut-parleur de portable ne restitue presque rien
+    s += (.35 * np.sin(2 * np.pi * _loop_freq(196, d) * t) + .25 * np.sin(2 * np.pi * _loop_freq(294, d) * t) +
+          .12 * np.sin(2 * np.pi * _loop_freq(392, d) * t) + .06 * np.sin(2 * np.pi * _loop_freq(588, d) * t))
+    s = s * puls + _periodic_noise_band(len(t), 30, 600, rng) / 18 * puls
+    out["sinus_chant"] = _norm(s, .75)
     # --- montée du bourdonnement (fin du jeu) ---------------------------------
     d = 3.5
     t = _t(d)
@@ -519,6 +522,18 @@ def gen_story(rng):
     s += np.sin(2 * np.pi * 49 * t) * .8
     out["glitch_burst"] = _norm(_fade(np.tanh(s * 1.5), .001, .1), .85)
     return out
+
+
+def _missing(name):
+    """
+    Vrai si le .wav n'existe pas OU est vide / tronqué (génération interrompue,
+    disque plein...) : il faut alors le régénérer, sinon il resterait muet.
+    """
+    path = os.path.join(SOUND_DIR, name + ".wav")
+    try:
+        return os.path.getsize(path) < 1000
+    except OSError:
+        return True
 
 
 def gen_all(force=False):
@@ -875,9 +890,9 @@ def gen_all(force=False):
         "spark": spark, "ui_select": ui_select, "victory": victory,
     }
     # armes et araignées v2 (remplacent les anciennes versions de même nom)
-    pending = [n for n in table if force or not os.path.exists(os.path.join(SOUND_DIR, n + ".wav"))]
+    pending = [n for n in table if force or _missing(n)]
     ws_names = ("gunshot", "gun_tail_small", "tinnitus", "alien_skitter0", "alien_scratch_loop")
-    need_ws = force or any(not os.path.exists(os.path.join(SOUND_DIR, n + ".wav")) for n in ws_names)
+    need_ws = force or any(_missing(n) for n in ws_names)
     ws = gen_weapons_spiders(np.random.default_rng(417)) if need_ws else {}
     for name, sig in ws.items():
         _write(name, sig)
@@ -885,13 +900,13 @@ def gen_all(force=False):
     ps_names = ("lever_pull", "reactor_spinup", "relay2", "power_down", "door_force", "screamer",
                 "screamer_stinger", "screamer_music", "screamer_flee", "fuse_insert", "power_thump",
                 "door_force_open")
-    need_ps = force or any(not os.path.exists(os.path.join(SOUND_DIR, n + ".wav")) for n in ps_names)
+    need_ps = force or any(_missing(n) for n in ps_names)
     ps = gen_power_screamer(np.random.default_rng(666)) if need_ps else {}
     for name, sig in ps.items():
         _write(name, sig)
     # histoire (titre, hallucinations, révélation)
-    st_names = ("sinus_hum", "sinus_swell", "whisper2", "voice_call", "static_burst", "glitch_burst")
-    need_st = force or any(not os.path.exists(os.path.join(SOUND_DIR, n + ".wav")) for n in st_names)
+    st_names = ("sinus_chant", "sinus_swell", "whisper2", "voice_call", "static_burst", "glitch_burst")
+    need_st = force or any(_missing(n) for n in st_names)
     st = gen_story(np.random.default_rng(2187)) if need_st else {}
     for name, sig in st.items():
         _write(name, sig)
@@ -970,9 +985,25 @@ class AudioSystem:
 
     def __init__(self):
         from ursina import application
-        from panda3d.core import Filename
+        from panda3d.core import Filename, AudioSound
         self.base = application.base
-        self.paths = gen_all(C.REGENERATE_SOUNDS)
+        # gestionnaire audio de Panda3D (OpenAL) : on s'assure qu'il est actif et à plein volume
+        mgrs = list(getattr(self.base, "sfxManagerList", None) or [])
+        self.mgr = mgrs[0] if mgrs else None
+        self.ok = self.mgr is not None and self.mgr.isValid()
+        for m in mgrs + [getattr(self.base, "musicManager", None)]:
+            if m is not None:
+                try:
+                    m.setActive(True)
+                    m.setVolume(1.0)
+                except Exception:
+                    pass
+        try:
+            self.paths = gen_all(C.REGENERATE_SOUNDS)
+        except Exception as exc:        # la génération ne doit jamais empêcher le jeu de démarrer
+            print("[audio] ERREUR pendant la génération des sons :", exc)
+            self.paths = {f[:-4]: os.path.join(SOUND_DIR, f) for f in os.listdir(SOUND_DIR) if f.endswith(".wav")} \
+                if os.path.isdir(SOUND_DIR) else {}
         self.pool = {}
         self.cursor = {}
         self.loops = {}
@@ -984,17 +1015,66 @@ class AudioSystem:
         self.duck_target = 1.0
         self.duck_rate = 1.0
         self.duck_exempt = set()
+        self.failed = []
         for name, path in self.paths.items():
             n = self.POLY.get(name, 1)
             lst = []
             for _ in range(n):
                 try:
                     s = self.base.loader.loadSfx(Filename.fromOsSpecific(path))
+                    # un fichier illisible donne un « son nul » (statut BAD, durée 0) sans exception
+                    if s is not None and (s.status() == AudioSound.BAD or s.length() <= 0):
+                        s = None
                 except Exception:
                     s = None
                 lst.append(s)
+            if all(x is None for x in lst):
+                self.failed.append(name)
             self.pool[name] = lst
             self.cursor[name] = 0
+        self.report()
+
+    # ------------------------------------------------------------------
+    def report(self):
+        """Message clair dans le terminal : l'audio est-il prêt ? combien de sons ?"""
+        loaded = len(self.pool) - len(self.failed)
+        if not self.ok:
+            print("[audio] ERREUR : aucun périphérique audio utilisable (Panda3D utilise un gestionnaire NUL).")
+            print("[audio]   -> vérifie qu'une sortie son est active dans Windows (icône haut-parleur),")
+            print("[audio]      débranche/rebranche le casque, puis relance le jeu.")
+        else:
+            vol = self.mgr.getVolume() if self.mgr is not None else 0
+            print(f"[audio] OK : OpenAL initialisé, {loaded} sons chargés sur {len(self.pool)}"
+                  f" (volume général {self.master:.2f}, gestionnaire {vol:.2f}, dossier {SOUND_DIR})")
+        if self.failed and self.ok:
+            print(f"[audio] {len(self.failed)} son(s) illisible(s) : {', '.join(sorted(self.failed)[:12])}"
+                  " -> mets REGENERATE_SOUNDS = True dans config.py pour les recréer")
+        if min(C.MASTER_VOLUME, C.SFX_VOLUME, C.MUSIC_VOLUME, C.AMBIENT_VOLUME) <= 0:
+            print("[audio] attention : un volume est à 0 dans config.py (MASTER/SFX/MUSIC/AMBIENT_VOLUME)")
+
+    def reset(self):
+        """Annule tout silence en cours (screamer, levier) : appelé au menu et à chaque nouvelle partie."""
+        self.duck = self.duck_target = 1.0
+        self.duck_exempt = set()
+
+    def test_sound(self):
+        """F8 : son de test à plein volume (ignore le silence du screamer) + état de l'audio."""
+        self.reset()
+        if self.mgr is not None:
+            try:
+                self.mgr.setActive(True)
+                self.mgr.setVolume(1.0)
+            except Exception:
+                pass
+        ok = False
+        for name in ("beep", "ui_select", "gunshot"):
+            if self.play(name, 1.0, ignore_duck=True) is not None:
+                ok = True
+        vol = self.mgr.getVolume() if self.mgr is not None else 0
+        msg = (f"Test audio : {'OK' if (ok and self.ok) else 'ÉCHEC'} — périphérique {'valide' if self.ok else 'INVALIDE'}, "
+               f"{len(self.pool) - len(self.failed)} sons, volume {self.master:.2f}, gestionnaire {vol:.2f}")
+        print("[audio]", msg)
+        return msg
 
     def _get(self, name):
         lst = self.pool.get(name)
