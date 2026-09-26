@@ -210,6 +210,8 @@ class InputManager:
         "crouch": "circle", "run": "l3", "drop": "triangle",
         "confirm": "cross", "back": "circle",
         "menu_up": "dpad_up", "menu_down": "dpad_down",
+        # navette
+        "ship_assist": "triangle", "ship_brake": "circle", "ship_camera": "r3",
     }
     # action -> touche clavier / souris
     KB = {
@@ -221,6 +223,8 @@ class InputManager:
         "use_item": C.KEYS["use_item"], "pause": C.KEYS["pause"], "crouch": C.KEYS["crouch"],
         "run": C.KEYS["run"], "drop": C.KEYS["drop"], "debug": C.KEYS["debug"],
         "confirm": "enter", "back": "escape", "menu_up": "up arrow", "menu_down": "down arrow",
+        "ship_assist": C.KEYS["ship_assist"], "ship_brake": C.KEYS["ship_brake"],
+        "ship_camera": C.KEYS["ship_camera"],
     }
     # alternatives clavier
     KB_ALT = {"confirm": ["space", C.KEYS["interact"]], "menu_up": [C.KEYS["forward"]],
@@ -316,7 +320,13 @@ class InputManager:
     # ------------------------------------------------------------------
     # Phase TPS : commandes de la navette
     def ship_axes(self, dt):
-        """Renvoie (poussée, strafe, vertical, tangage, lacet, roulis, boost)."""
+        """
+        Commandes de la navette, normalisées :
+        (poussée, strafe, vertical, tangage, lacet, roulis, boost), toutes dans [-1, 1]
+        sauf boost (booléen). Tangage > 0 = nez vers le bas, lacet > 0 = vers la droite.
+        La rotation passe par une courbe de réponse (zone morte + exposant) réglable,
+        identique pour la souris et le stick.
+        """
         p = self.pad
         thrust = self._kb_held(C.KEYS["forward"]) - self._kb_held(C.KEYS["back"]) - p.stick("ly")
         strafe = self._kb_held(C.KEYS["right"]) - self._kb_held(C.KEYS["left"]) + p.stick("lx")
@@ -326,14 +336,24 @@ class InputManager:
                 + p.held("l1") - p.held("r1"))
         pitch = yaw = 0.0
         if mouse.locked:
-            yaw += mouse.velocity[0] * C.MOUSE_SENSITIVITY * 1.6
-            pitch += -mouse.velocity[1] * C.MOUSE_SENSITIVITY * 1.6 * (-1 if C.INVERT_MOUSE_Y else 1)
-        rx, ry = p.stick("rx"), p.stick("ry")
-        yaw += _curve(rx, C.GAMEPAD_LOOK_CURVE) * C.SHIP_TURN_RATE * dt
-        pitch += _curve(ry, C.GAMEPAD_LOOK_CURVE) * C.SHIP_TURN_RATE * dt * (-1 if C.GAMEPAD_INVERT_Y else 1)
-        boost = self._kb_held(C.KEYS["ship_boost"]) or p.held("cross")
+            # vitesse de la souris (écrans / s) -> commande de rotation
+            inv = 1.0 / max(dt, 1e-4)
+            yaw += mouse.velocity[0] * inv * C.SHIP_MOUSE_SENS
+            pitch += -mouse.velocity[1] * inv * C.SHIP_MOUSE_SENS * (-1 if C.INVERT_MOUSE_Y else 1)
+        yaw += p.stick("rx")
+        pitch += p.stick("ry") * (-1 if C.GAMEPAD_INVERT_Y else 1)
         clamp = lambda v: max(-1.0, min(1.0, v))
-        return clamp(thrust), clamp(strafe), clamp(vert), pitch, yaw, clamp(roll), boost
+
+        def shape(v):
+            v = clamp(v)
+            dz = C.SHIP_LOOK_DEADZONE
+            if abs(v) < dz:
+                return 0.0
+            v = math.copysign((abs(v) - dz) / (1 - dz), v)
+            return math.copysign(abs(v) ** C.SHIP_LOOK_EXPONENT, v)
+
+        boost = self._kb_held(C.KEYS["ship_boost"]) or p.held("cross")
+        return clamp(thrust), clamp(strafe), clamp(vert), shape(pitch), shape(yaw), clamp(roll), boost
 
     def rumble(self, low, high, ms):
         self.pad.rumble(low, high, ms)

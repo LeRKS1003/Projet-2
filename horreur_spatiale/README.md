@@ -88,6 +88,9 @@ La seed est affichée dans le menu pause ; fixe `SEED` dans `config.py` pour rej
 | monter / descendre | Espace / Ctrl | R2 / L2 |
 | roulis | A / E | L1 / R1 |
 | boost | Maj | Croix |
+| assistance de vol (on/off) | F | Triangle |
+| frein d'urgence | X (maintenir) | Rond (maintenir) |
+| caméra rapprochée / éloignée | C | R3 |
 | **À pied** : se déplacer / regarder | Z Q S D + souris | stick gauche / stick droit |
 | courir | Maj | L3 |
 | s'accroupir (bascule) | Ctrl | Rond |
@@ -113,6 +116,21 @@ Ursina lit les lettres par position physique : la configuration AZERTY est conve
 * La lampe te fait repérer de plus loin. La vision nocturne voit dans le noir mais les néons éblouissent.
 * Tirer sur la grande créature la ralentit ; trois balles la font fuir dans les conduits… un moment.
 * Un casier vide sert de cachette — mais jamais sous ses yeux.
+* Les araignées sont rares (3 au maximum, en groupes de 1 à 3). Au couteau, une araignée qui ne t'a
+  pas repéré meurt instantanément et en silence (« Mise à mort silencieuse »). Un coup de couteau reste
+  discret : la bête ne l'entend que tout près, et rarement ; en revanche une araignée blessée crie.
+* Écoute : les grattements étouffés viennent de derrière les cloisons ou des conduits.
+
+## Pilotage de la navette
+
+* **Assistance de vol** (par défaut) : la navette va là où pointe le nez, annule sa dérive, freine quand
+  tu lâches la poussée et remet ses ailes à plat. Avec le **régulateur** (`SHIP_CRUISE`), la poussée
+  règle une vitesse cible affichée sous la vitesse. Sans assistance : inertie pure.
+* Près du hangar, des pointillés lumineux montrent l'axe d'approche et le HUD conseille la vitesse
+  (8 m/s). « OBSTACLE DROIT DEVANT » s'affiche quand un obstacle est à moins de 3 s de vol.
+* Les frottements à basse vitesse n'abîment plus la coque ; seuls les vrais impacts comptent.
+* Réglages : `SHIP_ASSIST_*`, `SHIP_CRUISE*`, `SHIP_BRAKE_RATE`, `SHIP_LOOK_DEADZONE`,
+  `SHIP_LOOK_EXPONENT`, `SHIP_MAX_TURN`, `SHIP_TURN_DAMP`, `SHIP_MOUSE_SENS`, `TPS_CAM_FAR_*`.
 * Les cadavres se fouillent (maintenir E) : tu es vulnérable pendant la fouille, et certains sont infestés.
 * Avec le disque dur, le vaisseau se réveille : plus de parasites, la créature te cherche.
 

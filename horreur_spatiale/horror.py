@@ -40,6 +40,10 @@ class HorrorManager:
         self.amb = a.loop("ambience", "ambience", .9, ambient=True)
         self.reactor = a.loop("reactor", "reactor_hum", 1.0, ambient=True)
         self.amb.set(1.0, fade=.5)
+        self.scratch = a.loop("alien_presence", "alien_scratch_loop", .7)
+        self.presence = 0.0
+        self.presence_timer = 0.0
+        self.presence_heart = 0.0
 
     # ------------------------------------------------------------------
     def trigger(self, pos=None, scripted=False, duration=None):
@@ -115,10 +119,25 @@ class HorrorManager:
             self.wave_timer -= dt
             if self.wave_timer <= 0:
                 self.wave_timer = C.HORROR_WAVE_INTERVAL * random.uniform(.8, 1.3)
-                n = random.randint(*C.HORROR_ALIEN_WAVE)
-                if g.has_hdd():
-                    n += 1
+                n = random.randint(*C.HORROR_ALIEN_WAVE)       # 1 à 3, plafonné à 3 au total
                 g.aliens.spawn_near_player(n, aware=True)
+        # présence invisible : une araignée proche que l'on ne voit pas -> grattements
+        # lointains et battement de cœur discret
+        self.presence_timer -= dt
+        if self.presence_timer <= 0 and g.aliens is not None and p is not None:
+            self.presence_timer = .5
+            near = g.aliens.nearest_hidden()
+            self.presence = 0.0 if near is None else max(0.0, 1 - near[0] / 13)
+            if near is not None:
+                att, bal = g.audio.spatial(near[1].center3(), 16)
+                self.scratch.set(self.presence * .9, balance=bal, fade=1.5)
+            else:
+                self.scratch.set(0, fade=1.0)
+        if self.presence > .25 and self.tension < .1:
+            self.presence_heart -= dt
+            if self.presence_heart <= 0:
+                self.presence_heart = 1.3 - self.presence * .5
+                g.audio.play("heartbeat", .18 + .25 * self.presence)
         # tension : proximité de la grande créature
         cr = g.creature
         self.tension = 0.0
@@ -150,7 +169,7 @@ class HorrorManager:
         elif r < .7:
             g.audio.play_at("vent_bang", pos, .8, random.uniform(.7, 1.0))
         elif r < .85:
-            g.audio.play_at("alien_skitter", pos, .6)
+            g.audio.play_var("alien_skitter", 4, .55, pos=pos, occluded=True)   # derrière une cloison
         elif g.creature is not None and g.creature.visible:
             # rugissement lointain
             g.audio.play("creature_roar", .15, .8)

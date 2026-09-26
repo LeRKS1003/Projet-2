@@ -74,6 +74,12 @@ class HUD:
         self.boost_bar = _bar(self.tps, (-ar / 2 + .04, -.465), .25, color.rgb(1, .7, .2), .008)
         self.speed_text = Text(parent=self.tps, text='', position=(ar / 2 - .3, -.4), scale=1.1,
                                color=color.rgb(.7, .9, 1))
+        self.cruise_text = Text(parent=self.tps, text='', position=(ar / 2 - .3, -.44), scale=.75,
+                                color=color.rgb(.55, .75, .9))
+        self.assist_text = Text(parent=self.tps, text='', position=(ar / 2 - .3, -.365), scale=.7,
+                                color=color.rgb(.5, .9, .6))
+        self.approach_text = Text(parent=self.tps, text='', position=(0, -.3), origin=(0, 0), scale=1.0,
+                                  color=color.rgb(.4, 1, .55))
         self.arrow = Entity(parent=self.tps, model='quad', texture=textures.get('arrow'), color=color.rgb(.2, 1, .4),
                             scale=.05)
         self.marker = Entity(parent=self.tps, model='quad', texture=textures.get('glow'),
@@ -200,13 +206,37 @@ class HUD:
         j = (.004 if sh.boosting else 0) + g.shake_amount * .01
         self.tps.position = (random.uniform(-j, j), random.uniform(-j, j))
         _tx(self.speed_text, f"{sh.speed:5.1f} m/s")
-        _tx(self.warn_text, "IMPACT !" if sh.warn > 0 and (g.time * 6) % 1 < .6 else (
-            "COQUE CRITIQUE" if sh.integrity < 25 and (g.time * 2) % 1 < .5 else ""))
+        if sh.assist and C.SHIP_CRUISE:
+            _tx(self.cruise_text, f"cible {sh.target_speed:4.1f} m/s")
+        else:
+            _tx(self.cruise_text, "")
+        state = "ASSIST. VOL" if sh.assist else "INERTIE PURE"
+        _tx(self.assist_text, state + ("  |  FREIN" if sh.braking else ""))
+        self.assist_text.color = color.rgb(.5, .9, .6) if sh.assist else color.rgb(1, .7, .3)
+        blink = (g.time * 5) % 1 < .6
+        if sh.warn > 0 and (g.time * 6) % 1 < .6:
+            _tx(self.warn_text, "IMPACT !")
+        elif sh.obstacle_warn > 0 and blink:
+            _tx(self.warn_text, f"OBSTACLE DROIT DEVANT  ({sh.obstacle_warn:.1f} s)")
+        elif sh.integrity < 25 and (g.time * 2) % 1 < .5:
+            _tx(self.warn_text, "COQUE CRITIQUE")
+        else:
+            _tx(self.warn_text, "")
+        if sh.approach is not None:
+            d, v = sh.approach
+            if sh.speed > v + 2:
+                _tx(self.approach_text, f"Approche : réduis à {v:.0f} m/s   ({d:.0f} m)")
+                self.approach_text.color = color.rgb(1, .75, .3)
+            else:
+                _tx(self.approach_text, f"Approche : vitesse correcte   ({d:.0f} m)")
+                self.approach_text.color = color.rgb(.4, 1, .55)
+        else:
+            _tx(self.approach_text, "")
         pad = g.inp.using_pad
         _tx(self.tps_hint, ("Stick G: poussée/strafe  Stick D: orientation  R2/L2: monter/descendre  "
-                              "L1/R1: roulis  Croix: boost" if pad else
+                              "L1/R1: roulis  Croix: boost  Triangle: assist.  Rond: frein  R3: caméra" if pad else
                               "ZQSD: poussée/strafe  Souris: orientation  Espace/Ctrl: monter/descendre  "
-                              "A/E: roulis  Maj: boost"))
+                              "A/E: roulis  Maj: boost  F: assist.  X: frein  C: caméra"))
         # flèche / marqueur vers l'entrée du hangar
         target = g.exterior.entrance if not g.exterior.in_hangar_entrance(sh.position) else None
         if sh.position.z > -5 and abs(sh.position.x - g.exterior.entrance.x) < 12 and sh.position.y < 10:

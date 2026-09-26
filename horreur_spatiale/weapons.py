@@ -481,10 +481,13 @@ class Weapons:
                             o["v"].z *= .6
                             o["spin"] *= .5
                             if o["kind"] == "casing":
-                                g.audio.play_at("dry_fire", (o["p"].x, o["p"].y, o["p"].z), .25,
-                                                random.uniform(1.8, 2.4), 12)
+                                # la douille tinte et rebondit sur le métal
+                                g.audio.play_var("casing", 3, .35 * min(1, abs(o["v"].y) / 2 + .3),
+                                                 pos=(o["p"].x, o["p"].y, o["p"].z), pitch_range=(.9, 1.2),
+                                                 max_dist=14)
                             else:
-                                g.audio.play_at("locker_open", (o["p"].x, o["p"].y, o["p"].z), .12, 2.0, 10)
+                                g.audio.play_at("mag_drop", (o["p"].x, o["p"].y, o["p"].z), .7,
+                                                random.uniform(.9, 1.05), 16)
                         else:
                             o["rest"] = True
                             o["rot"] = Vec3(90 if o["kind"] == "casing" else 0, o["rot"].y, 0)
@@ -539,7 +542,7 @@ class Weapons:
             return
         if self.mag <= 0:
             self.cooldown = .25
-            g.audio.play("dry_fire", .8)
+            g.audio.play("dry_fire", .9, random.uniform(.95, 1.05))      # déclic sec, dans le silence
             if self.reserve > 0:
                 self.start_reload()
             return
@@ -565,7 +568,14 @@ class Weapons:
         g.player.pitch -= C.PISTOL_RECOIL * (.6 if self.aiming else 1.0)
         g.player.yaw += random.uniform(-.6, .6)
         g.player.trauma = min(1, g.player.trauma + .25)
+        # détonation sèche + longue réverbération métallique (plus longue dans les grandes
+        # salles) + acouphène qui s'estompe : chaque tir se regrette
         g.audio.play("gunshot", 1.0, random.uniform(.95, 1.05))
+        room = g.level.room_at(g.player.x, g.player.z)
+        big = room is not None and room.type in ("hangar", "engine", "command", "mess")
+        g.audio.play("gun_tail_large" if big else "gun_tail_small", .9 if big else .75, random.uniform(.94, 1.04))
+        g.audio.play("tinnitus", .8, random.uniform(.97, 1.03))
+        g.audio.play("slide_click", .35, random.uniform(.95, 1.1))
         g.inp.rumble(1.0, .8, 140)
         cp = camera.world_position
         mw = self.vm_to_world(self.slide, (0, .02, .16))
@@ -718,10 +728,9 @@ class Weapons:
             return
         self.knife_cd = C.KNIFE_COOLDOWN
         self.knife_anim = .35
-        g.audio.play("knife_swing", .6, random.uniform(.9, 1.1))
+        g.audio.play_var("knife_swing", 2, .45)          # la lame fend l'air, à peine audible
         cp = camera.world_position
         fw = camera.forward
-        g.noise((cp.x, cp.y, cp.z), C.NOISE_KNIFE, "knife")
         hit = None
         best = 1e9
         for target, center, radius in g.hit_targets(melee=True):
@@ -734,17 +743,35 @@ class Weapons:
                 continue
             if dist < best:
                 best, hit = dist, target
+        spider = hit is not None and hasattr(hit, "mgr")
+        if spider and not hit.aware:
+            # attaque par surprise : mort instantanée et totalement silencieuse
+            hit.on_hit(999, hit.center3(), False, silent=True)
+            self._spawn_splat(Vec3(*hit.center3()), fw, True)
+            g.audio.play("knife_flesh", .4, random.uniform(.9, 1.05))
+            g.inp.rumble(.4, .2, 100)
+            g.hud.message("Mise à mort silencieuse", color.rgb(.55, .7, .55))
+            self._wear()
+            return
+        # un coup de couteau reste discret (petit rayon, rarement entendu par la bête)
+        g.noise((cp.x, cp.y, cp.z), C.NOISE_KNIFE, "knife")
         if hit is not None:
             mult = C.KNIFE_STEALTH_MULT if not getattr(hit, "aware", True) else 1
             hit.on_hit(C.KNIFE_DAMAGE * mult, hit.center3(), False)
             c = hit.center3()
-            self._spawn_splat(Vec3(*c), fw, hasattr(hit, "mgr"))
-            g.audio.play("knife_hit", .8)
+            self._spawn_splat(Vec3(*c), fw, spider)
+            g.audio.play("knife_flesh", .5, random.uniform(.9, 1.1))          # impact humide
+            if spider:
+                g.audio.play("knife_crack", .4, random.uniform(.9, 1.15))     # craquement de carapace
             g.inp.rumble(.6, .3, 120)
-            broke = g.inventory.wear_knife()
-            if broke:
-                g.audio.play("knife_break", .8)
-                g.hud.message("Ton couteau s'est brisé !", color.orange)
+            self._wear()
+
+    def _wear(self):
+        g = self.game
+        broke = g.inventory.wear_knife()
+        if broke:
+            g.audio.play("knife_break", .7)
+            g.hud.message("Ton couteau s'est brisé !", color.orange)
 
     def destroy(self):
         for s in self.sparks + self.splats:

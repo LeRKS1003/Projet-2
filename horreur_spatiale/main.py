@@ -254,9 +254,12 @@ class Game(Entity):
     def _update_tps(self, dt):
         sh = self.shuttle
         sh.update(dt, self.inp, self.exterior.colliders)
+        if self.state == "tps":
+            sh.update_pilot_aids(dt, self.exterior.colliders, self.exterior)
         if self.state == "tps" and sh.auto is None and self.exterior.in_hangar_entrance(sh.position):
             self.state = "landing"
             self.hud.message("Hangar atteint — atterrissage automatique", color.lime)
+            sh.silence_aids()
             pad = self.builder.pad_center
             sh.start_landing(pad, self._on_landed)
         if self.state == "landing":
@@ -509,7 +512,7 @@ class Game(Entity):
         self.lights.set_nightvision(False)
         self.creature.root.enabled = False
         for a in self.aliens.aliens:
-            a.root.enabled = False
+            a.root.hide()          # les araignées sont des nœuds Panda3D
         self.exterior.set_enabled(True)
         self.builder.show_only({self.level.room("hangar").id})
         self.lights.set_mode("tps")

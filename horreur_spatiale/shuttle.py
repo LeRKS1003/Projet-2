@@ -5,6 +5,12 @@ shuttle.py — Navette pilotable (phase TPS) et caméra à la troisième personn
 Gameplay (inchangé) :
   * vol spatial 6 degrés de liberté simplifié, avec inertie : poussée
     avant/arrière, strafe, montée/descente, tangage/lacet/roulis, boost ;
+  * assistance de vol (F / Triangle) : annule la dérive, freine quand on lâche
+    la poussée, remet le roulis à plat ; sans assistance : inertie pure ;
+  * régulateur : la poussée règle une vitesse cible ; frein d'urgence (X / Rond) ;
+  * rotation avec courbe de réponse, vitesse max et amortissement réglables ;
+  * aide à l'approche du hangar (pointillés lumineux + vitesse conseillée)
+    et avertissement d'obstacle droit devant ;
   * caméra derrière et au-dessus de la navette, avec retard (lissage) ;
   * collisions sphère/boîte (orientée) contre la coque et les débris ->
     dégâts sur la barre d'intégrité ;
@@ -145,6 +151,14 @@ class Shuttle:
         self.blink_t = 0.0
         # entrées mémorisées pour les effets visuels (RCS, inclinaison)
         self.in_strafe = self.in_vert = self.in_thrust = 0.0
+        # pilotage
+        self.assist = C.SHIP_ASSIST_DEFAULT
+        self.target_speed = 0.0
+        self.braking = False
+        self.cam_far = False
+        self.obstacle_warn = 0.0       # secondes avant impact (0 = rien devant)
+        self._warn_timer = 0.0
+        self.approach = None           # (distance, vitesse conseillée) près du hangar
         self.bank = 0.0
         self.tilt = 0.0
         self.gear = 0.0          # 0 = replié, 1 = sorti
@@ -380,6 +394,13 @@ class Shuttle:
     def _fly(self, dt, inp):
         thrust, strafe, vert, pitch, yaw, roll, boost = inp.ship_axes(dt)
         self.in_thrust, self.in_strafe, self.in_vert = thrust, strafe, vert
+        if inp.pressed("ship_assist"):
+            self.assist = not self.assist
+            self.game.hud.message("Assistance de vol : " + ("ACTIVÉE" if self.assist else "DÉSACTIVÉE (inertie pure)"))
+            self.game.audio.play("beep", .5)
+        if inp.pressed("ship_camera"):
+            self.cam_far = not self.cam_far
+        self.braking = inp.held("ship_brake")
         # boost limité
         self.boosting = boost and self.boost > 0 and thrust > 0
         if self.boosting:
@@ -387,24 +408,69 @@ class Shuttle:
         else:
             self.boost = min(C.SHIP_BOOST_MAX, self.boost + C.SHIP_BOOST_REGEN * dt)
         mult = C.SHIP_BOOST_MULT if self.boosting else 1.0
+        vmax = C.SHIP_MAX_SPEED * mult
         self.throttle = max(abs(thrust), abs(strafe) * .6, abs(vert) * .6) * mult
-        # rotation : le taux visé suit l'entrée avec un léger retard (inertie)
-        inv = 1.0 / max(dt, 1e-4)
-        tp = max(-C.SHIP_TURN_RATE * 1.4, min(C.SHIP_TURN_RATE * 1.4, pitch * inv))
-        ty = max(-C.SHIP_TURN_RATE * 1.4, min(C.SHIP_TURN_RATE * 1.4, yaw * inv))
+        # --- rotation : taux visé (courbe de réponse) + amortissement --------
+        tp = pitch * C.SHIP_MAX_TURN
+        ty = yaw * C.SHIP_MAX_TURN
         tr = roll * C.SHIP_ROLL_RATE
-        k = min(1.0, dt * C.SHIP_ANGULAR_DAMP)
+        f, r, u = self.root.forward, self.root.right, self.root.up
+        if self.assist and abs(roll) < .05:
+            # remet doucement le roulis à plat (aile horizontale)
+            bank = math.degrees(math.atan2(r.y, u.y))
+            if abs(u.y) > .2:
+                tr = max(-C.SHIP_ROLL_RATE, min(C.SHIP_ROLL_RATE, bank * C.SHIP_ASSIST_LEVEL))
+        k = min(1.0, dt * C.SHIP_TURN_DAMP)
         self.rate_p += (tp - self.rate_p) * k
         self.rate_y += (ty - self.rate_y) * k
         self.rate_r += (tr - self.rate_r) * k
+        if self.braking:
+            damp = math.exp(-C.SHIP_BRAKE_RATE * dt)
+            self.rate_p *= damp
+            self.rate_y *= damp
+            self.rate_r *= damp
         # rotation relative au repère de la navette (Panda : H=-lacet, P=-tangage)
         self.root.setHpr(self.root, -self.rate_y * dt, -self.rate_p * dt, self.rate_r * dt)
-        # poussée dans le repère local
         f, r, u = self.root.forward, self.root.right, self.root.up
-        acc = f * (thrust * C.SHIP_THRUST * mult) + r * (strafe * C.SHIP_STRAFE) + u * (vert * C.SHIP_VERTICAL)
-        self.vel += acc * dt
-        self.vel *= max(0.0, 1 - C.SHIP_DRAG * dt)
-        vmax = C.SHIP_MAX_SPEED * mult
+        # --- translation ---------------------------------------------------
+        if self.assist:
+            # vitesses dans le repère de la navette
+            vf, vr, vu = self.vel.dot(f), self.vel.dot(r), self.vel.dot(u)
+            if C.SHIP_CRUISE:
+                # régulateur : la poussée fait varier la vitesse cible
+                self.target_speed += thrust * C.SHIP_CRUISE_RATE * mult * dt
+                self.target_speed = max(-vmax * .3, min(vmax, self.target_speed))
+                if not self.boosting and self.target_speed > C.SHIP_MAX_SPEED:
+                    self.target_speed += (C.SHIP_MAX_SPEED - self.target_speed) * min(1, dt * 1.5)
+                acc = C.SHIP_THRUST * mult
+                dv = self.target_speed - vf
+                vf += max(-acc * dt, min(acc * dt, dv))
+            elif abs(thrust) > .05:
+                vf += thrust * C.SHIP_THRUST * mult * dt
+            else:
+                vf *= math.exp(-C.SHIP_ASSIST_BRAKE * dt)      # freine seule quand on lâche
+            # dérive latérale / verticale annulée : la navette va là où pointe le nez
+            if abs(strafe) > .05:
+                vr += strafe * C.SHIP_STRAFE * dt
+            else:
+                vr *= math.exp(-C.SHIP_ASSIST_DRIFT * dt)
+            if abs(vert) > .05:
+                vu += vert * C.SHIP_VERTICAL * dt
+            else:
+                vu *= math.exp(-C.SHIP_ASSIST_DRIFT * dt)
+            vr = max(-vmax * .6, min(vmax * .6, vr))
+            vu = max(-vmax * .6, min(vmax * .6, vu))
+            self.vel = f * vf + r * vr + u * vu
+        else:
+            # inertie pure (Newton), avec une très légère traînée
+            acc = f * (thrust * C.SHIP_THRUST * mult) + r * (strafe * C.SHIP_STRAFE) + u * (vert * C.SHIP_VERTICAL)
+            self.vel += acc * dt
+            self.vel *= max(0.0, 1 - C.SHIP_DRAG * .25 * dt)
+            self.target_speed = self.vel.dot(f)
+        # frein / stabilisation d'urgence
+        if self.braking:
+            self.vel *= math.exp(-C.SHIP_BRAKE_RATE * dt)
+            self.target_speed *= math.exp(-C.SHIP_BRAKE_RATE * dt)
         sp = self.vel.length()
         if sp > vmax:
             self.vel = self.vel * (1 - min(1, dt * 2)) + self.vel.normalized() * vmax * min(1, dt * 2)
@@ -430,6 +496,8 @@ class Shuttle:
                 impact = -vn
                 self.vel -= n * vn * 1.35
                 self.vel *= .85
+                # un choc coupe le régulateur (sinon la navette repartirait dans la paroi)
+                self.target_speed = min(self.target_speed, max(0.0, self.vel.dot(self.root.forward)))
                 if impact > C.SHIP_DAMAGE_MIN_SPEED:
                     dmg = (impact - C.SHIP_DAMAGE_MIN_SPEED) * C.SHIP_DAMAGE_FACTOR
                     self.integrity = max(0.0, self.integrity - dmg)
@@ -445,11 +513,19 @@ class Shuttle:
 
     # ------------------------------------------------------------------
     def camera_follow(self, dt):
-        """Caméra TPS lissée : derrière et au-dessus de la navette."""
+        """
+        Caméra TPS lissée : derrière et au-dessus de la navette. Un peu plus de
+        retard au boost et en virage (sensation de poids), retour rapide quand on
+        vole droit. Option caméra éloignée (C / R3).
+        """
         f = self.root.forward
         u = self.root.up
-        target = self.root.world_position - f * C.TPS_CAM_DISTANCE + u * C.TPS_CAM_HEIGHT
-        k = 1 - math.exp(-C.TPS_CAM_SMOOTH * dt)
+        dist = C.TPS_CAM_FAR_DISTANCE if self.cam_far else C.TPS_CAM_DISTANCE
+        height = C.TPS_CAM_FAR_HEIGHT if self.cam_far else C.TPS_CAM_HEIGHT
+        target = self.root.world_position - f * dist + u * height
+        turning = min(1.0, (abs(self.rate_y) + abs(self.rate_p)) / 90)
+        smooth = C.TPS_CAM_SMOOTH * (1.5 - .75 * turning) * (.65 if self.boosting else 1.0)
+        k = 1 - math.exp(-smooth * dt)
         self.cam_pos = self.cam_pos + (target - self.cam_pos) * k
         self.cam_up = (self.cam_up + (u - self.cam_up) * min(1, dt * 3)).normalized()
         camera.position = self.cam_pos
@@ -464,6 +540,75 @@ class Shuttle:
             camera.rotation_x += random.uniform(-1, 1) * shake * 2
         base_fov = C.FOV - 10
         camera.fov += (base_fov + min(12, self.speed * .35) - camera.fov) * min(1, dt * 3)
+
+    # ------------------------------------------------------------------
+    def update_pilot_aids(self, dt, colliders, exterior):
+        """Avertissement d'obstacle (droit devant, < N s) et aide à l'approche du hangar."""
+        p = self.root.world_position
+        self._warn_timer -= dt
+        if self._warn_timer <= 0:
+            self._warn_timer = .15
+            self.obstacle_warn = 0.0
+            sp = self.speed
+            if sp > 3 and not exterior.in_hangar_entrance(p):
+                d = self.vel / sp
+                horizon = sp * C.SHIP_COLLISION_WARN
+                R = C.SHIP_RADIUS + .6
+                best = None
+                for col in colliders:
+                    c, rad = col.bound()
+                    oc = Vec3(c[0] - p.x, c[1] - p.y, c[2] - p.z)
+                    tproj = oc.dot(d)
+                    if tproj < 0 or tproj - rad > horizon:
+                        continue
+                    if oc.length_squared() - tproj * tproj > (rad + R) ** 2:
+                        continue
+                    # affinage : on échantillonne finement la trajectoire sur la zone utile
+                    t0 = max(0.0, tproj - rad)
+                    t1 = min(horizon, tproj + rad)
+                    step = max(1.2, (t1 - t0) / 40)
+                    tt = t0
+                    while tt <= t1:
+                        q = p + d * tt
+                        cl = col.closest(q)
+                        if (q - cl).length() < R:
+                            if best is None or tt < best:
+                                best = tt
+                            break
+                        tt += step
+                if best is not None:
+                    self.obstacle_warn = best / sp
+        # aide à l'approche
+        e = exterior.entrance
+        mouth = Vec3(e.x, e.y, 0)
+        dm = (p - mouth).length()
+        if dm < C.SHIP_APPROACH_DIST and p.z < 4:
+            self.approach = (dm, C.SHIP_APPROACH_SPEED)
+        else:
+            self.approach = None
+        self._update_guide(dt, exterior)
+
+    def _update_guide(self, dt, exterior):
+        """Pointillés lumineux sur la trajectoire idéale (axe de l'ouverture du hangar)."""
+        if not hasattr(self, "guide"):
+            self.guide = []
+            e = exterior.entrance
+            for k in range(22):
+                z = -58 + k * 3.0
+                n = self._halo(application.base.render, (e.x, e.y - .8, z), .7, (.3, 1, .5))
+                n.hide()
+                self.guide.append(n)
+            self._guide_t = 0.0
+        self._guide_t += dt
+        show = self.approach is not None
+        for k, n in enumerate(self.guide):
+            if show:
+                n.show()
+                # vague lumineuse qui court vers l'ouverture
+                w = .35 + .65 * max(0.0, math.sin(self._guide_t * 5 - k * .45)) ** 4
+                n.setColorScale(.25 * w, .9 * w, .45 * w, 1)
+            else:
+                n.hide()
 
     def cinematic_camera(self, dt, cam_point):
         k = 1 - math.exp(-2.0 * dt)
@@ -685,7 +830,15 @@ class Shuttle:
             c = pt["c"]
             n.setColorScale(c[0] * a, c[1] * a, c[2] * a, 1)
 
+    def silence_aids(self):
+        """Cache l'aide à l'approche et l'alerte d'obstacle (atterrissage, FPS)."""
+        for n in getattr(self, "guide", []):
+            n.hide()
+        self.approach = None
+        self.obstacle_warn = 0.0
+
     def silence(self):
+        self.silence_aids()
         self.engine_snd.set(0, fade=2)
         self.boost_snd.set(0, fade=5)
         for pt in self.particles:
@@ -699,6 +852,8 @@ class Shuttle:
         self.game.audio.stop_loop("ship_engine")
         self.game.audio.stop_loop("ship_boost")
         self.fx_root.removeNode()
+        for n in getattr(self, "guide", []):
+            n.removeNode()
         destroy(self.root)
 
 

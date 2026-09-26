@@ -17,10 +17,29 @@ import random
 
 from ursina import Entity, color, destroy
 
+import numpy as np
+
 import config as C
+import textures
+from geometry import MeshBuilder
 from generator import VENT, CORR, ROOM
 
 WANDER, INVESTIGATE, CHASE, SEARCH, RETREAT, HIDDEN = "ERRANCE", "ENQUETE", "TRAQUE", "RECHERCHE", "RETRAITE", "CACHEE"
+
+
+def _creature_skin(rng):
+    """Peau sombre, humide et brillante, plis, veines, zones de chair plus claires."""
+    s = 256
+    n = textures.fractal_noise(s, s, rng, 6, base=4)
+    folds = textures.fractal_noise(s, s, rng, 5, base=8)
+    veins = np.clip(1 - np.abs(textures.fractal_noise(s, s, rng, 5, base=5) - .5) * 25, 0, 1)
+    flesh = np.clip((textures.fractal_noise(s, s, rng, 4, base=3) - .62) * 5, 0, 1)
+    alb = np.dstack([.07 + .04 * n, .06 + .03 * n, .07 + .035 * n])
+    alb = alb * (1 - flesh[..., None]) + flesh[..., None] * np.array([.32, .22, .22]) * (.7 + .3 * n[..., None])
+    alb = alb * (1 - veins[..., None] * .5)
+    h = .5 + (folds - .5) * .7 + veins * .25
+    rough = np.clip(.12 + .15 * n + flesh * .1, .04, 1)        # très brillante (humide)
+    return np.clip(alb, 0, 1), h, rough, (1.5, 60, 2.6)
 
 
 def _lerp_angle(a, b, t):
@@ -64,44 +83,117 @@ class Creature:
 
     # ------------------------------------------------------------------
     def _build_model(self):
-        dark = color.rgb(.045, .04, .05)
-        dark2 = color.rgb(.07, .06, .07)
-        bone = color.rgb(.16, .14, .13)
+        """
+        Silhouette longue et voûtée en meshes personnalisés : torse extrudé,
+        colonne vertébrale saillante, cage thoracique, bras démesurés à griffes,
+        jambes digitigrades, tête allongée SANS visage dont la mâchoire s'ouvre
+        verticalement (en deux moitiés). Peau sombre, humide et brillante.
+        """
+        skin = textures.material("creature_skin", custom=_creature_skin)
+        SK = (1, 1, 1, 1)
+        BONE = (1.9, 1.75, 1.6, 1)      # plus clair (os / chair sous la peau)
+
+        def mesh(parent, mb, name):
+            np_ = parent.attachNewNode(mb.make_geom_node(name))
+            textures.apply_material(np_, skin)
+            return np_
+
         self.root = Entity(name='creature')
-        self.body = Entity(parent=self.root, y=1.35)
-        # torse allongé penché vers l'avant
-        self.torso = Entity(parent=self.body, model='sphere', color=dark, scale=(.62, 1.35, .5), rotation_x=28, y=.35)
-        Entity(parent=self.torso, model='sphere', color=dark2, scale=(.8, .5, .9), y=-.35)
-        for k in range(5):   # côtes / vertèbres saillantes
-            Entity(parent=self.torso, model='cube', color=bone, scale=(.15, .06, .25), position=(0, .35 - k * .15, -.42))
-        # cou et tête allongée
-        self.neck = Entity(parent=self.body, position=(0, 1.0, .45))
-        self.head = Entity(parent=self.neck, model='sphere', color=dark, scale=(.34, .3, .7), z=.25)
-        Entity(parent=self.head, model='sphere', color=dark2, scale=(.8, .5, .6), position=(0, -.35, .3))   # mâchoire
-        self.eyes = []
-        for s in (-1, 1):
-            e = Entity(parent=self.head, model='sphere', color=color.rgb(1, .75, .2), scale=(.18, .14, .1),
-                       position=(s * .28, .15, .38), unlit=True)
-            self.eyes.append(e)
-        # bras très longs et fins
+        self.body = Entity(parent=self.root, y=1.3)                # bassin
+        # --- torse voûté (extrudé le long de +z, puis redressé) -------------
+        self.torso = Entity(parent=self.body, rotation_x=-62)
+        tb = MeshBuilder(uv_scale=.6)
+        tb.loft([(0, 0, 0, .42, .3, .1), (.3, 0, .02, .5, .36, .14), (.7, 0, .05, .62, .42, .17),
+                 (1.05, 0, .04, .66, .44, .18), (1.3, 0, .0, .5, .34, .14), (1.45, 0, -.02, .26, .2, .08)], SK)
+        # colonne vertébrale saillante (côté dos = +y local)
+        for k in range(12):
+            z = .05 + k * .12
+            tb.bevel_box((0, .22 + .03 * math.sin(k * .7), z), (.07, .1, .07), .02, BONE, rot=(-25, 0, 0))
+        # cage thoracique : côtes qui entourent le ventre (côté -y)
+        for k in range(6):
+            z = .55 + k * .12
+            for sd in (-1, 1):
+                tb.bevel_box((sd * .3, -.08, z), (.05, .06, .05), .015, BONE, rot=(0, 0, sd * 20))
+                tb.bevel_box((sd * .2, -.22, z - .02), (.2, .035, .04), .012, BONE, rot=(0, sd * 10, sd * -35))
+        mesh(self.torso, tb, "creature_torso")
+        # bassin
+        pb = MeshBuilder(uv_scale=.5)
+        pb.bevel_box((0, 0, 0), (.46, .24, .3), .09, SK)
+        pb.bevel_box((0, .12, -.1), (.12, .1, .12), .03, BONE)
+        mesh(self.body, pb, "creature_pelvis")
+        # --- cou et tête allongée sans visage ---------------------------------
+        self.neck = Entity(parent=self.torso, z=1.45, y=-.02)
+        nb = MeshBuilder(uv_scale=.4)
+        nb.loft([(0, 0, 0, .2, .18, .06), (.25, 0, .02, .16, .15, .05)], SK)
+        for k in range(3):
+            nb.bevel_box((0, .1, .04 + k * .08), (.05, .06, .05), .015, BONE)
+        mesh(self.neck, nb, "creature_neck")
+        self.head = Entity(parent=self.neck, z=.25, rotation_x=62)      # la tête regarde vers l'avant
+        hb = MeshBuilder(uv_scale=.4)
+        hb.loft([(-.12, 0, .05, .26, .26, .09), (0, 0, .06, .32, .3, .11), (.22, 0, .05, .27, .24, .09),
+                 (.45, 0, .02, .2, .17, .06), (.62, 0, 0, .12, .1, .04)], SK)      # crâne allongé, lisse
+        hb.bevel_box((0, .16, 0), (.08, .06, .38), .02, BONE)                      # crête
+        mesh(self.head, hb, "creature_head")
+        # mâchoire verticale : deux moitiés gauche / droite qui s'écartent
+        self.jaws = []
+        for sd in (-1, 1):
+            j = Entity(parent=self.head, position=(sd * .03, -.08, .08))
+            jb = MeshBuilder(uv_scale=.3)
+            jb.bevel_box((sd * .06, 0, .22), (.1, .14, .46), .04, SK)
+            for k in range(7):                                                     # dents (cônes)
+                jb.cone((-sd * .005, -.04 + (k % 2) * .03, .06 + k * .06), .012, .07, (2.2, 2.1, 1.9, 1),
+                        (1.6, 1.4, 1.2, 1), 6, (0, 0, 1))
+            np_ = mesh(j, jb, "creature_jaw")
+            np_.setR(sd * 90)          # dents orientées vers l'intérieur de la gueule
+            self.jaws.append((j, sd))
+        # --- bras démesurés terminés par des griffes -------------------------
         self.arms = []
-        for s in (-1, 1):
-            sh = Entity(parent=self.body, position=(s * .38, .85, .3))
-            Entity(parent=sh, model='cube', color=dark, scale=(.1, .9, .1), y=-.45)
-            elbow = Entity(parent=sh, y=-.9)
-            Entity(parent=elbow, model='cube', color=dark, scale=(.08, 1.0, .08), y=-.5)
+        for sd in (-1, 1):
+            sh = Entity(parent=self.torso, position=(sd * .36, 0, 1.25))
+            ab = MeshBuilder(uv_scale=.4)
+            ab.bevel_box((0, 0, 0), (.16, .16, .16), .05, SK)                       # épaule
+            ab.bevel_box((0, -.5, 0), (.1, 1.0, .1), .035, SK)                      # bras
+            ab.bevel_box((0, -.35, .03), (.06, .2, .06), .02, BONE)                 # tendon
+            mesh(sh, ab, "creature_upper_arm")
+            elbow = Entity(parent=sh, y=-1.0)
+            fb = MeshBuilder(uv_scale=.4)
+            fb.bevel_box((0, -.55, 0), (.085, 1.1, .085), .03, SK)
+            fb.bevel_box((0, -1.12, 0), (.13, .12, .1), .04, SK)                    # main
+            mesh(elbow, fb, "creature_forearm")
+            claws = []
             for c in (-1, 0, 1):
-                Entity(parent=elbow, model='cube', color=bone, scale=(.025, .35, .025), position=(c * .04, -1.12, .05),
-                       rotation_x=-20)
-            self.arms.append((sh, elbow))
-        # jambes digitigrades
+                cl = Entity(parent=elbow, position=(c * .045, -1.16, .02), rotation_x=95 + abs(c) * 8,
+                            rotation_z=c * 12)
+                cb = MeshBuilder(uv_scale=.1)
+                cb.cone((0, 0, 0), .02, .42, BONE, (1.2, 1.1, 1.0, 1), 6, (0, 0, 1))
+                mesh(cl, cb, "creature_claw")
+                claws.append(cl)
+            self.arms.append((sh, elbow, claws))
+        # --- jambes digitigrades --------------------------------------------
         self.legs = []
-        for s in (-1, 1):
-            hip = Entity(parent=self.body, position=(s * .22, 0, 0))
-            Entity(parent=hip, model='cube', color=dark, scale=(.14, .75, .14), y=-.37)
-            knee = Entity(parent=hip, y=-.72)
-            Entity(parent=knee, model='cube', color=dark, scale=(.1, .72, .1), y=-.34)
-            self.legs.append((hip, knee))
+        for sd in (-1, 1):
+            hip = Entity(parent=self.body, position=(sd * .2, -.02, 0))
+            lb = MeshBuilder(uv_scale=.4)
+            lb.bevel_box((0, -.36, .05), (.15, .74, .15), .05, SK)
+            mesh(hip, lb, "creature_thigh")
+            knee = Entity(parent=hip, y=-.72, z=.08)
+            kb = MeshBuilder(uv_scale=.4)
+            kb.bevel_box((0, -.33, 0), (.1, .68, .1), .035, SK)
+            kb.bevel_box((0, 0, .04), (.1, .1, .08), .03, BONE)                     # rotule
+            mesh(knee, kb, "creature_shin")
+            ankle = Entity(parent=knee, y=-.66)
+            fb2 = MeshBuilder(uv_scale=.3)
+            fb2.bevel_box((0, -.15, 0), (.08, .32, .08), .03, SK)
+            for c in (-1, 0, 1):
+                fb2.cone((c * .04, -.3, .0), .018, .22, BONE, (1.2, 1.1, 1, 1), 6, (0, 0, 1))
+            mesh(ankle, fb2, "creature_foot")
+            self.legs.append((hip, knee, ankle))
+        self.eyes = []              # sans visage : aucun œil
+        self.jaw_open = 0.0
+        self.twist = 0.0
+        self.twist_target = 0.0
+        self.twist_timer = random.uniform(2, 5)
+        self.hitch = 0.0
 
     # ------------------------------------------------------------------
     def hit_spheres(self):
@@ -142,6 +234,9 @@ class Creature:
             return
         d = math.hypot(pos[0] - self.x, pos[2] - self.z)
         if d > radius:
+            return
+        # le couteau est discret : la bête ne l'entend que tout près, et rarement
+        if kind == "knife" and (d > C.KNIFE_ALERT_DIST or random.random() > C.KNIFE_ALERT_CHANCE):
             return
         if self.state == CHASE and self.can_see:
             return
@@ -424,28 +519,53 @@ class Creature:
     def _animate(self, dt, moved):
         self.root.position = (self.x, 0, self.z)
         self.root.rotation_y = self.yaw
-        self.walk_phase += moved * 2.2
-        ph = self.walk_phase
-        c = self.crawl_k
         t = self.game.time
-        self.body.y = 1.35 * (1 - c * .6) + abs(math.sin(ph)) * .06
-        self.body.rotation_x = c * 55 + (8 if self.state == CHASE else 0)
-        for s, (hip, knee) in zip((1, -1), self.legs):
-            hip.rotation_x = math.sin(ph + (0 if s > 0 else math.pi)) * 35 - 10 - c * 40
-            knee.rotation_x = 25 + max(0, math.sin(ph + (0 if s > 0 else math.pi) + 1.2)) * 40 + c * 40
-        for s, (sh, elbow) in zip((1, -1), self.arms):
-            sw = math.sin(ph + (math.pi if s > 0 else 0)) * 25
-            sh.rotation_x = -15 + sw - c * 70 - (35 if self.state == CHASE else 0)
-            sh.rotation_z = s * (8 + 4 * math.sin(t * 1.3))
-            elbow.rotation_x = -20 - abs(sw) * .4
-        # tête : tics nerveux
-        twitch = math.sin(t * 17) * math.sin(t * 3.1)
-        self.neck.rotation_x = -10 + twitch * 6 - c * 30
-        self.neck.rotation_y = math.sin(t * .7) * 20 + (twitch * 25 if abs(twitch) > .8 else 0)
-        glow = .75 + .25 * math.sin(t * 2)
-        eye_col = color.rgb(1, .15, .05) if self.state == CHASE else color.rgb(glow, .6 * glow, .15 * glow)
-        for e in self.eyes:
-            e.color = eye_col
+        c = self.crawl_k
+        hunt = 1.0 if self.state == CHASE else 0.0
+        # démarche irrégulière : boiterie et petits à-coups
+        self.hitch -= dt
+        if self.hitch <= 0 and moved > 0 and random.random() < dt * .8:
+            self.hitch = random.uniform(.15, .35)
+        stutter = .25 if self.hitch > 0 else 1.0
+        self.walk_phase += moved * 2.2 * stutter
+        ph = self.walk_phase
+        # posture : plus basse et penchée quand elle traque, à quatre pattes dans les conduits
+        self.body.y = 1.3 * (1 - c * .62) - .18 * hunt + abs(math.sin(ph)) * .05
+        self.body.rotation_x = c * 40 + 6 * hunt
+        self.torso.rotation_x = -62 + 18 * hunt + c * 45 + math.sin(t * 1.1) * 2     # respiration
+        for sd, (hip, knee, ankle) in zip((1, -1), self.legs):
+            limp = 1.0 if sd > 0 else .7                                            # boiterie
+            a = math.sin(ph + (0 if sd > 0 else math.pi))
+            hip.rotation_x = a * 32 * limp - 18 - c * 55 - 10 * hunt
+            knee.rotation_x = 38 + max(0, math.sin(ph + (0 if sd > 0 else math.pi) + 1.2)) * 35 + c * 40
+            ankle.rotation_x = -40 - max(0, a) * 15
+        for sd, (sh, elbow, claws) in zip((1, -1), self.arms):
+            sw = math.sin(ph + (math.pi if sd > 0 else 0)) * 22
+            # bras qui pendent, balancent ; tendus vers l'avant en chasse / dans les conduits
+            sh.rotation_x = 62 - 15 + sw - c * 65 - 45 * hunt
+            sh.rotation_z = sd * (10 + 4 * math.sin(t * 1.3 + sd))
+            elbow.rotation_x = -25 - abs(sw) * .4 - 25 * hunt
+            flex = (math.sin(t * 7 + sd) * .5 + .5) * (8 + 20 * hunt)               # griffes qui se crispent
+            for k, cl in enumerate(claws):
+                cl.rotation_x = 95 + (k - 1) ** 2 * 8 - flex
+        # tête : se tord brusquement pour écouter
+        self.twist_timer -= dt
+        listening = self.state in (INVESTIGATE, SEARCH, WANDER)
+        if self.twist_timer <= 0:
+            self.twist_timer = random.uniform(.6, 1.4) if listening else random.uniform(2.5, 5)
+            self.twist_target = random.choice((-1, 1)) * random.uniform(35, 70) if random.random() < .7 else 0.0
+        self.twist += (self.twist_target - self.twist) * min(1, dt * 14)            # mouvement sec
+        tic = math.sin(t * 17) * math.sin(t * 3.1)
+        self.neck.rotation_x = -8 + tic * 5 - c * 25 - 10 * hunt
+        self.neck.rotation_y = math.sin(t * .7) * 12 + (tic * 18 if abs(tic) > .85 else 0)
+        self.head.rotation_z = self.twist
+        # mâchoire verticale : s'entrouvre en traque, grande ouverte près du joueur
+        p = self.game.player
+        near = p is not None and math.hypot(p.x - self.x, p.z - self.z) < 4
+        target = 1.0 if (hunt and near) else (.45 + .15 * math.sin(t * 4)) * hunt + .05
+        self.jaw_open += (target - self.jaw_open) * min(1, dt * 6)
+        for j, sd in self.jaws:
+            j.rotation_y = sd * 32 * self.jaw_open
 
     def _sounds(self, dt, moved):
         g = self.game

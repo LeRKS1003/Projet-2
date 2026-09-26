@@ -47,6 +47,7 @@ KEYS_AZERTY = {
     # navette
     "ship_up": "space", "ship_down": "control", "ship_boost": "shift",
     "ship_roll_left": "a", "ship_roll_right": "e",
+    "ship_assist": "f", "ship_brake": "x", "ship_camera": "c",
 }
 KEYS_QWERTY = dict(KEYS_AZERTY, forward="w", left="a", knife="q", ship_roll_left="q")
 
@@ -270,7 +271,10 @@ NOISE_RUN = 13.0
 NOISE_WALK = 6.0
 NOISE_CROUCH = 1.2
 NOISE_SHOT = 70.0
-NOISE_KNIFE = 3.0
+NOISE_KNIFE = 3.0           # coup de couteau dans le vide
+NOISE_ALIEN_SCREAM = 8.0    # cri d'une araignée blessée (sans mourir) au couteau
+KNIFE_ALERT_DIST = 4.0      # le couteau n'alerte la grande créature qu'en deçà de cette distance...
+KNIFE_ALERT_CHANCE = 0.15   # ... et seulement avec cette probabilité
 NOISE_DOOR = 8.0
 NOISE_LOCKER = 5.0
 
@@ -279,8 +283,8 @@ NOISE_LOCKER = 5.0
 # ----------------------------------------------------------------------------
 HORROR_DURATION = 20.0      # secondes à pleine intensité après un tir
 HORROR_FADE = 10.0          # temps de redescente si le joueur est discret
-HORROR_ALIEN_WAVE = (2, 4)
-HORROR_WAVE_INTERVAL = 9.0
+HORROR_ALIEN_WAVE = (1, 3)
+HORROR_WAVE_INTERVAL = 18.0
 CAMERA_SHAKE = 0.35
 
 # ----------------------------------------------------------------------------
@@ -308,10 +312,15 @@ ALIEN_SPEED = 4.3
 ALIEN_LEAP_DIST = 4.2
 ALIEN_DAMAGE = 11
 ALIEN_BITE_DAMAGE = 5
-ALIEN_MAX = 5
-ALIEN_MAX_HORROR = 9
-ALIEN_SPAWN_INTERVAL = (45.0, 80.0)
-ALIEN_HDD_MULT = 0.45       # intervalle multiplié quand le disque dur est transporté
+ALIEN_MAX = 3               # jamais plus de 3 en même temps sur tout le vaisseau
+ALIEN_MAX_HORROR = 3
+ALIEN_GROUP = (1, 3)        # taille des groupes
+ALIEN_SPAWN_INTERVAL = (90.0, 150.0)
+ALIEN_REST_AFTER_GROUP = 60.0   # répit après la mort de tout un groupe
+ALIEN_HDD_MULT = 0.6        # intervalle multiplié quand le disque dur est transporté
+ALIEN_HDD_AGGRO = 1.25      # avec le disque dur : plus rapides et bondissent de plus loin
+ALIEN_CEILING_CHANCE = 0.5  # probabilité qu'une araignée tombée du plafond y rampe d'abord
+ALIEN_CORPSE_TIME = 7.0     # durée pendant laquelle le cadavre reste au sol
 INFESTED_CORPSE_CHANCE = 0.22
 
 # ----------------------------------------------------------------------------
@@ -332,9 +341,27 @@ SHIP_ANGULAR_DAMP = 5.0
 SHIP_RADIUS = 2.1
 SHIP_INTEGRITY = 100.0
 SHIP_DAMAGE_FACTOR = 3.2    # dégâts par m/s d'impact
-SHIP_DAMAGE_MIN_SPEED = 2.5
+SHIP_DAMAGE_MIN_SPEED = 4.5 # les frottements en dessous de cette vitesse d'impact ne font aucun dégât
+# --- assistance de vol / régulateur / freinage ---
+SHIP_ASSIST_DEFAULT = True  # assistance de vol activée au départ (touche F / Triangle)
+SHIP_ASSIST_DRIFT = 2.6     # vitesse d'annulation de la dérive latérale/verticale (assistance)
+SHIP_ASSIST_BRAKE = 1.6     # freinage automatique quand on lâche la poussée (assistance)
+SHIP_ASSIST_LEVEL = 1.2     # retour du roulis à plat quand on ne touche plus au roulis
+SHIP_CRUISE = True          # régulateur : la poussée règle une vitesse cible
+SHIP_CRUISE_RATE = 14.0     # m/s de vitesse cible gagnés par seconde de poussée
+SHIP_BRAKE_RATE = 2.5       # frein d'urgence (touche X / Rond)
+SHIP_LOOK_DEADZONE = 0.02   # zone morte de la commande de rotation (souris et stick)
+SHIP_MOUSE_SENS = 0.9       # sensibilité de la souris en vol
+SHIP_LOOK_EXPONENT = 1.6    # courbe de réponse (1 = linéaire)
+SHIP_MAX_TURN = 85.0        # vitesse de rotation max (degrés / s)
+SHIP_TURN_DAMP = 7.0        # amortissement (évite les dépassements)
+SHIP_APPROACH_DIST = 60.0   # distance d'affichage de l'aide à l'approche du hangar
+SHIP_APPROACH_SPEED = 8.0   # vitesse conseillée pour entrer dans le hangar
+SHIP_COLLISION_WARN = 3.0   # avertissement si un obstacle est à moins de N secondes de vol
 TPS_CAM_DISTANCE = 16.0
 TPS_CAM_HEIGHT = 4.6
+TPS_CAM_FAR_DISTANCE = 26.0 # caméra éloignée (touche C / R3)
+TPS_CAM_FAR_HEIGHT = 7.5
 TPS_CAM_SMOOTH = 4.5        # plus grand = caméra plus réactive
 SHIP_START_DISTANCE = 150.0
 DEBRIS_COUNT = 70

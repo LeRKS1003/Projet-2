@@ -4,8 +4,8 @@ audio.py — Génération procédurale de tous les sons (numpy -> .wav) et
 lecture avec spatialisation simple (volume selon la distance, balance
 gauche/droite selon l'orientation de la caméra).
 
-Les .wav sont créés au premier lancement dans generated/sounds/ puis
-réutilisés. Les boucles (moteurs, réacteur, alarme, musique) sont
+Les .wav sont créés au premier lancement dans generated/sounds/vN/ puis
+réutilisés (N = SOUND_VERSION : l'incrémenter force leur régénération). Les boucles (moteurs, réacteur, alarme, musique) sont
 synthétisées avec des fréquences entières sur la durée de la boucle et
 du bruit périodique (FFT) : elles bouclent sans claquement.
 """
@@ -19,7 +19,8 @@ import config as C
 
 SR = C.SAMPLE_RATE
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SOUND_DIR = os.path.join(BASE_DIR, C.SOUND_CACHE_DIR)
+SOUND_VERSION = 2
+SOUND_DIR = os.path.join(BASE_DIR, C.SOUND_CACHE_DIR, f"v{SOUND_VERSION}")
 
 
 # ============================================================================
@@ -96,6 +97,174 @@ def _write(name, sig):
         w.setsampwidth(2)
         w.setframerate(SR)
         w.writeframes(data.tobytes())
+
+
+# ============================================================================
+# ARMES ET ARAIGNÉES (v2 : plus secs, plus crus, plus angoissants)
+# ============================================================================
+def _metal_ring(t, freqs, decay, rng):
+    """Résonances métalliques inharmoniques (tôles, couloirs)."""
+    s = np.zeros(len(t))
+    for k, f in enumerate(freqs):
+        s += np.sin(2 * np.pi * f * t + rng.uniform(0, 6)) * np.exp(-t * decay * (1 + k * .15)) / (1 + k * .4)
+    return s
+
+
+def _clicks(t, times, lo, hi, sharp, rng, ring=None):
+    """Série de petits impacts (pattes, mandibules, mécanique)."""
+    s = np.zeros(len(t))
+    for t0, amp in times:
+        tt = np.clip(t - t0, 0, None)
+        on = t >= t0
+        s += on * _band(_noise(len(t), rng), lo, hi) * np.exp(-tt * sharp) * amp
+        if ring:
+            s += on * np.sin(2 * np.pi * ring * rng.uniform(.9, 1.15) * tt) * np.exp(-tt * sharp * .6) * amp * .5
+    return s
+
+
+def gen_weapons_spiders(rng):
+    """Renvoie {nom: signal} pour les armes et les araignées."""
+    out = {}
+
+    # --- pistolet : détonation sèche et violente -------------------------
+    t = _t(0.45)
+    crack = _band(_noise(len(t), rng), 1800, 10000) * np.exp(-t * 90)
+    click = np.exp(-t * 900) * 2.5
+    boom = np.sin(2 * np.pi * np.cumsum(120 * np.exp(-t * 9) + 42) / SR) * np.exp(-t * 11) * 1.6
+    body = _lowpass(_noise(len(t), rng), 2200) * np.exp(-t * 22)
+    early = np.zeros(len(t))
+    for d, a in ((.011, .5), (.019, .35), (.031, .25)):          # premières réflexions sur les parois
+        k = int(d * SR)
+        early[k:] += crack[:len(t) - k] * a
+    s = np.tanh((crack * 1.3 + click + boom + body + early) * 1.6)
+    out["gunshot"] = _norm(_fade(s, .0002, .05), .99)
+    # queue de réverbération métallique (petite pièce / grande salle)
+    for name, L, freqs, echo in (("gun_tail_small", 2.2, (180, 263, 397, 588, 881, 1310), ()),
+                                  ("gun_tail_large", 4.5, (96, 141, 212, 318, 477, 715, 1073), (.42, .86, 1.31))):
+        t = _t(L)
+        ir = _lowpass(_noise(len(t), rng), 3800) * np.exp(-t * 3.2 / L * 1.6)
+        ring = _metal_ring(t, freqs, 2.4 / L * 2.2, rng) * .35
+        s = (ir + ring) * np.clip(t / .03, 0, 1)
+        for e in echo:                                              # échos discrets des couloirs
+            k = int(e * SR)
+            s[k:] += _lowpass(_noise(len(t) - k, rng), 1800) * np.exp(-(t[:len(t) - k]) * 18) * .5 * (1 - e / L)
+        out[name] = _norm(_fade(s, .01, .6), .55)
+    # acouphène : sifflement aigu qui s'éteint en ~2,5 s
+    t = _t(3.0)
+    tt = np.clip(t - .12, 0, None)
+    s = (np.sin(2 * np.pi * 4150 * t) + .5 * np.sin(2 * np.pi * 4212 * t)) * np.exp(-tt * 1.4) * (t > .12)
+    s *= np.clip(tt / .25, 0, 1)
+    out["tinnitus"] = _norm(s, .22)
+    # mécanique
+    t = _t(0.14)
+    out["slide_click"] = _norm(_clicks(t, ((0, 1), (.045, .8)), 2500, 9000, 260, rng, 3200), .5)
+    t = _t(0.3)
+    s = np.exp(-t * 700) * 1.5 + _clicks(t, ((0, 1),), 3000, 9000, 400, rng) + \
+        np.sin(2 * np.pi * 1850 * t) * np.exp(-t * 55) * .35                       # ressort qui vibre
+    out["dry_fire"] = _norm(s, .6)
+    for k in range(3):                                                             # douilles qui tintent
+        t = _t(0.55)
+        s = np.zeros(len(t))
+        for t0, a in ((0, 1), (.13 + k * .02, .45), (.22 + k * .03, .2)):
+            tt = np.clip(t - t0, 0, None)
+            s += (t >= t0) * _metal_ring(tt, (3900 + k * 400, 5600 + k * 350, 7900), 30, rng) * a
+        out[f"casing{k}"] = _norm(s, .5)
+    t = _t(0.6)
+    s = _lowpass(_noise(len(t), rng), 500) * np.exp(-t * 20) * 1.4 + np.sin(2 * np.pi * 170 * t) * np.exp(-t * 16)
+    s += _clicks(t, ((.05, .4), (.11, .25), (.18, .15)), 1500, 5000, 90, rng, 2300)
+    out["mag_drop"] = _norm(s, .6)
+    # rechargement synchronisé sur l'animation (éjection .25 s, insertion .9 s, culasse 1.15 s)
+    t = _t(1.6)
+    s = _clicks(t, ((.08, .8),), 2500, 8000, 220, rng, 2600)                       # bouton de chargeur
+    tt = np.clip(t - .22, 0, .25)
+    s += (t > .22) * (t < .47) * _band(_noise(len(t), rng), 900, 4000) * np.sin(np.pi * tt / .25) * .35
+    s += _clicks(t, ((.62, .3),), 800, 3000, 60, rng)                               # prise du chargeur
+    s += _clicks(t, ((.93, 1.2),), 400, 3000, 70, rng, 700)                         # insertion : clac sourd
+    s += _clicks(t, ((1.15, 1.0), (1.2, .7)), 2000, 9000, 180, rng, 1900)           # culasse relâchée
+    out["reload"] = _norm(s, .65)
+    # --- couteau : intime, cru, retenu -----------------------------------
+    for k in range(2):
+        t = _t(0.28)
+        f0 = 600 + k * 300
+        n = _noise(len(t), rng)
+        s = _band(n, f0, f0 * 5) * np.sin(np.pi * t / .28) ** 3
+        out[f"knife_swing{k}"] = _norm(s, .32)
+    out["knife_swing"] = out["knife_swing0"]
+    t = _t(0.45)
+    sq = _lowpass(_noise(len(t), rng), 700) * np.exp(-t * 9)
+    sq *= 1 + .8 * np.sin(2 * np.pi * (30 + 60 * t) * t)                          # bouillonnement humide
+    s = sq + np.sin(2 * np.pi * np.cumsum(220 * np.exp(-t * 6) + 60) / SR) * np.exp(-t * 14) * .5
+    out["knife_flesh"] = _norm(_fade(s), .55)
+    out["knife_hit"] = out["knife_flesh"]
+    t = _t(0.4)
+    s = _clicks(t, [(rng.uniform(0, .06), rng.uniform(.5, 1)) for _ in range(7)], 1200, 7000, 160, rng)
+    s += _lowpass(_noise(len(t), rng), 1500) * np.exp(-t * 25) * .6
+    out["knife_crack"] = _norm(s, .55)
+    t = _t(0.5)
+    out["knife_break"] = _norm(_metal_ring(t, (1800, 2700, 4100, 5900), 12, rng), .45)
+
+    # --- araignées -------------------------------------------------------
+    for k in range(4):                          # grattements irréguliers de pattes sur le métal
+        dur = rng.uniform(.45, .8)
+        t = _t(dur)
+        times, x = [], 0.0
+        while x < dur - .05:
+            times.append((x, rng.uniform(.3, 1)))
+            x += rng.uniform(.012, .07) if rng.random() < .7 else rng.uniform(.08, .16)
+        s = _clicks(t, times, 2200, 9000, rng.uniform(140, 260), rng, ring=rng.uniform(3000, 5200))
+        s = _fade(s, .002, .04)
+        out[f"alien_skitter{k}"] = _norm(s, .5)
+        out[f"alien_skitter{k}_m"] = _norm(_lowpass(s, 1100), .3)       # étouffé (derrière une cloison)
+    out["alien_skitter"] = out["alien_skitter0"]
+    for k in range(2):                          # cliquetis de mandibules
+        t = _t(.35)
+        s = _clicks(t, [(j * rng.uniform(.035, .06), rng.uniform(.6, 1)) for j in range(5 + k)], 600, 3500, 300, rng,
+                    ring=900 + 300 * k)
+        out[f"alien_click{k}"] = _norm(s, .42)
+    for k in range(2):                          # sifflement de mise en garde
+        t = _t(.9 + .3 * k)
+        s = _band(_noise(len(t), rng), 2500 + 800 * k, 9000) * np.sin(np.pi * t / t[-1]) ** 2
+        s *= 1 + .6 * np.sin(2 * np.pi * (14 + 6 * k) * t)
+        out[f"alien_hiss{k}"] = _norm(s, .35)
+    t = _t(1.4)                                 # respiration humide et gargouillis
+    br = _band(_noise(len(t), rng), 250, 1600) * (np.sin(np.pi * t / 1.4) ** 2)
+    bubbles = _clicks(t, [(rng.uniform(.1, 1.2), rng.uniform(.2, .6)) for _ in range(9)], 150, 900, 60, rng, 260)
+    out["alien_breath"] = _norm(br + bubbles, .35)
+    for k in range(3):                          # cri déchiré qui monte avant le bond
+        dur = .55 + .1 * k
+        t = _t(dur)
+        f = 500 + 3200 * (t / dur) ** 1.6 + 250 * np.sin(2 * np.pi * (23 + 7 * k) * t)
+        ph = 2 * np.pi * np.cumsum(f) / SR
+        s = np.sin(ph) + .6 * np.sin(ph * 1.51) + .4 * np.sin(ph * 2.03)
+        s += _band(_noise(len(t), rng), 1800, 9000) * (.6 + .8 * t / dur)
+        s = np.tanh(s * 2.2) * np.clip(t / .04, 0, 1) * np.clip((dur - t) / .08, 0, 1)
+        out[f"alien_shriek{k}"] = _norm(_reverb(s, rng, .8, .25), .8)
+    out["alien_screech0"] = out["alien_shriek0"]
+    out["alien_screech1"] = out["alien_shriek1"]
+    for k in range(2):                          # mort : craquement, gargouillis, pattes qui grattent encore
+        t = _t(1.8)
+        crack = _clicks(t, [(rng.uniform(0, .07), 1.0) for _ in range(6)], 900, 6000, 130, rng)
+        f = 700 * np.exp(-t * 2.5) + 90
+        garg = np.sin(2 * np.pi * np.cumsum(f) / SR) * (1 + .7 * np.sin(2 * np.pi * 21 * t)) * np.exp(-t * 2.3)
+        garg += _lowpass(_noise(len(t), rng), 600) * np.exp(-t * 3) * .6
+        legs = _clicks(t, [(rng.uniform(.6, 1.6), rng.uniform(.1, .35)) for _ in range(10)], 2500, 8000, 200, rng)
+        out[f"alien_die{k}"] = _norm(_fade(crack * 1.2 + garg * .8 + legs), .75)
+    out["alien_die"] = out["alien_die0"]
+    # présence invisible : boucle de grattements lointains (bouclable)
+    d = 4.0
+    t = _t(d)
+    s = np.zeros(len(t))
+    x = 0.0
+    while x < d - .3:
+        n = rng.integers(3, 9)
+        for j in range(n):
+            t0 = x + j * rng.uniform(.02, .06)
+            tt = np.clip(t - t0, 0, None)
+            s += (t >= t0) * np.exp(-tt * 220) * rng.uniform(.3, 1)
+        x += rng.uniform(.35, 1.1)
+    s = _lowpass(_band(s * _noise(len(t), rng), 1500, 7000), 3500)
+    out["alien_scratch_loop"] = _norm(_fade(s, .05, .05), .4)
+    return out
 
 
 # ============================================================================
@@ -454,11 +623,24 @@ def gen_all(force=False):
         "hdd_pickup": hdd_pickup, "beep": beep, "flashlight_click": flashlight_click, "nv_on": nv_on,
         "spark": spark, "ui_select": ui_select, "victory": victory,
     }
-    for name, fn in table.items():
-        path = os.path.join(SOUND_DIR, name + ".wav")
-        if force or not os.path.exists(path):
-            _write(name, fn())
-        sounds[name] = path
+    # armes et araignées v2 (remplacent les anciennes versions de même nom)
+    pending = [n for n in table if force or not os.path.exists(os.path.join(SOUND_DIR, n + ".wav"))]
+    ws_names = ("gunshot", "gun_tail_small", "tinnitus", "alien_skitter0", "alien_scratch_loop")
+    need_ws = force or any(not os.path.exists(os.path.join(SOUND_DIR, n + ".wav")) for n in ws_names)
+    ws = gen_weapons_spiders(np.random.default_rng(417)) if need_ws else {}
+    for name, sig in ws.items():
+        _write(name, sig)
+    for name in pending:
+        if name in ws:
+            continue
+        _write(name, table[name]())
+    for name in list(table) + list(ws):
+        sounds[name] = os.path.join(SOUND_DIR, name + ".wav")
+    if not ws:
+        # cache déjà présent : on retrouve aussi les sons v2 sur le disque
+        for f in os.listdir(SOUND_DIR):
+            if f.endswith(".wav"):
+                sounds.setdefault(f[:-4], os.path.join(SOUND_DIR, f))
     return sounds
 
 
@@ -506,9 +688,11 @@ class LoopSound:
 class AudioSystem:
     """Chargement des .wav et lecture (2D / 3D / boucles)."""
 
-    POLY = {"step0": 2, "step1": 2, "step2": 2, "step3": 2, "gunshot": 3, "alien_screech0": 3,
-            "alien_screech1": 3, "alien_die": 3, "knife_swing": 2, "knife_hit": 2, "alien_skitter": 3,
-            "creature_step": 3, "pickup": 2, "beep": 2, "ui_select": 2, "spark": 2}
+    POLY = {"step0": 2, "step1": 2, "step2": 2, "step3": 2, "gunshot": 3, "gun_tail_small": 2,
+            "gun_tail_large": 2, "alien_screech0": 2, "alien_screech1": 2, "alien_die": 2, "knife_swing": 2,
+            "knife_hit": 2, "alien_skitter": 2, "creature_step": 3, "pickup": 2, "beep": 2, "ui_select": 2,
+            "spark": 2, "casing0": 2, "casing1": 2, "casing2": 2, "alien_skitter0": 2, "alien_skitter1": 2,
+            "alien_skitter2": 2, "alien_skitter3": 2, "alien_click0": 2, "alien_click1": 2}
 
     def __init__(self):
         from ursina import application
@@ -573,11 +757,29 @@ class AudioSystem:
             bal = 0.0
         return att, bal
 
-    def play_at(self, name, pos, volume=1.0, pitch=1.0, max_dist=None):
+    def play_at(self, name, pos, volume=1.0, pitch=1.0, max_dist=None, occluded=False):
+        """
+        Son 3D. occluded=True : la source est derrière une cloison ou dans un
+        conduit -> version étouffée (suffixe _m) si elle existe, volume réduit.
+        """
         att, bal = self.spatial(pos, max_dist)
         if att <= 0.01:
             return None
+        if occluded:
+            volume *= .45
+            if name + "_m" in self.pool:
+                name = name + "_m"
         return self.play(name, volume * att, pitch, bal)
+
+    def play_var(self, prefix, count, volume=1.0, pos=None, pitch_range=(.9, 1.12), max_dist=None,
+                 occluded=False):
+        """Joue une variante au hasard (prefix0..prefixN-1) avec une hauteur aléatoire."""
+        import random
+        name = f"{prefix}{random.randrange(count)}"
+        pitch = random.uniform(*pitch_range)
+        if pos is None:
+            return self.play(name, volume, pitch)
+        return self.play_at(name, pos, volume, pitch, max_dist, occluded)
 
     def loop(self, key, name, base_volume=1.0, music=False, ambient=False):
         """Crée (ou récupère) une boucle nommée 'key'."""
