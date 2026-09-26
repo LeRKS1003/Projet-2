@@ -36,6 +36,7 @@ class Space:
         self.root = Entity(name='space_root')
         self.root.setLightOff(1)
         self.root.setFogOff(1)
+        self.root.setPythonTag("emissive", True)      # le ciel est lumineux par lui-même
         self.root.setBin('background', 0)
         self.root.setDepthWrite(False)
         self.root.setDepthTest(False)

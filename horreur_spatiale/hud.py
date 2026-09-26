@@ -52,6 +52,9 @@ class HUD:
         self.blood = _overlay(textures.get('red_vignette'), color.rgba(1, 1, 1, 0), z=4.5)
         self.locker = _overlay(textures.get('locker_slits'), color.rgba(1, 1, 1, 0), z=4.4)
         self.fade = _overlay(None, color.rgba(0, 0, 0, 0), z=-20)
+        # flash blanc d'une seule image (screamer ; désactivable : config.SCREAMER_FLASH)
+        self.white = _overlay(None, color.rgba(1, 1, 1, 0), z=-19)
+        self._white_frames = 0
         self.fade_target = 0.0
         self.fade_speed = 1.0
         self.fade_value = 0.0
@@ -157,12 +160,22 @@ class HUD:
         self.fade_target = alpha
         self.fade_speed = 1.0 / max(.01, duration)
 
+    def flash_frame(self):
+        """Flash blanc plein écran pendant une image."""
+        self._white_frames = 1
+        self.white.color = color.rgba(1, 1, 1, 1)
+
     def set_fade(self, alpha):
         self.fade_value = self.fade_target = alpha
         self.fade.color = color.rgba(0, 0, 0, alpha)
 
     # ------------------------------------------------------------------
     def update(self, dt):
+        # flash blanc (une image)
+        if self._white_frames > 0:
+            self._white_frames -= 1
+        elif self.white.color.a > 0:
+            self.white.color = color.rgba(1, 1, 1, 0)
         # fondu au noir
         if self.fade_value != self.fade_target:
             d = self.fade_target - self.fade_value

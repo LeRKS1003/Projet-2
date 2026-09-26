@@ -29,6 +29,11 @@ from ursina import (Ursina, Entity, Text, camera, color, mouse, window, applicat
 app = Ursina(title=C.TITLE, development_mode=True, editor_ui_enabled=False, borderless=False,
              fullscreen=C.FULLSCREEN, size=C.WINDOW_SIZE, vsync=C.VSYNC)
 window.color = color.black
+# IMPORTANT : Ursina 8 donne par défaut à chaque entité un shader NON ÉCLAIRÉ
+# (unlit_with_fog_shader) qui affiche tout en pleine lumière, quel que soit
+# l'éclairage. Sans shader propre, les entités héritent du shader automatique
+# de Panda3D (éclairage par pixel, ci-dessous). Sans effet sous Ursina 7.
+Entity.default_shader = None
 if hasattr(window, "editor_ui"):
     window.editor_ui.enabled = False     # cache le bouton X et les compteurs d'Ursina
 application.base.render.setShaderAuto()     # éclairage par pixel (lampe torche, néons)
@@ -51,6 +56,9 @@ from aliens import AlienManager  # noqa: E402
 from horror import HorrorManager  # noqa: E402
 from postfx import PostFX  # noqa: E402
 from loot import NOTES  # noqa: E402
+from power import PowerSystem  # noqa: E402
+from screamer import Screamer  # noqa: E402
+from lighting import audit_unlit  # noqa: E402
 
 
 class _NoInput:
@@ -80,11 +88,14 @@ class _MaskedInput:
         return getattr(self.inp, name)
 
 
+# (intensité du sursaut, texte avec courant, texte sans courant)
 ROOM_EVENTS = {
-    "engine": (.7, "Le réacteur gronde. Quelque chose a griffé les parois."),
-    "medbay": (.5, "L'infirmerie... Les néons grésillent."),
-    "command": (.4, "La passerelle. Le disque dur doit être sur une console."),
-    "mess": (.3, None),
+    "engine": (.7, "Le réacteur gronde. Quelque chose a griffé les parois.",
+               "Le réacteur est à l'arrêt. Le tableau électrique principal doit être ici."),
+    "medbay": (.5, "L'infirmerie... Les néons grésillent.", "L'infirmerie. Des tables d'opération dans le noir..."),
+    "command": (.4, "La passerelle. Le disque dur doit être sur une console.",
+                "La passerelle. Le disque dur doit être sur une console."),
+    "mess": (.3, None, None),
 }
 
 
@@ -108,6 +119,7 @@ class Game(Entity):
         self.level = self.builder = self.lights = self.space = self.exterior = None
         self.shuttle = self.player = self.weapons = self.inventory = self.inventory_ui = None
         self.creature = self.aliens = self.director = self.horror = None
+        self.power = self.screamer = None
         self.stats = {"kills": 0, "start": 0.0, "notes": 0}
         self.current_room = None
         self.loading_text = Text(parent=camera.ui, text="", origin=(0, 0), scale=1.4, color=color.rgb(.7, .8, .8),
@@ -187,6 +199,9 @@ class Game(Entity):
         self.inventory_ui = InventoryUI(self)
         self.weapons = Weapons(self)
         self.weapons.show(False)
+        # courant du vaisseau (coupé au départ) et casier piégé
+        self.power = PowerSystem(self, self.level, self.builder, random.Random(seed * 5 + 1))
+        self.screamer = Screamer(self, self.builder.loot_dir.lockers, random.Random(seed * 11 + 3))
         self.horror = HorrorManager(self)
         self.player = self.creature = self.aliens = self.director = None
         self.stats = {"kills": 0, "start": self.time, "notes": 0}
@@ -213,6 +228,9 @@ class Game(Entity):
     def _cleanup_world(self):
         if self.world_root is None:
             return
+        if self.screamer is not None:
+            self.screamer.destroy()
+        self.audio.duck = self.audio.duck_target = 1.0
         for obj in (self.creature, self.aliens, self.shuttle, self.weapons, self.inventory_ui, self.exterior,
                     self.space):
             if obj is not None:
@@ -227,6 +245,7 @@ class Game(Entity):
         self.level = self.builder = self.lights = self.space = self.exterior = None
         self.shuttle = self.player = self.weapons = self.inventory = self.inventory_ui = None
         self.creature = self.aliens = self.director = self.horror = None
+        self.power = self.screamer = None
         self.audio.stop_all_loops()
         camera.position = (0, 0, 0)
         camera.rotation = (0, 0, 0)
@@ -298,6 +317,10 @@ class Game(Entity):
         p = sh.root.world_position
         L.add_blocker(Blocker(p.x - 3.1, p.x + 3.1, 0, 3.0, p.z - 4.6, p.z + 4.6, "prop"))
         self.shuttle_interact = ShuttleInteract(self, L, sh)
+        # le phare et les feux de la navette posée éclairent un peu le hangar
+        hangar_group = self.builder.groups.get(("room", L.room("hangar").id))
+        if hangar_group is not None:
+            sh.park_lights(self.lights, hangar_group.root)
         # le joueur sort par le sas latéral
         r = sh.root.right
         px, pz = p.x + r.x * 4.2, p.z + r.z * 4.2
@@ -321,7 +344,12 @@ class Game(Entity):
         self.hud.message("Pistolet récupéré dans la navette (%d + %d balles)." % (C.PISTOL_START_MAG,
                                                                                 C.PISTOL_START_RESERVE))
         self.hud.message("Chaque tir fera du bruit. Beaucoup de bruit.", color.rgb(.8, .6, .5))
+        if not self.power.on:
+            self.hud.message("Le vaisseau est mort : plus une seule lumière. Rétablis le courant "
+                             "dans la salle des machines.", color.rgb(.7, .8, .9))
         self.audio.play("door_open", .8)
+        # vérification : aucune entité du décor ne doit être restée « non éclairée »
+        audit_unlit(application.base.render, "vaisseau")
 
     def _update_fps(self, dt):
         inp = self.inp
@@ -395,14 +423,30 @@ class Game(Entity):
         self.aliens.update(dt)
         self.director.update(dt)
         self.horror.update(dt)
+        self.power.update(dt)
+        self.screamer.update(dt)
         lt.update(dt, (cp.x, cp.y, cp.z), self.horror.light_level)
+        self.shuttle.update_parked(lt.time)
         self.space.update(dt)
         self._room_events()
+        # touches de test : F4 bascule le courant, F5 déclenche le screamer
+        if C.DEBUG_KEYS and not self.ui_consumed:
+            if inp.pressed("debug_power"):
+                self.power.debug_toggle()
+            if inp.pressed("debug_screamer"):
+                self.screamer.trigger(None)
         if inp.debug_overlay:
             cr = self.creature
+            pm = lt.power
+            states = {}
+            for fx in lt.fixtures:
+                s_ = pm.fixture_state(fx, lt.time)
+                states[s_] = states.get(s_, 0) + 1
             inp.debug_overlay.extra = (f"\nCréature : {cr.state}  vue={cr.can_see}\n"
                                        f"Aliens : {len(self.aliens.alive)}  horreur={self.horror.level:.2f}\n"
-                                       f"Directrice : pression={self.director.pressure:.2f}")
+                                       f"Directrice : pression={self.director.pressure:.2f}\n"
+                                       f"Courant : {self.power.state} / {pm.state}  "
+                                       + "  ".join(f"{k} {v}" for k, v in sorted(states.items())))
 
     def _room_events(self):
         p = self.player
@@ -411,10 +455,12 @@ class Game(Entity):
             self.current_room = room
             if room is not None and not room.visited:
                 room.visited = True
+                self.screamer.on_room_visited(room)
                 self.hud.message(room.name.upper(), color.rgb(.6, .75, .8))
                 ev = ROOM_EVENTS.get(room.type)
                 if ev:
-                    strength, text = ev
+                    strength, text_on, text_off = ev
+                    text = text_on if self.power.on else text_off
                     if random.random() < .8:
                         self.horror.scripted_scare(strength)
                     if text:
@@ -442,11 +488,23 @@ class Game(Entity):
         return self.inventory is not None and self.inventory.has("hdd")
 
     def objective_text(self):
+        pw = self.power
+        if pw is not None and not pw.on and not self.has_hdd():
+            if pw.state == "restarting":
+                return "OBJECTIF : le courant revient..."
+            txt = "OBJECTIF : rétablis le courant dans la salle des machines"
+            if pw.fuses_needed and pw.fuses_inserted < pw.fuses_needed:
+                txt += f"  (fusibles {pw.fuses_inserted + pw.fuses_held}/{pw.fuses_needed})"
+            return txt
         if not self.has_hdd():
             return "OBJECTIF : récupère le disque dur dans la salle de commandement"
         return "OBJECTIF : retourne au hangar et repars avec la navette"
 
     def objective_target(self):
+        pw = self.power
+        if pw is not None and not pw.on and not self.has_hdd() and pw.spec is not None:
+            p = pw.spec["pos"]
+            return (p[0], p[2])
         if not self.has_hdd():
             h = self.builder.hdd
             return (h.pos[0], h.pos[2]) if h and not h.taken else None

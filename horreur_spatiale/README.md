@@ -7,8 +7,9 @@ Aucun asset externe : toute la géométrie est faite de primitives, les textures
    (antennes, panneaux solaires arrachés, débris qui tournent). Trouve l'ouverture du hangar grâce aux balises
    rouges/vertes et à la flèche du HUD. Chaque collision abîme la coque. Une fois l'ouverture franchie, la navette
    se pose toute seule, l'écran s'assombrit, tu sors à pied.
-2. **Phase 2 – Exploration (FPS)** : atteins la salle de commandement, récupère le disque dur, reviens au hangar
-   et repars. Une grande créature invulnérable rôde ; de petits parasites attaquent. **Chaque tir déclenche le
+2. **Phase 2 – Exploration (FPS)** : le vaisseau est **plongé dans le noir total** (plus de courant). Retrouve
+   2 ou 3 fusibles, rétablis le courant dans la salle des machines, puis atteins la salle de commandement
+   (verrouillée tant qu'il n'y a pas de courant), récupère le disque dur, reviens au hangar et repars. Une grande créature invulnérable rôde ; de petits parasites attaquent. **Chaque tir déclenche le
    mode horreur** (alarmes, lumières rouges, musique stridente, la créature fonce vers le bruit, des parasites
    sortent des conduits). Couteau et discrétion sont souvent de meilleures options.
 
@@ -32,7 +33,9 @@ horreur_spatiale/
 ├── creature.py     IA de la grande créature (A*, états, perception) + directrice d'IA
 ├── aliens.py       IA des petites créatures (mouvement saccadé, bonds, apparitions)
 ├── horror.py       mode horreur, propagation du bruit, tension, battements de cœur, événements d'ambiance
-├── lighting.py     lumière ambiante, lampe torche, pool de lumières dynamiques, néons, alarmes, vision nocturne
+├── lighting.py     lumière ambiante, lampe torche, pool de lumières, néons, vision nocturne, PowerManager (courant)
+├── power.py        courant du vaisseau : fusibles, tableau et levier, séquence de redémarrage, coupures, portes
+├── screamer.py     casier piégé (jumpscare) : visage en primitives, cri, stinger, musique qui suit
 ├── space.py        skybox : milliers d'étoiles, nébuleuse, planètes (dont une à anneaux), soleil
 ├── audio.py        synthèse numpy -> .wav au premier lancement, lecture 2D/3D/boucles
 ├── hud.py          HUD TPS/FPS, messages en fondu, surimpressions, écrans de menu
@@ -40,6 +43,7 @@ horreur_spatiale/
 ├── geometry.py     meshes fusionnés avec tangentes (boîtes biseautées, extrusions, cônes, décalques)
 ├── textures.py     textures et matériaux procéduraux (albédo + normal map + rugosité), cache disque
 ├── requirements.txt
+├── sounds/         tes propres sons (ex. screamer.wav / screamer.ogg remplace le cri généré)
 └── generated/      créé au premier lancement (sons .wav, textures .png en cache)
 ```
 
@@ -105,6 +109,7 @@ La seed est affichée dans le menu pause ; fixe `SEED` dans `config.py` pour rej
 | inventaire (le jeu continue !) | Tab | Pavé tactile |
 | pause | Échap | Options |
 | debug manette | F3 | — |
+| test : basculer le courant / déclencher le screamer | F4 / F5 | — |
 
 Dans l'inventaire : flèches/molette pour choisir, **E/Entrée** (Croix) pour utiliser, **Suppr** (Triangle) pour jeter.
 `KEYBOARD_LAYOUT = "qwerty"` dans `config.py` pour un clavier QWERTY (WASD).
@@ -120,6 +125,35 @@ Ursina lit les lettres par position physique : la configuration AZERTY est conve
   pas repéré meurt instantanément et en silence (« Mise à mort silencieuse »). Un coup de couteau reste
   discret : la bête ne l'entend que tout près, et rarement ; en revanche une araignée blessée crie.
 * Écoute : les grattements étouffés viennent de derrière les cloisons ou des conduits.
+
+## Le courant du vaisseau
+
+* **Au début, tout est éteint.** Sans lampe, on ne voit presque rien. Seules sources de lumière : ta lampe
+  torche (et la vision nocturne), la très faible lueur bleutée des étoiles près des hublots et baies vitrées,
+  le phare et les feux de la navette posée dans le hangar, quelques voyants de batterie de secours, les
+  étincelles des câbles arrachés, les yeux des créatures… et le **flash de chaque tir**, qui éclaire la pièce.
+* **Portes sans courant** : certaines sont entrouvertes (on passe), d'autres se **forcent** (maintenir E /
+  Croix, très bruyant : la créature entend), d'autres sont **bloquées** : il faut passer par les conduits.
+  La salle de commandement est **verrouillée électriquement** (portes et grilles).
+* **Rétablir le courant** : trouve les 2 ou 3 fusibles (salle des machines et salles voisines ; leur bande
+  réfléchissante et un petit voyant ambré les trahissent à la lampe), insère-les dans le tableau électrique
+  de la salle des machines, puis abaisse le gros levier. Silence… le réacteur démarre, la lumière revient
+  salle par salle depuis la salle des machines, chaque néon clignote avant de s'allumer, et 20 à 30 % des
+  lampes restent cassées. **Ce vacarme réveille tout le vaisseau** (mode horreur, créature, parasites).
+* Ensuite l'éclairage reste sombre et contrasté, et de rares **coupures** surviennent, surtout en mode horreur
+  ou quand la grande créature est proche.
+* **Trop difficile ?** `EMERGENCY_STRIPS = True` ajoute de faibles bandes de secours rouges au ras du sol.
+* Réglages : `AMBIENT_POWER_OFF` / `AMBIENT_POWER_ON` (≈ 0,01), `FOG_DENSITY_POWER_*`, `LIGHT_INTENSITY`,
+  `LIGHT_COLOR_WARM` / `COLD`, `STARLIGHT_*`, `POWER_*` (fusibles, part de lampes cassées, vitesse de
+  propagation, coupures), `DOOR_*` (portes entrouvertes / bloquées, durée pour forcer), `POWER_START_OFF`.
+
+## Le casier piégé
+
+Un casier (hors hangar, et jamais dans la première salle que tu visites) cache une mauvaise surprise, une
+seule fois par partie. Aucun indice visuel. Réglages : `SCREAMER_ENABLED`, `SCREAMER_VOLUME`,
+`SCREAMER_FLASH` (mets `False` si tu es sensible aux flashs lumineux). Pour utiliser ton propre cri, place
+`screamer.wav` ou `screamer.ogg` dans le dossier `sounds/`. **F5** le déclenche pour le tester
+(`DEBUG_KEYS = False` désactive F4/F5).
 
 ## Pilotage de la navette
 
@@ -143,7 +177,7 @@ Ursina lit les lettres par position physique : la configuration AZERTY est conve
 | Éclairage par pixel | oui | oui | oui |
 | Normal maps + reflets spéculaires | non | oui | oui |
 | Bloom (néons, réacteurs, flash) | non | oui | oui |
-| Correction gamma | oui | oui | non (*) |
+| Correction gamma | non (*) | non (*) | non (*) |
 | Occlusion ambiante (SSAO) | non | non | oui |
 | Ombres de la lampe torche | non | 1024 px | 2048 px |
 | Masque « cookie » de la lampe | non | oui | oui |
@@ -151,8 +185,12 @@ Ursina lit les lettres par position physique : la configuration AZERTY est conve
 | Lumières dynamiques simultanées | 4 | 6 | 8 |
 | Particules (traînées, fumée…) | ×0,5 | ×1 | ×1,5 |
 
-(*) Dans Panda3D 1.10, SSAO + bloom + gamma ensemble donnent une image délavée : en Haute, la
-correction gamma est remplacée par un éclairage ambiant un peu plus fort.
+| Lumières du décor projetant des ombres (en plus de la lampe) | 0 | 0 | 1 |
+
+(*) La correction gamma éclaircit les noirs : elle est désormais à 1,0 (désactivée) pour que le vaisseau sans
+courant soit vraiment noir. Tu peux la remettre (`"gamma": 1.15`) si ton écran est très sombre.
+Seules les lumières des salles proches **en suivant les passages** sont rendues (`LIGHT_REACH_CELLS`) :
+pas de lumière qui traverse les murs, et un coût constant.
 
 **Si le jeu n'atteint pas 60 FPS en Moyenne**, baisse dans cet ordre : ombres de la lampe
 (`"shadows": False` ou `"shadow_size": 512`), nombre de lumières (`"point_lights": 4`), bloom,
@@ -162,7 +200,7 @@ puis `WINDOW_SIZE`. `CULL_DISTANCE` (salles actives autour du joueur) aide aussi
 
 * Difficulté : `CREATURE_SPEED_CHASE`, `CREATURE_VIEW_DIST`, `ALIEN_MAX`, `ALIEN_DAMAGE`, `PISTOL_START_*`,
   `OBJECTIVE_COMPASS = False` (plus de flèche d'objectif).
-* Performances : `QUALITY`, `CULL_DISTANCE`, `WINDOW_SIZE`, `VSYNC`, `FOG_DENSITY_FPS`.
+* Performances : `QUALITY`, `CULL_DISTANCE`, `WINDOW_SIZE`, `VSYNC`, `LIGHT_REACH_CELLS`.
 * Lampe torche : `FLASHLIGHT_TEMPERATURE` (kelvins), `FLASHLIGHT_INTENSITY`, `FLASHLIGHT_ATTENUATION`
   (constante, linéaire, quadratique), `FLASHLIGHT_FOV`, `FLASHLIGHT_OFFSET`, `FLASHLIGHT_LAG`.
   Quand elle scintille (batterie < 10 %), **Recharger** (R / Carré) tape dessus et la rallume quelques secondes.
@@ -216,6 +254,14 @@ La manette peut être branchée ou rebranchée à tout moment (détection automa
   tactile n'existe pas dans ce mode, le bouton **Create** ouvre alors l'inventaire.
 * Bluetooth : `bluetoothctl` → `scan on`, `pair <adresse>`, `trust <adresse>`, `connect <adresse>`.
 * Sous Wayland/X11, rien à régler côté vidéo (pygame n'ouvre aucune fenêtre).
+
+## Dépannage affichage
+
+* **Tout est éclairé à fond, même sans lampe** : c'est le shader « unlit » par défaut d'Ursina 8. `main.py` le
+  désactive (`Entity.default_shader = None`). Au chargement, la console affiche une vérification
+  `[éclairage] vérification du vaisseau : … 0 entité(s) non éclairée(s)` : si un nombre non nul apparaît,
+  les noms fautifs sont listés juste en dessous.
+* **Trop sombre sur ton écran** : augmente un peu `AMBIENT_POWER_OFF` (ex. 0.02) ou `FLASHLIGHT_INTENSITY`.
 
 ## Limitations connues
 

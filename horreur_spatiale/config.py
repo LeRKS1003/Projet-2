@@ -44,6 +44,7 @@ KEYS_AZERTY = {
     "interact": "e", "inventory": "tab", "heal": "h", "use_item": "f",
     "prev_item": "c", "next_item": "v", "drop": "delete",
     "pause": "escape", "debug": "f3",
+    "debug_power": "f4", "debug_screamer": "f5",   # touches de test (voir DEBUG_KEYS)
     # navette
     "ship_up": "space", "ship_down": "control", "ship_boost": "shift",
     "ship_roll_left": "a", "ship_roll_right": "e",
@@ -187,21 +188,25 @@ FLASHLIGHT_TAP_TIME = 3.0           # durée du répit après une tape sur la la
 # QUALITÉ GRAPHIQUE : "basse", "moyenne" ou "haute"
 # ----------------------------------------------------------------------------
 QUALITY = __import__("os").environ.get("EPAVE_QUALITE", "moyenne")   # ou variable d'environnement EPAVE_QUALITE
+# gamma : 1.0 = aucune correction. Une valeur > 1 éclaircit les noirs : on la laisse
+# à 1.0 pour que le vaisseau sans courant reste réellement plongé dans le noir.
+# point_shadows : nombre de lumières du décor (en plus de la lampe torche) qui
+# projettent des ombres (0 à 2, coûteux : 6 rendus de profondeur par lumière).
 QUALITY_PRESETS = {
     "basse": {
-        "bloom": False, "ssao": False, "gamma": 1.15, "shadows": False, "shadow_size": 512,
+        "bloom": False, "ssao": False, "gamma": 1.0, "shadows": False, "shadow_size": 512,
         "normal_maps": False, "volumetric": False, "dust": 0, "point_lights": 4, "particles": .5,
-        "cookie": False,
+        "cookie": False, "point_shadows": 0,
     },
     "moyenne": {
-        "bloom": True, "ssao": False, "gamma": 1.18, "shadows": True, "shadow_size": 1024,
+        "bloom": True, "ssao": False, "gamma": 1.0, "shadows": True, "shadow_size": 1024,
         "normal_maps": True, "volumetric": True, "dust": 36, "point_lights": 6, "particles": 1.0,
-        "cookie": True,
+        "cookie": True, "point_shadows": 0,
     },
     "haute": {
-        "bloom": True, "ssao": True, "gamma": 1.18, "shadows": True, "shadow_size": 2048,
+        "bloom": True, "ssao": True, "gamma": 1.0, "shadows": True, "shadow_size": 2048,
         "normal_maps": True, "volumetric": True, "dust": 80, "point_lights": 8, "particles": 1.5,
-        "cookie": True,
+        "cookie": True, "point_shadows": 1,
     },
 }
 BLOOM_INTENSITY = 1.1
@@ -231,12 +236,75 @@ FLASHLIGHT_COLOR = kelvin_to_rgb(FLASHLIGHT_TEMPERATURE)
 # ----------------------------------------------------------------------------
 # ÉCLAIRAGE / AMBIANCE
 # ----------------------------------------------------------------------------
-AMBIENT_FPS = (0.022, 0.025, 0.032)  # noirs profonds mais pas opaques
-FOG_COLOR_FPS = (0.006, 0.007, 0.01)
-FOG_DENSITY_FPS = 0.06
+# Lumière ambiante (r, g, b) : quasi nulle. Sans lampe, on ne voit presque rien.
+AMBIENT_POWER_OFF = (0.010, 0.011, 0.014)     # courant coupé
+AMBIENT_POWER_ON = (0.021, 0.022, 0.027)      # courant rétabli (reste sombre et contrasté)
+AMBIENT_NIGHTVISION = (0.55, 0.9, 0.55)       # vision nocturne (amplification)
+FOG_COLOR_FPS = (0.0, 0.0, 0.0)               # brouillard noir pur
+FOG_DENSITY_POWER_OFF = 0.085                 # le fond des couloirs se perd dans le noir
+FOG_DENSITY_POWER_ON = 0.055
 FOG_DENSITY_TPS = 0.0009
 MAX_POINT_LIGHTS = QUALITY_PRESETS[QUALITY]["point_lights"]   # lumières dynamiques simultanées (pool)
 LIGHT_RANGE = 9.0
+LIGHT_REACH_CELLS = 9       # seules les lumières à moins de N cases (en suivant les passages) sont rendues
+LIGHT_INTENSITY = 1.25      # multiplicateur global des luminaires du vaisseau (courant rétabli)
+LIGHT_COLOR_WARM = (1.0, 0.78, 0.55)   # sodium / tungstène (quartiers, machines)
+LIGHT_COLOR_COLD = (0.72, 0.84, 1.0)   # néons froids (couloirs, infirmerie, passerelle)
+# flash de bouche du pistolet (éclaire brièvement la pièce)
+MUZZLE_LIGHT_INTENSITY = 5.0
+MUZZLE_LIGHT_ATTENUATION = (1.0, 0.12, 0.05)
+# lueur des étoiles à travers hublots et baies vitrées (très faible, bleutée)
+STARLIGHT_COLOR = (0.42, 0.52, 0.85)
+STARLIGHT_INTENSITY = 0.32  # baie vitrée ; un hublot en reçoit la moitié
+STARLIGHT_RADIUS = 4.0      # n'éclaire que quelques mètres autour de la fenêtre
+# navette posée dans le hangar
+SHUTTLE_PARKED_HEADLIGHT = 0.9   # intensité du phare avant une fois posée
+SHUTTLE_NAV_LIGHT = 0.55         # feux de navigation (rouge / vert / blanc à éclats)
+# bandes d'éclairage de secours rouges au ras du sol (aide pour les joueurs en difficulté)
+EMERGENCY_STRIPS = False
+EMERGENCY_COLOR = (1.0, 0.08, 0.04)
+EMERGENCY_INTENSITY = 0.22
+# petits détails lumineux (sans éclairer autour d'eux)
+BATTERY_LED_CHANCE = 0.45        # voyants de batterie de secours sur les consoles
+SPARK_INTERVAL = (5.0, 14.0)     # étincelles des câbles arrachés (secondes entre deux gerbes)
+SPARK_FLASH = 2.4                # intensité du flash lumineux d'une étincelle
+
+# ----------------------------------------------------------------------------
+# COURANT DU VAISSEAU
+# ----------------------------------------------------------------------------
+POWER_START_OFF = True       # False = le courant est déjà rétabli au début (ancien comportement)
+POWER_FUSES = (2, 3)         # nombre de fusibles à retrouver (tiré avec la seed)
+POWER_BROKEN_RATIO = 0.25    # part des lumières qui restent cassées après le redémarrage (20 à 30 %)
+POWER_BROKEN_FLICKER = 0.5   # parmi elles, part qui clignote en permanence (le reste reste éteint)
+POWER_SILENCE_TIME = 1.4     # silence après l'actionnement du levier
+POWER_SPINUP_TIME = 5.5      # montée en puissance du réacteur
+POWER_SPREAD_STEP = 0.16     # secondes par case parcourue depuis la salle des machines
+POWER_STARTUP_TIME = (0.5, 1.4)   # durée du clignotement de démarrage d'un néon
+POWER_ALIENS_ON_RESTART = (2, 3)  # petites créatures qui sortent des conduits au redémarrage
+# coupures temporaires (courant rétabli)
+POWER_OUTAGE_CHECK = 12.0    # un tirage toutes les N secondes...
+POWER_OUTAGE_BASE = 0.015    # ... probabilité de base (rare)
+POWER_OUTAGE_HORROR = 0.22   # ... ajoutée en mode horreur
+POWER_OUTAGE_CREATURE = 0.25 # ... ajoutée quand la grande créature est proche
+POWER_OUTAGE_CREATURE_DIST = 12.0
+POWER_OUTAGE_DURATION = (2.0, 5.0)
+POWER_OUTAGE_MIN_GAP = 35.0  # délai minimal entre deux coupures
+# portes sans courant
+DOOR_AJAR_CHANCE = 0.35      # portes restées entrouvertes
+DOOR_STUCK_CHANCE = 0.25     # portes bloquées (il faut passer par les conduits)
+DOOR_AJAR_OPENING = 0.62     # ouverture d'une porte entrouverte ou forcée (0..1)
+DOOR_FORCE_TIME = 2.6        # durée d'appui pour forcer une porte
+NOISE_DOOR_FORCE = 12.0      # forcer une porte fait beaucoup de bruit
+
+# ----------------------------------------------------------------------------
+# SCREAMER (casier piégé)
+# ----------------------------------------------------------------------------
+SCREAMER_ENABLED = True
+SCREAMER_VOLUME = 1.0        # volume du cri et du stinger
+SCREAMER_FLASH = True        # flash blanc d'une image (False pour les personnes sensibles aux flashs)
+SCREAMER_MUSIC_TIME = 25.0   # durée de la musique angoissante qui suit
+CUSTOM_SOUND_DIR = "sounds"  # un fichier screamer.wav ou screamer.ogg placé ici remplace le cri généré
+DEBUG_KEYS = True            # F4 : bascule le courant, F5 : déclenche le screamer (tests)
 
 # ----------------------------------------------------------------------------
 # ARMES

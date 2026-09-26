@@ -605,6 +605,9 @@ class AlienManager:
                 # le hangar reste calme tant que le disque dur n'est pas pris
                 if r is not None and r.type == "hangar" and not g.has_hdd():
                     continue
+                # la passerelle verrouillée (sans courant) : elles y resteraient enfermées
+                if r is not None and r.type == "command" and g.power is not None and not g.power.on:
+                    continue
                 # on évite d'apparaître sous les yeux du joueur
                 seen = d < 14 and L.line_of_sight((x, 1.0, z), p.pos3)
                 cands.append((d + random.uniform(0, 6) + (15 if seen else 0), x, z, kind))

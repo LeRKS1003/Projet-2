@@ -469,12 +469,16 @@ class Creature:
         from generator import ekey
         k = ekey(a[0], a[1], b[0], b[1])
         door = L.doors.get(k)
-        if door and door.target < 1:
-            door.open(hold=4)
-            self.game.audio.play_at("metal_bang", (door.pos[0], 1.5, door.pos[1]), .8, .7)
-            self.stun = max(self.stun, .35)
+        if door and door.target < 1 and not door.locked:
+            # sans courant, elle arrache littéralement la porte (qui reste ouverte)
+            forced = door.unpowered
+            door.open(hold=4, force=True)
+            self.game.audio.play_at("metal_bang", (door.pos[0], 1.5, door.pos[1]), 1.0 if forced else .8, .7)
+            if forced:
+                self.game.audio.play_at("door_force_open", (door.pos[0], 1.2, door.pos[1]), 1.0, .8)
+            self.stun = max(self.stun, .8 if forced else .35)
         gr = L.grilles.get(k)
-        if gr and not gr.opened:
+        if gr and not gr.opened and not gr.locked:
             gr.set_open(True)
             self.game.audio.play_at("vent_bang", (gr.pos[0], .5, gr.pos[1]), 1.0)
 

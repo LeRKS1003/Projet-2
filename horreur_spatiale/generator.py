@@ -102,7 +102,15 @@ def edge_geometry(key):
 
 # ============================================================================
 class Door:
-    """Porte coulissante sur une arête. open_amount : 0 fermée -> 1 ouverte."""
+    """
+    Porte coulissante sur une arête. open_amount : 0 fermée -> 1 ouverte.
+
+    Sans courant (unpowered), la porte ne s'ouvre plus seule : elle est soit
+    entrouverte ("ajar"), soit fermée mais forçable ("closed", il faut
+    maintenir le bouton d'interaction), soit bloquée ("stuck", il faut passer
+    par les conduits). Une porte verrouillée électriquement (locked, salle de
+    commandement) reste close tant que le courant n'est pas rétabli.
+    """
 
     def __init__(self, level, key, room_cell, out_cell):
         self.level = level
@@ -119,30 +127,69 @@ class Door:
         self.target = 0.0
         self.timer = 0.0
         self.locked = False
+        self.unpowered = False    # plus de courant : pas d'ouverture automatique
+        self.jam = "closed"       # sans courant : "closed" (forçable), "ajar" (entrouverte), "stuck" (bloquée)
         self.panels = []          # entités visuelles (créées par rooms.py)
         self.status_light = None
         self.blocker = None
         self.on_change = None
 
-    def open(self, hold=7.0):
+    def open(self, hold=7.0, force=False):
+        """
+        Ouvre la porte. Sans courant, seul un forçage (force=True : la grande
+        créature, ou le joueur après avoir forcé) peut la bouger ; elle reste
+        alors bloquée ouverte. Renvoie True si la porte s'ouvre.
+        """
+        if self.locked and not force:
+            return False
+        if self.unpowered:
+            if not force:
+                return False
+            self.jam = "ajar"
+            hold = 1e9
         if self.target < 1:
             self.target = 1.0
             if self.on_change:
                 self.on_change(self, True)
         self.timer = max(self.timer, hold)
+        return True
+
+    def force_ajar(self, amount):
+        """Porte entrouverte / forcée à la main : reste bloquée à cette ouverture."""
+        self.jam = "ajar"
+        self.target = max(self.target, amount)
+        self.timer = 1e9
 
     def close(self):
+        if self.unpowered:
+            return
         if self.target > 0:
             self.target = 0.0
             if self.on_change:
                 self.on_change(self, False)
 
+    def set_powered(self, on):
+        """Courant rétabli : la porte refonctionne normalement (et se referme plus tard)."""
+        self.unpowered = not on
+        if on:
+            self.jam = "closed"
+            if self.target > 0:
+                self.timer = 7.0
+
     @property
     def is_open(self):
         return self.open_amount > 0.5
 
+    def passable_for(self, agent):
+        """Une petite créature ne passe que par une porte suffisamment ouverte (ou alimentée)."""
+        if self.locked:
+            return False
+        if agent == "alien" and self.unpowered:
+            return self.open_amount > .5 or self.target > .5
+        return True
+
     def update(self, dt, occupants):
-        if self.target > 0:
+        if self.target > 0 and not self.unpowered:
             self.timer -= dt
             if self.timer <= 0:
                 # ne se referme pas sur quelqu'un
@@ -151,13 +198,14 @@ class Door:
                     self.timer = 1.0
                 else:
                     self.close()
-        speed = 2.4
+        speed = 2.4 if not self.unpowered else 1.2
         if self.open_amount < self.target:
             self.open_amount = min(self.target, self.open_amount + dt * speed)
         elif self.open_amount > self.target:
             self.open_amount = max(self.target, self.open_amount - dt * speed)
         if self.blocker:
-            self.blocker.active = self.open_amount < 0.85
+            # passage libre dès que l'ouverture dépasse la largeur d'épaules (~0,8 m)
+            self.blocker.active = self.open_amount < 0.55
 
 
 class Grille:
@@ -172,6 +220,7 @@ class Grille:
         self.mid = (s0 + s1) / 2
         self.pos = (self.line, self.mid) if self.axis == "x" else (self.mid, self.line)
         self.opened = False
+        self.locked = False       # scellée électriquement (salle de commandement sans courant)
         self.blocker = None
         self.entity = None
         self.angle = 0.0
@@ -830,7 +879,12 @@ class Level:
             for ni, nj, st in self.links[cur]:
                 c = vent_cost if self.kind[ni][nj] == VENT else 1.0
                 if st == "door":
+                    # portes verrouillées / fermées sans courant (petites créatures)
+                    if not self.doors[ekey(cur[0], cur[1], ni, nj)].passable_for(agent):
+                        continue
                     c += 0.5
+                elif st == "grille" and self.grilles[ekey(cur[0], cur[1], ni, nj)].locked:
+                    continue
                 ng = gc + c
                 nxt = (ni, nj)
                 if ng < g.get(nxt, 1e18):

@@ -225,6 +225,7 @@ class Shuttle:
         dash.box((0, .9, 1.25), (.5, .5, .08), (.08, .08, .09, 1))              # sièges
         self.dash = self.model.attachNewNode(dash.make_geom_node("dashboard", tangents=False))
         self.dash.setLightOff(2)
+        self.dash.setPythonTag("emissive", True)       # écrans du cockpit
         self.dash.setColorScale(.8, .8, .8, 1)
 
         # --- nacelles moteurs, pylônes, ailerons, dérive ---------------------
@@ -264,6 +265,7 @@ class Shuttle:
             n = self.model.attachNewNode(g.make_geom_node("nozzle_glow", tangents=False))
             n.setPos(x, y, z + .12)
             n.setLightOff(2)
+            n.setPythonTag("emissive", True)
             self.nozzle_glow.append(n)
         # flammes : cônes additifs, et halos
         self.flames = []
@@ -292,6 +294,7 @@ class Shuttle:
         lights.box((0, -.22, 4.02), (.2, .1, .02), (1, 1, .95, 1))                   # optique du phare
         lnp = self.model.attachNewNode(lights.make_geom_node("nav_lights", tangents=False))
         lnp.setLightOff(2)
+        lnp.setPythonTag("emissive", True)
         self.nav_meshes = lnp
 
         # --- train d'atterrissage (replié en vol, sorti à l'atterrissage) ------
@@ -830,6 +833,34 @@ class Shuttle:
             c = pt["c"]
             n.setColorScale(c[0] * a, c[1] * a, c[2] * a, 1)
 
+    def park_lights(self, lights, hangar_root):
+        """
+        Navette posée : son phare avant (atténué) et ses feux de navigation
+        restent allumés et éclairent un peu le hangar plongé dans le noir.
+        """
+        from lighting import Fixture
+        k = C.SHUTTLE_PARKED_HEADLIGHT
+        self.spot.setColor(Vec4(1.1 * k, 1.07 * k, .98 * k, 1))
+        self.spot.setAttenuation(PVec3(1, .03, .004))
+        hangar_root.setLight(self.spot_np)
+        self.parked_root = hangar_root
+        self.nav_fx = []
+        for local, col, mode in (((-3.5, .15, -1.9), (1, .1, .08), "steady"), ((3.5, .15, -1.9), (.1, 1, .25), "steady"),
+                                 ((0, 1.95, -3.2), (1, 1, 1), "nav")):
+            w = self._local_to_world(local)
+            fx = Fixture((w.x, w.y, w.z), col, 5.5, mode, None, C.SHUTTLE_NAV_LIGHT, powered=False, kind="nav")
+            fx.phase = 0.0
+            self.nav_fx.append(lights.add_fixture(fx))
+
+    def update_parked(self, t):
+        """Feux de navigation de la navette posée (synchronisés avec leurs lumières)."""
+        on = (t % 1.2) < .12
+        self.nav_t.setColorScale((1, 1, 1, 1) if on else (0, 0, 0, 1))
+        for h in (self.nav_l, self.nav_r):
+            c = h.getPythonTag('col')
+            p = .75 + .25 * math.sin(t * 3)
+            h.setColorScale(c[0] * p, c[1] * p, c[2] * p, 1)
+
     def silence_aids(self):
         """Cache l'aide à l'approche et l'alerte d'obstacle (atterrissage, FPS)."""
         for n in getattr(self, "guide", []):
@@ -849,6 +880,8 @@ class Shuttle:
         r = application.base.render
         r.clearLight(self.spot_np)
         r.clearLight(self.eng_np)
+        if getattr(self, "parked_root", None) is not None:
+            self.parked_root.clearLight(self.spot_np)
         self.game.audio.stop_loop("ship_engine")
         self.game.audio.stop_loop("ship_boost")
         self.fx_root.removeNode()

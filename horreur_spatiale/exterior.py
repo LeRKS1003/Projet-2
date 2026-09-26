@@ -64,6 +64,7 @@ class ExteriorShip:
         self.lights = lights
         self.rng = random.Random(seed * 17 + 5)
         self.root = Entity(parent=parent, name='exterior')
+        self.root.setPythonTag("audit_skip", True)   # coque extérieure : vue seulement en pilotage
         self.colliders = []
         self.debris = []
         self.beacons = []

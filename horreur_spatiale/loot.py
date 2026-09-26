@@ -12,6 +12,7 @@ from ursina import Entity, color, destroy
 
 import config as C
 import textures
+from lighting import mark_emissive
 
 # ----------------------------------------------------------------------------
 # TABLES DE LOOT PONDÉRÉES (objet, poids)
@@ -80,7 +81,7 @@ NOTES = [
 
 ITEM_NAMES = {
     "ammo": "munitions", "battery": "pile", "medkit": "kit de soin", "knife": "couteau",
-    "note": "note", "nv_helmet": "casque de vision nocturne", "hdd": "disque dur",
+    "note": "note", "nv_helmet": "casque de vision nocturne", "hdd": "disque dur", "fuse": "fusible",
 }
 
 
@@ -152,6 +153,7 @@ class Locker(Interactable):
     def __init__(self, level, builders, parent, placer, table, rng, anim_list):
         self.level = level
         self.table = table
+        self.room = None          # salle (renseignée par rooms.py)
         self.contents = roll_contents(table, rng, 1, 2)
         self.opened = False
         self.searched = False
@@ -194,11 +196,20 @@ class Locker(Interactable):
             return "Sortir du casier"
         if not self.opened:
             return "Ouvrir le casier"
+        if self.contents:
+            return "Fouiller le casier"
         return "Se cacher dans le casier"
 
     def interact(self, game):
         if self.occupied:
             game.player.leave_hiding()
+            return
+        if not self.opened and game.screamer is not None and game.screamer.is_target(self):
+            # casier piégé : aucun indice visuel, il s'ouvre normalement... puis le screamer
+            self.open_door()
+            self.searched = True
+            game.audio.play_at("locker_open", self.pos, .9)
+            game.screamer.trigger(self)
             return
         if not self.opened:
             self.open_door()
@@ -311,15 +322,15 @@ class Pickup(Interactable):
             Entity(parent=self.entity, model='cube', color=color.rgb(.8, .6, .1), scale=(.06, .12, .06), y=.06)
         elif kind == "medkit":
             Entity(parent=self.entity, model='cube', color=color.rgb(.85, .85, .85), scale=(.3, .1, .2), y=.05)
-            Entity(parent=self.entity, model='cube', color=color.red, scale=(.08, .102, .04), y=.05, unlit=True)
+            Entity(parent=self.entity, model='cube', color=color.red, scale=(.08, .102, .04), y=.05)   # croix peinte
         elif kind == "ammo":
             Entity(parent=self.entity, model='cube', color=color.rgb(.25, .3, .2), scale=(.16, .08, .1), y=.04)
         elif kind == "note":
             Entity(parent=self.entity, model='cube', color=color.rgb(.85, .82, .7), scale=(.2, .005, .28), y=.003)
         elif kind == "nv_helmet":
             Entity(parent=self.entity, model='sphere', color=color.rgb(.2, .22, .2), scale=(.28, .24, .3), y=.12)
-            Entity(parent=self.entity, model='cube', color=color.rgb(.1, .6, .1), scale=(.18, .06, .08), y=.14, z=.15,
-                   unlit=True)
+            mark_emissive(Entity(parent=self.entity, model='cube', color=color.rgb(.1, .6, .1), scale=(.18, .06, .08),
+                                 y=.14, z=.15))       # voyant du casque (sur pile)
         level.add_interactable(self, x, z)
 
     def prompt(self, game):
@@ -341,6 +352,46 @@ class Pickup(Interactable):
             self.level.remove_interactable(self)
 
 
+class FusePickup(Interactable):
+    """
+    Fusible de rechange pour le tableau électrique principal. Posé au sol,
+    caché dans un coin : sa bande réfléchissante et son petit voyant ambre
+    le rendent repérable à la lampe.
+    """
+    radius = 1.6
+
+    def __init__(self, level, parent, x, y, z, yaw=0):
+        self.level = level
+        self.pos = (x, y + .1, z)
+        self.taken = False
+        self.entity = Entity(parent=parent, position=(x, y, z), rotation_y=yaw)
+        # cartouche en céramique + culots métalliques, couché sur le sol
+        body = Entity(parent=self.entity, model='cube', color=color.rgb(.8, .66, .28), scale=(.07, .07, .24),
+                      y=.035)
+        for zz in (-.14, .14):
+            Entity(parent=self.entity, model='cube', color=color.rgb(.75, .75, .78), scale=(.08, .08, .05),
+                   position=(0, .035, zz))
+        # bande réfléchissante : accroche la lampe torche
+        Entity(parent=body, model='cube', color=color.rgb(1, .95, .75), scale=(1.03, .25, .35), y=.3)
+        # minuscule voyant de charge (brille sans éclairer)
+        mark_emissive(Entity(parent=self.entity, model='cube', color=color.rgb(1, .55, .1),
+                             scale=(.02, .012, .02), position=(0, .075, .06)))
+        level.add_interactable(self, x, z)
+
+    def prompt(self, game):
+        return None if self.taken else "Ramasser : fusible"
+
+    def interact(self, game):
+        if self.taken:
+            return
+        self.taken = True
+        destroy(self.entity)
+        self.level.remove_interactable(self)
+        game.audio.play("pickup", .7, .9)
+        if game.power is not None:
+            game.power.pick_fuse()
+
+
 class HardDrive(Interactable):
     """Le disque dur des données du vaisseau, sur une console de la passerelle."""
 
@@ -350,10 +401,10 @@ class HardDrive(Interactable):
         self.taken = False
         self.entity = Entity(parent=parent, position=(x, y, z), rotation_y=yaw)
         Entity(parent=self.entity, model='cube', color=color.rgb(.15, .16, .18), scale=(.22, .05, .15))
-        self.led = Entity(parent=self.entity, model='cube', color=color.rgb(.1, 1, .3), scale=(.03, .02, .02),
-                          position=(.08, .03, .07), unlit=True)
-        self.halo = Entity(parent=self.entity, model='quad', texture=textures.get('glow'), billboard=True,
-                           color=color.rgba(.2, 1, .4, .35), scale=.6, y=.05, unlit=True)
+        self.led = mark_emissive(Entity(parent=self.entity, model='cube', color=color.rgb(.1, 1, .3),
+                                        scale=(.03, .02, .02), position=(.08, .03, .07)))
+        self.halo = mark_emissive(Entity(parent=self.entity, model='quad', texture=textures.get('glow'),
+                                         billboard=True, color=color.rgba(.2, 1, .4, .35), scale=.6, y=.05))
         self.halo.setTransparency(TransparencyAttrib.MAlpha)
         self.t = 0
         level.add_interactable(self, x, z)

@@ -105,9 +105,11 @@ class HorrorManager:
         self.music.set(L, fade=1.5 if self.timer > 0 else .6)
         self.amb.set(1.0 - .5 * L)
         # réacteur spatialisé
+        # (silencieux tant que le courant n'est pas rétabli)
         if g.builder and g.builder.reactor_pos:
             att, bal = g.audio.spatial(g.builder.reactor_pos, 45)
-            self.reactor.set(att * 1.2, balance=bal, fade=4)
+            lvl = g.lights.power.reactor_level if g.lights else 1.0
+            self.reactor.set(att * 1.2 * lvl, pitch=.6 + .4 * lvl, balance=bal, fade=4)
         # vibrations
         if L > .3:
             self.rumble_timer -= dt

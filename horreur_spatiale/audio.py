@@ -270,6 +270,175 @@ def gen_weapons_spiders(rng):
 # ============================================================================
 # SONS
 # ============================================================================
+# ============================================================================
+# COURANT DU VAISSEAU ET SCREAMER
+# ============================================================================
+def _after(t, t0):
+    """Temps local (0 avant t0) et masque « a commencé » pour composer des événements."""
+    return np.clip(t - t0, 0, None), (t >= t0).astype(np.float64)
+
+
+def _sweep(f_of_t):
+    """Phase d'une fréquence qui varie dans le temps (glissando)."""
+    return 2 * np.pi * np.cumsum(f_of_t) / SR
+
+
+def gen_power_screamer(rng):
+    """Renvoie {nom: signal} : levier, réacteur, relais, coupures, portes forcées, fusibles, screamer."""
+    out = {}
+
+    # --- levier principal : cliquetis du cran puis gros claquement métallique ----
+    t = _t(1.6)
+    ratchet = _clicks(t, [(k * .032, .7 - k * .09) for k in range(6)], 1500, 7000, 300, rng)
+    tt, on = _after(t, .21)
+    clunk = on * (_metal_ring(tt, [142, 318, 507, 866, 1370], 7, rng) * 1.2 + np.sin(2 * np.pi * 52 * tt) *
+                  np.exp(-tt * 12) * 2.0 + _lowpass(_noise(len(t), rng), 2500) * np.exp(-tt * 30) * 1.6)
+    spring = on * np.sin(_sweep(700 - 350 * np.clip(tt, 0, 1))) * np.exp(-tt * 5) * .15
+    out["lever_pull"] = _norm(_reverb(_fade(ratchet + clunk + spring, .001, .2), rng, 1.8, .4), .95)
+
+    # --- réacteur : grondement qui monte en puissance (7 s) ----------------------
+    d = 7.5
+    t = _t(d)
+    k = np.clip(t / (d - .8), 0, 1)
+    f0 = 16 + 40 * k ** 1.4
+    rumble = sum(np.sin(_sweep(f0 * (h + 1)) + rng.uniform(0, 6)) / (1 + h * .8) for h in range(6))
+    whine = np.sin(_sweep(140 + 1500 * k ** 2)) * .16 * k + np.sin(_sweep(210 + 2300 * k ** 2.2)) * .07 * k
+    roar = _lowpass(_noise(len(t), rng), 500) * (.3 + 1.2 * k)
+    groans = np.zeros(len(t))
+    for t0 in (1.2, 2.9, 4.4, 5.6):
+        g_t, g_on = _after(t, t0 + rng.uniform(-.2, .2))
+        groans += g_on * _metal_ring(g_t, [rng.uniform(70, 110), rng.uniform(170, 240), rng.uniform(330, 420)],
+                                     2.2, rng) * .45
+    env = np.clip(t / .6, 0, 1) * (.25 + .75 * k ** .8)
+    s = (rumble * .9 + roar + whine + groans) * env
+    out["reactor_spinup"] = _norm(_reverb(_fade(np.tanh(s * 1.4), .05, .6), rng, 2.6, .45, 1800), .95)
+
+    # --- mise sous tension : énorme choc sourd + crépitement ----------------------
+    t = _t(2.6)
+    s = np.sin(2 * np.pi * 38 * t) * np.exp(-t * 3.5) * 2.2 + np.sin(2 * np.pi * 76 * t) * np.exp(-t * 5)
+    s += _band(_noise(len(t), rng), 2000, 9000) * np.exp(-t * 14) * .8
+    s += _metal_ring(t, [97, 211, 383, 612], 3, rng) * .6
+    out["power_thump"] = _norm(_reverb(_fade(np.tanh(s)), rng, 2.4, .45, 2000), .95)
+
+    # --- relais électriques (claquement sec + bourdonnement du transformateur) ----
+    for i in range(3):
+        t = _t(1.1)
+        c1 = _band(_noise(len(t), rng), 2200, 9500) * np.exp(-t * 420) * 1.6
+        tt, on = _after(t, .012 + .006 * i)
+        c2 = on * _band(_noise(len(t), rng), 1500, 7000) * np.exp(-tt * 380) * 1.0
+        hum_f = 50 * (1 + i * .02)
+        hum = (np.sin(2 * np.pi * hum_f * t) + .6 * np.sin(2 * np.pi * hum_f * 2 * t) +
+               .3 * np.sign(np.sin(2 * np.pi * hum_f * 3 * t))) * np.exp(-t * 2.8) * np.clip(t / .05, 0, 1) * .35
+        buzz = _band(_noise(len(t), rng), 90, 400) * np.exp(-t * 4) * .25
+        ring = _metal_ring(t, [1830 + 140 * i, 2960 + 90 * i], 30, rng) * .3
+        out[f"relay{i}"] = _norm(_reverb(_fade(c1 + c2 + hum + buzz + ring, .0005, .2), rng, .9, .3), .85)
+
+    # --- coupure de courant : sifflement qui s'effondre + claquement --------------
+    t = _t(2.2)
+    k = np.clip(t / 1.7, 0, 1)
+    whine = np.sin(_sweep(900 * (1 - k) ** 2 + 45)) * (1 - k) * .5
+    hum = np.sin(_sweep(100 - 60 * k)) * (1 - k) ** .5 * .6
+    tt, on = _after(t, 1.65)
+    clack = on * (_band(_noise(len(t), rng), 1500, 7000) * np.exp(-tt * 200) + np.sin(2 * np.pi * 60 * tt) *
+                  np.exp(-tt * 15))
+    out["power_down"] = _norm(_reverb(_fade(whine + hum + clack, .01, .1), rng, 1.4, .35), .85)
+
+    # --- porte forcée : grincement métallique (stick-slip) -----------------------
+    t = _t(.7)
+    stick = np.zeros(len(t))
+    tp = 0.0
+    while tp < .65:
+        a = rng.uniform(.4, 1.0)
+        tt, on = _after(t, tp)
+        stick += on * np.exp(-tt * rng.uniform(25, 60)) * a
+        tp += rng.uniform(.018, .05)
+    scrape = _band(_noise(len(t), rng), 350, 3200) * stick
+    squeal = np.sin(_sweep(rng.uniform(520, 700) + 90 * np.sin(2 * np.pi * 3 * t))) * stick * .5
+    groan = _metal_ring(t, [83, 197, 309], 3, rng) * .5
+    out["door_force"] = _norm(_reverb(_fade(scrape + squeal + groan, .01, .1), rng, 1.2, .35), .9)
+    t = _t(2.0)
+    s = _metal_ring(t, [61, 149, 287, 452, 761, 1203], 2.2, rng) * 1.3
+    s += _lowpass(_noise(len(t), rng), 2200) * np.exp(-t * 16) * 2.2
+    tt, on = _after(t, .05)
+    s += on * _band(_noise(len(t), rng), 600, 4000) * np.exp(-tt * 6) * np.clip(1 - tt / .6, 0, 1) * .8
+    out["door_force_open"] = _norm(_reverb(_fade(np.tanh(s * 1.3)), rng, 2.2, .5), .95)
+
+    # --- fusible inséré : glissement + déclic -------------------------------------
+    t = _t(.45)
+    slide = _band(_noise(len(t), rng), 2000, 6000) * np.clip(1 - t / .12, 0, 1) * .3
+    tt, on = _after(t, .13)
+    snap = on * (_band(_noise(len(t), rng), 2500, 9000) * np.exp(-tt * 500) * 1.5 +
+                 np.sin(2 * np.pi * 2300 * tt) * np.exp(-tt * 60) * .4)
+    out["fuse_insert"] = _norm(_reverb(_fade(slide + snap, .002, .05), rng, .4, .2), .75)
+
+    # --- SCREAMER : cri strident (fréquences aiguës dissonantes + bruit + distorsion) --
+    d = 1.8
+    t = _t(d)
+    env = np.exp(-t * 1.6) * np.clip(1 - (t - 1.3) / .5, 0, 1)      # attaque instantanée
+    s = np.zeros(len(t))
+    for f in (1840, 1955, 2230, 2610, 3120, 3305, 4410):
+        bend = 1 + .06 * np.sin(2 * np.pi * rng.uniform(5, 9) * t) + .12 * t
+        s += np.sin(_sweep(f * bend)) * rng.uniform(.5, 1)
+    glottal = np.sign(np.sin(_sweep(410 * (1 + .1 * np.sin(2 * np.pi * 11 * t))))) * .8        # voix déchirée
+    hiss = _band(_noise(len(t), rng), 2000, 10000) * 2.2
+    s = np.tanh((s * .5 + glottal + hiss) * 2.8) * env
+    out["screamer"] = _norm(_fade(s, .0005, .15), .99)
+
+    # --- stinger « orchestral » : clusters de cordes dissonants puis chute grave ---
+    d = 4.2
+    t = _t(d)
+    strings = np.zeros(len(t))
+    for f in (587.3, 622.3, 659.3, 698.5, 740.0, 784.0, 155.6, 164.8, 174.6, 185.0):
+        vib = 1 + .006 * np.sin(2 * np.pi * rng.uniform(5, 6.5) * t + rng.uniform(0, 6))
+        ph = _sweep(f * vib)
+        strings += sum(np.sin(ph * h) / h for h in range(1, 7)) * rng.uniform(.6, 1)   # « scie » : cordes
+    strings += _band(_noise(len(t), rng), 3000, 9000) * .6                              # archet frotté
+    senv = np.clip(t / .004, 0, 1) * (np.exp(-t * 2.2) * .8 + .2 * np.exp(-t * .8))
+    tt, on = _after(t, .75)
+    fall = on * np.sin(_sweep(np.where(t > .75, 110 * np.exp(-(t - .75) * 1.1) + 24, 110))) * np.exp(-tt * .9) * 2.2
+    boom = on * _lowpass(_noise(len(t), rng), 160) * np.exp(-tt * 1.5) * 1.5
+    s = np.tanh((strings * senv * .35 + fall + boom) * 1.2)
+    out["screamer_stinger"] = _norm(_reverb(_fade(s, .001, .8), rng, 2.8, .45, 3500), .97)
+
+    # --- musique angoissante (25 s) : drone grave, cordes grinçantes, battements -
+    d = C.SCREAMER_MUSIC_TIME
+    t = _t(d)
+    fade_all = np.clip(1 - t / d, 0, 1) ** 1.6
+    drone = (np.sin(2 * np.pi * 41 * t) + np.sin(2 * np.pi * 43.7 * t) * .8 + np.sin(2 * np.pi * 61.5 * t) * .4)
+    drone *= .6 + .4 * np.sin(2 * np.pi * .07 * t)
+    creak = np.zeros(len(t))
+    for _ in range(9):
+        t0 = rng.uniform(0, d - 4)
+        ln = rng.uniform(2.0, 4.5)
+        f0 = rng.uniform(900, 2400)
+        tt, on = _after(t, t0)
+        e = on * np.clip(tt / .4, 0, 1) * np.clip(1 - (tt - ln + .8) / .8, 0, 1) * (tt < ln)
+        creak += np.sin(_sweep(f0 * (1 + .05 * np.sin(2 * np.pi * rng.uniform(.3, 1.2) * t)) +
+                               rng.uniform(-60, 60) * t / d)) * e * .35
+        creak += _band(_noise(len(t), rng), f0 * .8, f0 * 1.6) * e * .5                 # sul ponticello
+    beats = np.zeros(len(t))
+    tb = .6
+    while tb < d - 1:
+        tt, on = _after(t, tb)
+        beats += on * np.sin(2 * np.pi * 52 * tt) * np.exp(-tt * 9) * rng.uniform(.6, 1.1)
+        tb += rng.uniform(.45, 2.4) * (1 + tb / d)          # battements irréguliers qui s'espacent
+    air = _band(_noise(len(t), rng), 150, 900) * .25
+    s = (drone * .5 + creak + beats * 1.2 + air) * fade_all
+    out["screamer_music"] = _norm(_reverb(_fade(s, .3, 3.0), rng, 3.0, .4, 2500), .75)
+
+    # --- fuite dans le conduit : griffes sur le métal qui s'éloignent -------------
+    d = 2.6
+    t = _t(d)
+    far = np.clip(1 - t / d, 0, 1)
+    claws = _clicks(t, [(x, rng.uniform(.5, 1.0) * (1 - x / d)) for x in np.cumsum(rng.uniform(.03, .09, 45))
+                        if x < d - .1], 1800, 8000, 160, rng, ring=2600)
+    scrape = _band(_noise(len(t), rng), 1400, 6000) * (np.sin(2 * np.pi * 7 * t) > .2) * far ** 2 * .6
+    boom = _metal_ring(t, [130, 290, 470], 4, rng) * .5
+    s = (claws + scrape + boom) * (.3 + .7 * far)
+    out["screamer_flee"] = _norm(_reverb(_fade(_lowpass(s, 9000), .002, .3), rng, 1.6, .45, 2500), .9)
+    return out
+
+
 def gen_all(force=False):
     """Génère tous les sons manquants. Renvoie la liste des noms."""
     os.makedirs(SOUND_DIR, exist_ok=True)
@@ -630,17 +799,32 @@ def gen_all(force=False):
     ws = gen_weapons_spiders(np.random.default_rng(417)) if need_ws else {}
     for name, sig in ws.items():
         _write(name, sig)
+    # courant du vaisseau et screamer
+    ps_names = ("lever_pull", "reactor_spinup", "relay2", "power_down", "door_force", "screamer",
+                "screamer_stinger", "screamer_music", "screamer_flee", "fuse_insert", "power_thump",
+                "door_force_open")
+    need_ps = force or any(not os.path.exists(os.path.join(SOUND_DIR, n + ".wav")) for n in ps_names)
+    ps = gen_power_screamer(np.random.default_rng(666)) if need_ps else {}
+    for name, sig in ps.items():
+        _write(name, sig)
     for name in pending:
         if name in ws:
             continue
         _write(name, table[name]())
-    for name in list(table) + list(ws):
+    for name in list(table) + list(ws) + list(ps):
         sounds[name] = os.path.join(SOUND_DIR, name + ".wav")
-    if not ws:
-        # cache déjà présent : on retrouve aussi les sons v2 sur le disque
-        for f in os.listdir(SOUND_DIR):
-            if f.endswith(".wav"):
-                sounds.setdefault(f[:-4], os.path.join(SOUND_DIR, f))
+    # cache déjà présent : on retrouve aussi les autres sons sur le disque
+    for f in os.listdir(SOUND_DIR):
+        if f.endswith(".wav"):
+            sounds.setdefault(f[:-4], os.path.join(SOUND_DIR, f))
+    # sons personnels : un fichier placé dans sounds/ (ex. screamer.wav ou screamer.ogg) remplace le son généré
+    custom = os.path.join(BASE_DIR, C.CUSTOM_SOUND_DIR)
+    if os.path.isdir(custom):
+        for f in sorted(os.listdir(custom)):
+            name, ext = os.path.splitext(f)
+            if ext.lower() in (".wav", ".ogg") and name in sounds:
+                sounds[name] = os.path.join(custom, f)
+                print(f"[audio] son personnel utilisé : {f}")
     return sounds
 
 
@@ -692,7 +876,8 @@ class AudioSystem:
             "gun_tail_large": 2, "alien_screech0": 2, "alien_screech1": 2, "alien_die": 2, "knife_swing": 2,
             "knife_hit": 2, "alien_skitter": 2, "creature_step": 3, "pickup": 2, "beep": 2, "ui_select": 2,
             "spark": 2, "casing0": 2, "casing1": 2, "casing2": 2, "alien_skitter0": 2, "alien_skitter1": 2,
-            "alien_skitter2": 2, "alien_skitter3": 2, "alien_click0": 2, "alien_click1": 2}
+            "alien_skitter2": 2, "alien_skitter3": 2, "alien_click0": 2, "alien_click1": 2, "relay0": 2,
+            "relay1": 2, "relay2": 2, "heartbeat": 2, "door_force": 2, "fuse_insert": 2}
 
     def __init__(self):
         from ursina import application
@@ -705,6 +890,11 @@ class AudioSystem:
         self.master = C.MASTER_VOLUME
         self.listener_pos = (0, 0, 0)
         self.listener_right = (1, 0, 0)
+        # « ducking » : 0 = silence total (screamer, levier), remonte ensuite progressivement
+        self.duck = 1.0
+        self.duck_target = 1.0
+        self.duck_rate = 1.0
+        self.duck_exempt = set()
         for name, path in self.paths.items():
             n = self.POLY.get(name, 1)
             lst = []
@@ -729,11 +919,35 @@ class AudioSystem:
         self.listener_pos = (pos[0], pos[1], pos[2])
         self.listener_right = (right[0], right[1], right[2])
 
-    def play(self, name, volume=1.0, pitch=1.0, balance=0.0, music=False):
+    def silence(self, keep=(), keep_loops=()):
+        """Coupe tout d'un coup : boucles d'ambiance, musique et sons en cours (sauf ceux de keep)."""
+        from panda3d.core import AudioSound
+        self.duck = self.duck_target = 0.0
+        self.duck_exempt = set(keep_loops)
+        for name, lst in self.pool.items():
+            if name in keep:
+                continue
+            for snd in lst:
+                if snd is not None and snd.status() == AudioSound.PLAYING:
+                    snd.stop()
+        for key, lp in self.loops.items():
+            if key not in self.duck_exempt:
+                lp.current = 0.0
+                if lp.snd:
+                    lp.snd.setVolume(0)
+
+    def restore(self, fade=2.0):
+        """Fait revenir progressivement l'ambiance après un silence."""
+        self.duck_target = 1.0
+        self.duck_rate = 1.0 / max(.05, fade)
+
+    def play(self, name, volume=1.0, pitch=1.0, balance=0.0, music=False, ignore_duck=False):
         s = self._get(name)
         if s is None:
             return None
         vol = volume * self.master * (C.MUSIC_VOLUME if music else C.SFX_VOLUME)
+        if not ignore_duck:
+            vol *= self.duck
         s.setVolume(max(0.0, min(1.0, vol)))
         s.setPlayRate(pitch)
         s.setBalance(max(-1, min(1, balance)))
@@ -757,7 +971,7 @@ class AudioSystem:
             bal = 0.0
         return att, bal
 
-    def play_at(self, name, pos, volume=1.0, pitch=1.0, max_dist=None, occluded=False):
+    def play_at(self, name, pos, volume=1.0, pitch=1.0, max_dist=None, occluded=False, ignore_duck=False):
         """
         Son 3D. occluded=True : la source est derrière une cloison ou dans un
         conduit -> version étouffée (suffixe _m) si elle existe, volume réduit.
@@ -769,7 +983,7 @@ class AudioSystem:
             volume *= .45
             if name + "_m" in self.pool:
                 name = name + "_m"
-        return self.play(name, volume * att, pitch, bal)
+        return self.play(name, volume * att, pitch, bal, ignore_duck=ignore_duck)
 
     def play_var(self, prefix, count, volume=1.0, pos=None, pitch_range=(.9, 1.12), max_dist=None,
                  occluded=False):
@@ -808,5 +1022,11 @@ class AudioSystem:
             self.stop_loop(k)
 
     def update(self, dt):
-        for lp in self.loops.values():
-            lp.update(dt, self.master)
+        if self.duck != self.duck_target:
+            step = self.duck_rate * dt
+            d = self.duck_target - self.duck
+            self.duck = self.duck_target if abs(d) <= step else self.duck + math.copysign(step, d)
+            if self.duck >= 1.0:
+                self.duck_exempt = set()
+        for key, lp in self.loops.items():
+            lp.update(dt, self.master * (1.0 if key in self.duck_exempt else self.duck))

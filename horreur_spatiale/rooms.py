@@ -20,7 +20,7 @@ import textures
 import loot
 from geometry import MeshBuilder, jitter_color
 from generator import SOLID, ROOM, CORR, VENT, DIRS, Blocker
-from lighting import Fixture
+from lighting import Fixture, mark_emissive
 
 # couleurs (murs, sol, plafond) par type de zone
 PALETTE = {
@@ -71,16 +71,22 @@ class Placer:
 
 class Group:
     """Un groupe de rendu (une salle ou un bloc de couloirs) et ses meshes."""
-    KINDS = ("struct", "floor", "hazard", "decal", "smear", "glass", "emissive", "screen")
+    # emissive : voyants / écrans rouges alimentés ; screen : écrans ; reactor : anneaux du réacteur ;
+    # battery : voyants sur batterie de secours (clignotent même sans courant) ;
+    # strip : bandes de secours au sol (option config.EMERGENCY_STRIPS)
+    KINDS = ("struct", "floor", "hazard", "decal", "smear", "glass", "emissive", "screen", "reactor", "battery",
+             "strip")
+    POWERED = {"emissive": "emissive", "screen": "screen", "reactor": "reactor", "battery": "battery"}
 
-    def __init__(self, name, parent, bounds):
+    def __init__(self, name, parent, bounds, is_room=False):
         self.name = name
         self.root = Entity(parent=parent, name=name)
         self.b = {k: MeshBuilder(uv_scale=2.0 if k != "hazard" else 1.0) for k in self.KINDS}
         self.bounds = bounds       # (x0, x1, z0, z1)
         self.enabled = True
+        self.is_room = is_room
 
-    def build(self):
+    def build(self, power=None):
         tex = {"hazard": textures.get('hazard'), "decal": textures.get('blood'),
                "smear": textures.get('smear'), "screen": textures.get('screen')}
         # matériaux complets (albédo + normal map + brillance) pour les surfaces éclairées
@@ -100,10 +106,14 @@ class Group:
                 e.setBin('transparent', 10)
                 if k != "glass":
                     e.setDepthOffset(2)
-            if k in ("emissive", "screen", "glass"):
-                e.setLightOff(1)
+            if k in ("emissive", "screen", "glass", "reactor", "battery", "strip"):
+                mark_emissive(e)          # émissif volontaire (ignoré par l'audit « unlit »)
             if k == "glass":
                 e.double_sided = True
+            # écrans, voyants et réacteur : allumés / éteints par le gestionnaire de courant
+            if power is not None and k in self.POWERED:
+                x0, x1, z0, z1 = self.bounds
+                power.register_emissive(e, self.POWERED[k], (x0 + x1) / 2, (z0 + z1) / 2)
         self.b = None
 
     def distance_to(self, x, z):
@@ -115,21 +125,73 @@ class Group:
 
 # ============================================================================
 class DoorInteract(loot.Interactable):
+    """
+    Interaction avec une porte. Avec le courant : ouvrir / fermer. Sans
+    courant : les portes entrouvertes se franchissent directement, les portes
+    fermées se forcent (maintenir le bouton, très bruyant), certaines sont
+    bloquées (passer par les conduits) et la salle de commandement est
+    verrouillée électriquement.
+    """
     radius = 2.2
 
     def __init__(self, level, door):
         self.door = door
         self.pos = (door.pos[0], 1.2, door.pos[1])
+        self._grind = 0.0
         level.add_interactable(self, door.pos[0], door.pos[1])
 
+    @property
+    def hold_time(self):
+        d = self.door
+        return C.DOOR_FORCE_TIME if (d.unpowered and not d.locked and d.jam == "closed") else 0.0
+
     def prompt(self, game):
-        return "Fermer la porte" if self.door.target > 0 else "Ouvrir la porte"
+        d = self.door
+        if d.locked:
+            return "Porte verrouillée (pas de courant)"
+        if d.unpowered:
+            if d.jam == "ajar" or d.open_amount > .5:
+                return None
+            if d.jam == "stuck":
+                return "Porte bloquée"
+            return "Forcer la porte (maintenir)"
+        return "Fermer la porte" if d.target > 0 else "Ouvrir la porte"
+
+    def on_hold(self, game, dt):
+        """Pendant qu'on force : grincements métalliques bruyants."""
+        self._grind -= dt
+        if self._grind <= 0:
+            self._grind = .55
+            game.audio.play_at("door_force", self.pos, .85, random.uniform(.85, 1.1))
+            game.noise(self.pos, C.NOISE_DOOR_FORCE * .6, "door")
+            game.inp.rumble(.35, .15, 200)
+            game.shake(.08)
 
     def interact(self, game):
-        if self.door.target > 0:
-            self.door.close()
+        d = self.door
+        if d.locked:
+            game.audio.play_at("beep", self.pos, .6, .7)
+            game.hud.message("Verrouillage électrique. Rétablis le courant dans la salle des machines.",
+                             color.orange)
+            return
+        if d.unpowered:
+            if d.jam == "stuck":
+                game.audio.play_at("metal_bang", self.pos, .5, 1.3)
+                game.hud.message("Elle ne bouge pas d'un millimètre. Passe par les conduits d'aération.",
+                                 color.orange)
+                return
+            if d.jam == "closed":
+                # porte forcée : elle reste entrouverte
+                d.force_ajar(C.DOOR_AJAR_OPENING)
+                game.audio.play_at("door_force_open", self.pos, 1.0)
+                game.noise(self.pos, C.NOISE_DOOR_FORCE, "door")
+                game.inp.rumble(.8, .5, 350)
+                game.hud.message("Porte forcée... tout le vaisseau a dû l'entendre.", color.rgb(.8, .6, .5))
+            return
+        if d.target > 0:
+            d.close()
         else:
-            self.door.open()
+            d.open()
             game.noise((self.pos[0], 1, self.pos[2]), C.NOISE_DOOR, "door")
 
 
@@ -145,9 +207,15 @@ class GrilleInteract(loot.Interactable):
     def prompt(self, game):
         if self.grille.opened:
             return None
+        if self.grille.locked:
+            return "Grille scellée (verrou électrique)"
         return "Ouvrir la grille d'aération"
 
     def interact(self, game):
+        if self.grille.locked:
+            game.audio.play_at("beep", self.pos, .5, .7)
+            game.hud.message("Scellée électriquement. Il faut rétablir le courant.", color.orange)
+            return
         self.grille.set_open(True)
         game.audio.play_at("vent_bang", self.pos, .6)
         game.noise(self.pos, 4.0, "grille")
@@ -169,6 +237,9 @@ class LevelBuilder:
         self.updatables = []       # objets avec update (disque dur...)
         self.forcefield = None
         self.loot_dir = loot.LootDirector(self.rng)
+        self.spark_points = []     # câbles arrachés (étincelles)
+        self.power_panel = None    # tableau électrique principal (salle des machines)
+        self.fuses = []            # fusibles à retrouver
         self.hdd = None
         self.pad_center = None
         self.reactor_pos = None
@@ -184,7 +255,7 @@ class LevelBuilder:
             key = ("room", r)
             if key not in self.groups:
                 room = L.rooms[r]
-                self.groups[key] = Group(f"room_{r}_{room.type}", self.parent, room.world_bounds())
+                self.groups[key] = Group(f"room_{r}_{room.type}", self.parent, room.world_bounds(), True)
             return self.groups[key]
         ci, cj = i // C.CHUNK_SIZE, j // C.CHUNK_SIZE
         key = ("chunk", ci, cj)
@@ -220,9 +291,12 @@ class LevelBuilder:
             self._room_lights(room)
             self._room_clutter(room)
         self._place_corpses()
+        self._place_fuses()
         self.loot_dir.finalize()
         for g in self.groups.values():
-            g.build()
+            g.build(self.lights.power)
+        # retards d'allumage (propagation depuis la salle des machines) et lampes cassées
+        self.lights.power.finalize(L, L.room("engine"), random.Random(self.rng.random()))
 
     # ------------------------------------------------------------------
     # CASES : sol, plafond, murs
@@ -366,6 +440,12 @@ class LevelBuilder:
         # cadre avec des joues pour ne pas voir l'épaisseur du mur
         self._trim(g, i, j, dx, dz, hs0 - .02, hs0, wy0, wy1, -.25, dark)
         self._trim(g, i, j, dx, dz, hs1, hs1 + .02, wy0, wy1, -.25, dark)
+        # très faible lueur froide des étoiles : n'éclaire que quelques mètres autour de la fenêtre
+        cx, cz = self.level.cell_center(i, j)
+        off = Cc / 2 - .5
+        self.lights.add_fixture(Fixture((cx + dx * off, (wy0 + wy1) / 2, cz + dz * off), C.STARLIGHT_COLOR,
+                                        C.STARLIGHT_RADIUS * (1.25 if big else 1.0), "star", None,
+                                        C.STARLIGHT_INTENSITY * (1.0 if big else .5), powered=False, kind="star"))
 
     # ------------------------------------------------------------------
     # PORTES ET GRILLES
@@ -395,13 +475,13 @@ class LevelBuilder:
                 lp = (door.line + s * .2, C.DOOR_HEIGHT + .3, door.mid)
             else:
                 lp = (door.mid, C.DOOR_HEIGHT + .3, door.line + s * .2)
-            lights.append(Entity(parent=g.root, model='cube', color=color.red, scale=.1, position=lp, unlit=True))
+            e = Entity(parent=g.root, model='cube', color=color.rgb(.3, .3, .32), scale=.1, position=lp)
+            e.setPythonTag("emissive", True)     # voyant : émissif seulement quand il est allumé
+            lights.append(e)
         door.status_light = lights
+        door.light_state = None
         self.door_visuals.append(door)
         DoorInteract(L, door)
-        # quelques portes sont bloquées entrouvertes (ambiance)
-        if self.rng.random() < .08:
-            door.open(hold=1e9)
 
     def _build_grille(self, grille):
         L = self.level
@@ -490,35 +570,46 @@ class LevelBuilder:
             # câble arraché qui pend
             if rng.random() < .06:
                 ln = rng.uniform(.8, 1.6)
-                mb.box((cx + rng.uniform(-.4, .4), h - ln / 2, cz + rng.uniform(-.4, .4)), (.03, ln, .03),
-                       (.04, .04, .04))
+                px, pz = cx + rng.uniform(-.4, .4), cz + rng.uniform(-.4, .4)
+                mb.box((px, h - ln / 2, pz), (.03, ln, .03), (.04, .04, .04))
                 L.spawn_points.append((cx, cz, "spark"))
-        # lumières de couloir
+                self.spark_points.append((px, h - ln, pz))
+        # lumières de couloir (néons froids ; lesquels resteront cassés est tiré par le gestionnaire de courant)
         roll = rng.random()
         if (i + 2 * j) % 3 == 0:
-            if roll < .45:
-                mode = "steady"
-            elif roll < .72:
-                mode = "flicker"
-            elif roll < .87:
-                mode = "broken"
-            else:
-                mode = "red"
-            col = (1, .12, .06) if mode == "red" else (.75, .85, 1.0)
+            mode = "red" if roll < .13 else "steady"
+            col = (1, .12, .06) if mode == "red" else C.LIGHT_COLOR_COLD
             ln = 1.1
             if axis == 'z':
                 sc = (.14, .05, ln)
             else:
                 sc = (ln, .05, .14)
-            e = Entity(parent=g.root, model='cube', color=color.rgb(*col), scale=sc, position=(cx, h - .04, cz),
-                       unlit=True)
+            e = Entity(parent=g.root, model='cube', color=color.rgb(.3, .3, .32), scale=sc,
+                       position=(cx, h - .04, cz))
+            mark_emissive(e, lit_off=False)
             self.lights.add_fixture(Fixture((cx, h - .35, cz), col, 7.5, mode, e,
                                             intensity=.9 if mode != "red" else .7))
         elif rng.random() < .12:
-            # gyrophare d'alarme mural (ne s'allume qu'en mode horreur)
+            # gyrophare d'alarme mural (alimenté ; ne s'allume qu'en mode horreur)
             e = Entity(parent=g.root, model='sphere', color=color.rgb(.2, .02, .02), scale=(.18, .12, .18),
-                       position=(cx, h - .08, cz), unlit=True)
-            self.lights.add_fixture(Fixture((cx, h - .3, cz), (1, .05, .02), 9, "alarm", e, 1.2))
+                       position=(cx, h - .08, cz))
+            mark_emissive(e, lit_off=False)
+            self.lights.add_fixture(Fixture((cx, h - .3, cz), (1, .05, .02), 9, "alarm", e, 1.2, kind="alarm"))
+        # bandes d'éclairage de secours au ras du sol (option, sur batterie)
+        if C.EMERGENCY_STRIPS:
+            ec = C.EMERGENCY_COLOR
+            for ddx, ddz in DIRS:
+                if L.edge_state(i, j, i + ddx, j + ddz) != "wall":
+                    continue
+                if ddx != 0:
+                    g.b["strip"].box((cx + ddx * (Cc / 2 - .04), .06, cz), (.02, .025, Cc * .9),
+                                     (ec[0] * .7, ec[1] * .7, ec[2] * .7))
+                else:
+                    g.b["strip"].box((cx, .06, cz + ddz * (Cc / 2 - .04)), (Cc * .9, .025, .02),
+                                     (ec[0] * .7, ec[1] * .7, ec[2] * .7))
+            if (i + j) % 3 == 1:
+                self.lights.add_fixture(Fixture((cx, .3, cz), ec, 3.0, "emergency", None, C.EMERGENCY_INTENSITY,
+                                                powered=False, kind="emergency"))
         # débris au sol
         if rng.random() < .18:
             s = rng.uniform(.2, .45)
@@ -603,6 +694,7 @@ class LevelBuilder:
         g = self.group_for(slot[0], slot[1])
         pl = self.slot_placer(slot, loot.Locker.D)
         lk = loot.Locker(self.level, g.b, g.root, pl, table, self.rng, self.animated)
+        lk.room = room
         self.loot_dir.lockers.append(lk)
         return lk
 
@@ -647,10 +739,14 @@ class LevelBuilder:
         for k in range(4):
             pl.box(g.b["emissive"], (-width / 2 + .25 + k * .25, .99, 0), (.05, .02, .05),
                    self.rng.choice([(.1, .9, .2), (.9, .6, .1), (.9, .1, .1)]))
+        # voyant de batterie de secours : clignote même sans courant (brille sans éclairer)
+        if self.rng.random() < C.BATTERY_LED_CHANCE:
+            pl.box(g.b["battery"], (width / 2 - .12, .99, .12), (.04, .02, .04),
+                   self.rng.choice([(1, .35, .05), (1, .08, .05)]))
         self.block_placer(pl, (0, 0), (width, .7), 1.0)
         x, _, z = pl.pt(0, 1.3, .2)
         self.lights.add_fixture(Fixture((x, 1.3, z), (.25, .9, .45) if not red else (1, .2, .1), 3.5, "pulse", None,
-                                        .35))
+                                        .35, kind="console"))
         return pl
 
     def prop_crate(self, g, x, z, s=None, yaw=None, stack=True):
@@ -710,11 +806,11 @@ class LevelBuilder:
             mb.box_rot((x + self.rng.uniform(-w / 2 + .2, w / 2 - .2), .8, z + self.rng.uniform(-d / 3, d / 3)),
                        (.3, .02, .22), self.rng.uniform(0, 180), (.6, .6, .58))
 
-    def add_room_fixture(self, room, x, z, y, col, mode, radius=8, intensity=1.0, size=(.9, .05, .18)):
+    def add_room_fixture(self, room, x, z, y, col, mode, radius=8, intensity=1.0, size=(.9, .05, .18), kind="lamp"):
         g = self.groups[("room", room.id)]
-        e = Entity(parent=g.root, model='cube', color=color.rgb(*col), scale=size, position=(x, y + .03, z),
-                   unlit=True)
-        return self.lights.add_fixture(Fixture((x, y - .3, z), col, radius, mode, e, intensity, room))
+        e = Entity(parent=g.root, model='cube', color=color.rgb(.3, .3, .32), scale=size, position=(x, y + .03, z))
+        mark_emissive(e, lit_off=False)      # tube : émissif seulement quand il est alimenté
+        return self.lights.add_fixture(Fixture((x, y - .3, z), col, radius, mode, e, intensity, room, kind=kind))
 
     # ------------------------------------------------------------------
     # SALLES
@@ -731,27 +827,25 @@ class LevelBuilder:
             for b in range(nz):
                 x = x0 + (x1 - x0) * (a + .5) / nx
                 z = z0 + (z1 - z0) * (b + .5) / nz
+                # couleur industrielle chaude ou froide selon la salle ; les lampes qui
+                # resteront cassées sont tirées par le gestionnaire de courant
                 r = rng.random()
-                if room.type == "medbay":
-                    mode = "flicker" if r < .6 else "steady"
-                    col = (.85, .95, 1.0)
-                elif room.type == "command":
-                    mode = "steady" if r < .6 else "pulse"
-                    col = (.55, .7, 1.0)
-                elif room.type == "crew":
-                    mode = "steady" if r < .5 else ("broken" if r < .8 else "flicker")
-                    col = (1.0, .82, .6)
+                if room.type in ("medbay", "command"):
+                    col = C.LIGHT_COLOR_COLD
+                elif room.type in ("crew", "mess"):
+                    col = C.LIGHT_COLOR_WARM
                 else:
-                    mode = "flicker" if r < .4 else ("broken" if r < .6 else "steady")
-                    col = (.9, .9, .85)
+                    col = C.LIGHT_COLOR_WARM if r < .5 else C.LIGHT_COLOR_COLD
+                mode = "pulse" if (room.type == "command" and r < .3) else "steady"
                 self.add_room_fixture(room, x, z, room.height - .02, col, mode, 8, .9, size=(1.3, .05, .2))
         # gyrophare d'alarme
         cx, cz = room.world_center()
         g = self.groups[("room", room.id)]
         e = Entity(parent=g.root, model='sphere', color=color.rgb(.2, .02, .02), scale=(.25, .15, .25),
-                   position=(cx + .5, room.height - .1, cz + .5), unlit=True)
+                   position=(cx + .5, room.height - .1, cz + .5))
+        mark_emissive(e, lit_off=False)
         self.lights.add_fixture(Fixture((cx + .5, room.height - .4, cz + .5), (1, .05, .02), 11, "alarm", e, 1.4,
-                                        room))
+                                        room, kind="alarm"))
 
     def _room_clutter(self, room):
         """Désordre : sang, traces, débris."""
@@ -796,23 +890,28 @@ class LevelBuilder:
         # projecteurs muraux
         for x in (x0 + .4, x1 - .4):
             for z in (z0 + (z1 - z0) * .35, z0 + (z1 - z0) * .75):
-                e = Entity(parent=g.root, model='cube', color=color.rgb(1, .95, .8), scale=(.12, .5, 1.0),
-                           position=(x, 7.5, z), unlit=True)
-                mode = rng.choice(["steady", "steady", "flicker", "broken"])
-                self.lights.add_fixture(Fixture((x + (1.5 if x < cx else -1.5), 7, z), (1, .95, .82), 17, mode, e,
-                                                1.6, room))
-        # lumières rouges près de l'ouverture
+                e = Entity(parent=g.root, model='cube', color=color.rgb(.3, .3, .32), scale=(.12, .5, 1.0),
+                           position=(x, 7.5, z))
+                mark_emissive(e, lit_off=False)
+                self.lights.add_fixture(Fixture((x + (1.5 if x < cx else -1.5), 7, z), (1, .95, .82), 17, "steady",
+                                                e, 1.6, room))
+        # balises rouges de l'ouverture (sur batterie) : elles brillent sans éclairer
         ox, ow = L.hangar_opening
         for k in (0, 1):
             x = (ox + (0 if k == 0 else ow)) * C.CELL
             e = Entity(parent=g.root, model='cube', color=color.rgb(1, .1, .05), scale=(.3, .3, .3),
-                       position=(x, C.HANGAR_OPENING_HEIGHT + .3, .3), unlit=True)
-            self.lights.add_fixture(Fixture((x, C.HANGAR_OPENING_HEIGHT - .5, 1.5), (1, .15, .05), 10, "pulse", e,
-                                            1.0, room))
+                       position=(x, C.HANGAR_OPENING_HEIGHT + .3, .3))
+            mark_emissive(e)
+        # lueur des étoiles par la grande ouverture
+        for fx_ in (x0 + (x1 - x0) * .35, x0 + (x1 - x0) * .65):
+            self.lights.add_fixture(Fixture((fx_, 3.5, 1.2), C.STARLIGHT_COLOR, C.STARLIGHT_RADIUS * 2.2, "star",
+                                            None, C.STARLIGHT_INTENSITY * 1.4, room, powered=False, kind="star"))
         # gyrophare
         e = Entity(parent=g.root, model='sphere', color=color.rgb(.2, .02, .02), scale=.35,
-                   position=(cx, room.height - .3, z1 - 1), unlit=True)
-        self.lights.add_fixture(Fixture((cx, room.height - 1, z1 - 2), (1, .05, .02), 18, "alarm", e, 1.8, room))
+                   position=(cx, room.height - .3, z1 - 1))
+        mark_emissive(e, lit_off=False)
+        self.lights.add_fixture(Fixture((cx, room.height - 1, z1 - 2), (1, .05, .02), 18, "alarm", e, 1.8, room,
+                                        kind="alarm"))
         # caisses et fûts le long des murs (jamais devant l'ouverture)
         slots = self.wall_slots(room, exclude_sides=((0, -1),))
         for s in self.take_slots(slots, 9):
@@ -838,7 +937,7 @@ class LevelBuilder:
             loot.Pickup(L, gg.root, "knife", 1, kx, ky, kz, pl.yaw + 70)
             bx, by, bz = pl.pt(-.4, .9, .05)
             loot.Pickup(L, gg.root, "battery", 1, bx, by, bz)
-            self.add_room_fixture(room, *pl.pt(0, 0, .2)[::2], 2.2, (1, .85, .6), "flicker", 5, .8, (.6, .04, .1))
+            self.add_room_fixture(room, *pl.pt(0, 0, .2)[::2], 2.2, (1, .85, .6), "steady", 5, .8, (.6, .04, .1))
         # un casier de maintenance
         if slots:
             self.prop_locker(room, slots.pop(), "hangar")
@@ -848,16 +947,16 @@ class LevelBuilder:
         rng = self.rng
         g = self.groups[("room", room.id)]
         mb = g.b["struct"]
-        em = g.b["emissive"]
         cx, cz = room.world_center()
         self.reactor_pos = (cx, 2.5, cz)
         H = room.height
         # réacteur central
         mb.cylinder((cx, .3, cz), 2.4, .6, (.25, .25, .27), 20)
         mb.cylinder((cx, H - .3, cz), 1.9, .6, (.25, .25, .27), 20)
+        rc = g.b["reactor"]
         for k in range(4):
             y = .8 + k * (H - 1.6) / 4
-            em.cylinder((cx, y + .3, cz), 1.25, .35, (.15, .8, 1.0), 20)
+            rc.cylinder((cx, y + .3, cz), 1.25, .35, (.15, .8, 1.0), 20)
             mb.cylinder((cx, y + .7, cz), 1.4, .25, (.3, .3, .32), 20)
         mb.cylinder((cx, H / 2, cz), 1.05, H - .8, (.18, .2, .22), 16)
         for a in range(6):
@@ -872,8 +971,12 @@ class LevelBuilder:
             mx, mz = cx + math.cos((a0 + a1) / 2) * 3.1, cz + math.sin((a0 + a1) / 2) * 3.1
             mb.box_rot((mx, 1.08, mz), (1.25, .05, .05), -math.degrees((a0 + a1) / 2) + 90, (.55, .5, .15))
         self.block(cx - 2.4, cx + 2.4, cz - 2.4, cz + 2.4, H)
-        self.lights.add_fixture(Fixture((cx + 2.8, 2.5, cz), (.3, .8, 1.0), 14, "reactor", None, 1.5, room))
-        self.lights.add_fixture(Fixture((cx - 2.8, 2.5, cz), (.3, .8, 1.0), 14, "reactor", None, 1.2, room))
+        self.lights.add_fixture(Fixture((cx + 2.8, 2.5, cz), (.3, .8, 1.0), 14, "reactor", None, 1.5, room,
+                                        kind="reactor"))
+        self.lights.add_fixture(Fixture((cx - 2.8, 2.5, cz), (.3, .8, 1.0), 14, "reactor", None, 1.2, room,
+                                        kind="reactor"))
+        # câble arraché près du réacteur (étincelles)
+        self.spark_points.append((cx + 2.9, H - 1.6, cz + 1.2))
         # tuyaux du réacteur vers les murs
         x0, x1, z0, z1 = room.world_bounds()
         for k, (tx, tz) in enumerate(((x0, cz), (x1, cz), (cx, z0), (cx, z1))):
@@ -884,12 +987,16 @@ class LevelBuilder:
                 mb.cylinder((tx + .6, y, (tz + cz) / 2), .18, abs(tz - cz) - 2, (.4, .3, .2), 10, 'z')
         # éclairage orangé de service
         for (x, z) in ((x0 + 1.5, z0 + 1.5), (x1 - 1.5, z1 - 1.5), (x0 + 1.5, z1 - 1.5), (x1 - 1.5, z0 + 1.5)):
-            self.add_room_fixture(room, x, z, H - .02, (1, .6, .25), rng.choice(["steady", "flicker", "broken"]), 9,
-                                  .9, (.4, .05, .4))
+            self.add_room_fixture(room, x, z, H - .02, (1, .6, .25), "steady", 9, .9, (.4, .05, .4))
         e = Entity(parent=g.root, model='sphere', color=color.rgb(.2, .02, .02), scale=.3,
-                   position=(x0 + 1, H - .2, cz), unlit=True)
-        self.lights.add_fixture(Fixture((x0 + 1.5, H - .8, cz), (1, .05, .02), 14, "alarm", e, 1.6, room))
+                   position=(x0 + 1, H - .2, cz))
+        mark_emissive(e, lit_off=False)
+        self.lights.add_fixture(Fixture((x0 + 1.5, H - .8, cz), (1, .05, .02), 14, "alarm", e, 1.6, room,
+                                        kind="alarm"))
         slots = self.wall_slots(room)
+        # tableau électrique principal (fusibles + gros levier)
+        if slots:
+            self._power_panel(room, slots.pop())
         for s in self.take_slots(slots, 3):
             self.prop_locker(room, s, "engine")
         for s in self.take_slots(slots, 3):
@@ -913,7 +1020,7 @@ class LevelBuilder:
         cx, cz = room.world_center()
         g.b["struct"].cylinder((cx, room.height - .5, cz), .5, .15, (.7, .72, .75), 16)
         g.b["struct"].cylinder((cx, room.height - .2, cz), .04, .5, (.5, .5, .5), 6)
-        self.add_room_fixture(room, cx, cz, room.height - .5, (.9, .95, 1), "flicker", 6, 1.1, (.7, .02, .7))
+        self.add_room_fixture(room, cx, cz, room.height - .5, (.9, .95, 1), "steady", 6, 1.1, (.7, .02, .7))
         # table d'opération
         g.b["struct"].box((cx, .85, cz), (.8, .1, 2.0), (.6, .62, .64))
         g.b["struct"].box((cx, .42, cz), (.3, .84, .3), (.4, .4, .42))
@@ -943,7 +1050,7 @@ class LevelBuilder:
                 x, y, z = pl.pt(-.3, .78, .05)
                 loot.Pickup(self.level, gg.root, rng.choice(["note", "battery"]), 1, x, y, z, rng.uniform(0, 90))
             x, y, z = pl.pt(.2, 1.0, 0)
-            self.lights.add_fixture(Fixture((x, y, z), (.3, .9, .5), 3, "pulse", None, .3, room))
+            self.lights.add_fixture(Fixture((x, y, z), (.3, .9, .5), 3, "pulse", None, .3, room, kind="console"))
         # affaires personnelles au sol
         for _ in range(rng.randint(2, 5)):
             i, j = rng.choice(list(room.cells()))
@@ -972,16 +1079,20 @@ class LevelBuilder:
             pl.box(mb, (0, .45, -1.0), (.5, .08, .5), (.18, .18, .2))            # siège
             pl.box(mb, (0, .75, -1.25), (.5, .6, .08), (.18, .18, .2))
             pl.cyl(mb, (0, .22, -1.0), .05, .45, (.3, .3, .3))
-            self.lights.add_fixture(Fixture((x, 1.2, z1 - 2.2), (.3, .6, 1.0), 4, "pulse", None, .45, room))
+            self.lights.add_fixture(Fixture((x, 1.2, z1 - 2.2), (.3, .6, 1.0), 4, "pulse", None, .45, room,
+                                            kind="console"))
         # table holographique centrale
         mb.cylinder((cx, .45, cz - .5), .9, .9, (.18, .2, .24), 20)
         g.b["emissive"].cylinder((cx, .92, cz - .5), .8, .04, (.2, .6, 1.0), 20)
         holo = Entity(parent=g.root, model='sphere', color=color.rgba(.3, .7, 1, .25), scale=(1.2, .8, 1.2),
-                      position=(cx, 1.7, cz - .5), unlit=True)
+                      position=(cx, 1.7, cz - .5))
+        mark_emissive(holo)
         holo.setTransparency(TransparencyAttrib.MAlpha)
         self.holo = holo
+        self.lights.power.register_emissive(holo, "holo", cx, cz)     # s'allume avec le courant
         self.block(cx - .9, cx + .9, cz - 1.4, cz + .4, 1.0)
-        self.lights.add_fixture(Fixture((cx, 1.8, cz - .5), (.3, .7, 1.0), 6, "pulse", None, .8, room))
+        self.lights.add_fixture(Fixture((cx, 1.8, cz - .5), (.3, .7, 1.0), 6, "pulse", None, .8, room,
+                                        kind="console"))
         # console du disque dur (contre un mur latéral)
         slots = self.wall_slots(room, exclude_sides=((0, 1),))
         s = slots.pop() if slots else (room.x, room.y, -1, 0)
@@ -992,7 +1103,8 @@ class LevelBuilder:
         self.hdd = loot.HardDrive(L, gg.root, hx, hy, hz, pl.yaw)
         self.updatables.append(self.hdd)
         # lumière rouge d'urgence au-dessus
-        self.add_room_fixture(room, hx, hz, room.height - .02, (1, .15, .1), "pulse", 7, 1.0, (.3, .05, .3))
+        self.add_room_fixture(room, hx, hz, room.height - .02, (1, .15, .1), "pulse", 7, 1.0, (.3, .05, .3),
+                              kind="console")
         # le capitaine est mort à son poste
         cxp, _, czp = pl.pt(0, 0, 1.3)
         c = loot.Corpse(L, gg.b, cxp, czp, pl.yaw + 160, rng, (.15, .18, .3))
@@ -1062,6 +1174,82 @@ class LevelBuilder:
                 self.prop_barrel(g, px + dx * .6, pz + dz * .6)
 
     # ------------------------------------------------------------------
+    # COURANT : tableau électrique principal et fusibles
+    # ------------------------------------------------------------------
+    def _power_panel(self, room, slot):
+        """Grand tableau électrique mural : 3 logements de fusibles, voyants sur batterie, gros levier."""
+        g = self.group_for(slot[0], slot[1])
+        pl = self.slot_placer(slot, .35)
+        mb = g.b["struct"]
+        body = (.28, .3, .26)
+        pl.box(mb, (0, 1.35, 0), (1.5, 1.7, .3), body)                    # armoire
+        pl.box(mb, (0, 1.35, .16), (1.36, 1.56, .02), (.2, .22, .19))     # façade
+        pl.box(g.b["hazard"], (0, 2.28, .12), (1.5, .12, .08), (1, 1, 1))  # bande de danger
+        pl.box(mb, (0, .25, .1), (1.2, .5, .5), (.22, .22, .24))          # socle / chemin de câbles
+        for k in range(5):                                                  # gros câbles vers le plafond
+            pl.cyl(mb, (-.5 + k * .25, 2.9, -.05), .05, 1.1, (.08, .08, .09))
+        self.block_placer(pl, (0, 0), (1.5, .45), 2.2)
+        slots_vis, leds = [], []
+        for k in range(3):
+            lx = -.45 + k * .3
+            pl.box(mb, (lx, 1.55, .17), (.16, .36, .04), (.06, .06, .07))    # logement vide (noir)
+            x, y, z = pl.pt(lx, 1.55, .2)
+            fuse = Entity(parent=g.root, model='cube', color=color.rgb(.75, .62, .25), position=(x, y, z),
+                          rotation_y=pl.yaw, scale=(.1, .28, .06), enabled=False)
+            Entity(parent=fuse, model='cube', color=color.rgb(.7, .7, .72), scale=(1.1, .12, 1.1), y=.44)
+            Entity(parent=fuse, model='cube', color=color.rgb(.7, .7, .72), scale=(1.1, .12, 1.1), y=-.44)
+            slots_vis.append(fuse)
+            x, y, z = pl.pt(lx, 1.83, .19)
+            led = Entity(parent=g.root, model='cube', color=color.rgb(1, .08, .04), position=(x, y, z),
+                         rotation_y=pl.yaw, scale=(.05, .05, .02))
+            mark_emissive(led)       # voyant sur batterie de secours
+            leds.append(led)
+        # levier : pivot sur le côté droit de l'armoire
+        x, y, z = pl.pt(.55, 1.3, .2)
+        pivot = Entity(parent=g.root, position=(x, y, z), rotation_y=pl.yaw)
+        pl.box(mb, (.55, 1.3, .18), (.18, .3, .06), (.12, .12, .13))         # socle du levier
+        arm = Entity(parent=pivot, rotation_x=-40)
+        Entity(parent=arm, model='cube', color=color.rgb(.35, .35, .37), scale=(.05, .5, .05), y=.25)
+        Entity(parent=arm, model='cube', color=color.rgb(.6, .08, .05), scale=(.16, .07, .07), y=.5)
+        x, y, z = pl.pt(0, 1.25, .45)
+        self.power_panel = {"pos": (x, 1.25, z), "fuse_vis": slots_vis, "leds": leds, "arm": arm,
+                            "room": room, "facing": pl.facing}
+
+    def _place_fuses(self):
+        """2 ou 3 fusibles garantis : dans la salle des machines et dans les salles voisines."""
+        L = self.level
+        rng = self.rng
+        engine = L.room("engine")
+        if engine is None or self.power_panel is None:
+            return
+        n = rng.randint(*C.POWER_FUSES)
+        neigh = []
+        for a, b in L.connections:
+            ra, rb = L.rooms[a], L.rooms[b]
+            other = rb if ra is engine else (ra if rb is engine else None)
+            if other is not None and other.type not in ("command", "hangar") and other not in neigh:
+                neigh.append(other)
+        rng.shuffle(neigh)
+        targets = [engine] + [neigh[k % len(neigh)] if neigh else engine for k in range(n - 1)]
+        for room in targets:
+            busy = {d.room_cell for d in room.doors} | {gr.room_cell for gr in room.grilles}
+            cells = [c for c in room.cells() if c not in busy]
+            for _ in range(80):
+                i, j = rng.choice(cells)
+                cx, cz = L.cell_center(i, j)
+                # près d'un mur ou d'un meuble : caché, mais repérable à la lampe
+                x, z = cx + rng.uniform(-.85, .85), cz + rng.uniform(-.85, .85)
+                if L.blocked_point(x, .15, z, .35):
+                    continue
+                if any(math.hypot(x - f.pos[0], z - f.pos[2]) < 3 for f in self.fuses):
+                    continue
+                g = self.group_for(i, j)
+                self.fuses.append(loot.FusePickup(L, g.root, x, .02, z, rng.uniform(0, 180)))
+                break
+        print(f"[courant] {len(self.fuses)} fusibles placés : " +
+              ", ".join(L.room_at(f.pos[0], f.pos[2]).name for f in self.fuses))
+
+    # ------------------------------------------------------------------
     def _place_corpses(self):
         L = self.level
         rng = self.rng
@@ -1104,9 +1292,7 @@ class LevelBuilder:
                         ent.position = (base.x, base.y, base.z + off)
                     else:
                         ent.position = (base.x + off, base.y, base.z)
-                col = color.lime if door.open_amount > .5 else color.red
-                for l in door.status_light:
-                    l.color = col
+            self._update_door_light(door)
         for gr in self.grille_visuals:
             target = 80 if gr.opened else 0
             if abs(gr.angle - target) > .5:
@@ -1132,6 +1318,26 @@ class LevelBuilder:
                 if on != g.enabled:
                     g.enabled = on
                     g.root.enabled = on
+
+    def _update_door_light(self, door):
+        """Voyants de porte : éteints sans courant (sauf verrou sur batterie qui clignote)."""
+        if door.unpowered:
+            if door.locked:
+                st = "lock_on" if (self.time * 1.2) % 1 < .5 else "off"
+            else:
+                st = "off"
+        else:
+            st = "green" if door.open_amount > .5 else "red"
+        if st == door.light_state:
+            return
+        door.light_state = st
+        for l in door.status_light:
+            if st == "off":
+                l.clearLight()
+                l.color = color.rgb(.3, .3, .32)
+            else:
+                l.setLightOff(1)
+                l.color = color.lime if st == "green" else color.rgb(1, .08, .04)
 
     def show_only(self, room_ids):
         """Phase TPS : seul le hangar est visible."""

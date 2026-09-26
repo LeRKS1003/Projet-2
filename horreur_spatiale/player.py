@@ -115,6 +115,9 @@ class Player:
         if self.search_target is not None:
             if inp.held("interact") and self.search_target is self.focus:
                 self.search_progress += dt
+                hook = getattr(self.search_target, "on_hold", None)
+                if hook is not None:
+                    hook(g, dt)          # ex. grincements pendant qu'on force une porte
                 if self.search_progress >= self.search_target.hold_time:
                     t = self.search_target
                     self.search_target = None
@@ -221,7 +224,7 @@ class Player:
     # ------------------------------------------------------------------
     def _apply_camera(self, dt):
         g = self.game
-        shake = self.trauma ** 2 + g.horror.shake_amount()
+        shake = self.trauma ** 2 + g.horror.shake_amount() + g.shake_amount * .6
         sx = (random.uniform(-1, 1)) * shake * 2.2
         sy = (random.uniform(-1, 1)) * shake * 2.2
         bob_y = math.sin(self._bob) * (.035 if not self.crouched else .02)

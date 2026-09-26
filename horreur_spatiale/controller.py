@@ -225,6 +225,7 @@ class InputManager:
         "confirm": "enter", "back": "escape", "menu_up": "up arrow", "menu_down": "down arrow",
         "ship_assist": C.KEYS["ship_assist"], "ship_brake": C.KEYS["ship_brake"],
         "ship_camera": C.KEYS["ship_camera"],
+        "debug_power": C.KEYS["debug_power"], "debug_screamer": C.KEYS["debug_screamer"],
     }
     # alternatives clavier
     KB_ALT = {"confirm": ["space", C.KEYS["interact"]], "menu_up": [C.KEYS["forward"]],

@@ -1,0 +1,11 @@
+Sons personnels
+===============
+
+Place ici un fichier portant le nom d'un son du jeu pour remplacer le son
+généré automatiquement. Formats acceptés : .wav ou .ogg.
+
+Exemple : screamer.wav (ou screamer.ogg) remplace le cri du casier piégé.
+
+Autres noms possibles : screamer_stinger, screamer_music, screamer_flee,
+reactor_spinup, lever_pull, power_down, relay0, relay1, relay2...
+(la liste complète est dans generated/sounds/v2/).

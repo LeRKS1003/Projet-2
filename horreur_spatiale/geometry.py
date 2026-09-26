@@ -484,6 +484,7 @@ class MeshBuilder:
             np_.setTexture(texture._texture if hasattr(texture, '_texture') else texture)
         if unlit:
             e.setLightOff(1)
+            e.setPythonTag("emissive", True)     # émissif volontaire (audit de l'éclairage)
         return e
 
 
