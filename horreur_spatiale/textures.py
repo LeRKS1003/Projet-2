@@ -233,6 +233,40 @@ def _gen_smear(rng):
     return _to_tex(col)
 
 
+def _gen_claws(rng):
+    """Traces de griffes rayant le métal (alpha) : quatre entailles claires bordées de sombre."""
+    s = 128
+    yy, xx = np.mgrid[0:s, 0:s] / s
+    light = np.zeros((s, s), np.float32)
+    dark = np.zeros((s, s), np.float32)
+    for k in range(4):
+        x0 = .22 + k * .17 + rng.uniform(-.02, .02)
+        curve = (yy - .5) ** 2 * rng.uniform(.1, .3) + (yy - .5) * .2
+        dist = np.abs(xx - x0 - curve)
+        taper = np.clip(1 - np.abs(yy - .5) * 2.2, 0, 1) ** .6
+        light = np.maximum(light, np.clip((.008 - dist) * 160, 0, 1) * taper)
+        dark = np.maximum(dark, np.clip((.02 - dist) * 60, 0, 1) * taper)
+    alpha = np.clip(dark * .75 + light, 0, 1)
+    c = .08 + .75 * light
+    return _to_tex(np.dstack([c, c, c * .97, alpha]))
+
+
+def _gen_glitch(rng):
+    """Bandes horizontales de signal perdu (surimpression de l'écran)."""
+    h, w = 128, 64
+    a = np.zeros((h, w, 4), np.float32)
+    y = 0
+    while y < h:
+        hh = int(rng.integers(1, 7))
+        if rng.random() < .45:
+            col = rng.choice([[1, .15, .15], [.2, 1, 1], [1, 1, 1], [.1, .1, .1]])
+            a[y:y + hh, :, :3] = col
+            a[y:y + hh, :, 3] = rng.uniform(.25, .9)
+            a[y:y + hh, :, 3] *= (rng.random(w) > .15)
+        y += hh + int(rng.integers(0, 6))
+    return _to_tex(a, 'nearest')
+
+
 def _gen_screen(rng):
     """Écran de console : lignes de texte vertes pseudo-aléatoires."""
     w, h = 128, 96

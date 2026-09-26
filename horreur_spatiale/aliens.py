@@ -562,6 +562,9 @@ class AlienManager:
         self.grace = 35.0
         self.rest = 0.0              # répit après la mort d'un groupe
         self._had_group = False
+        self.kill_positions = []     # là où le joueur a « tué » des créatures (révélation)
+        self.suspended = False       # révélation : elles n'existent plus pendant quelques secondes
+        self.bonus_cap = 0           # après la révélation : plus nombreuses
 
     @property
     def alive(self):
@@ -569,9 +572,11 @@ class AlienManager:
 
     def max_count(self):
         # jamais plus de 3 en même temps, même en mode horreur ou avec le disque dur
-        return C.ALIEN_MAX_HORROR if self.game.horror.active else C.ALIEN_MAX
+        return (C.ALIEN_MAX_HORROR if self.game.horror.active else C.ALIEN_MAX) + self.bonus_cap
 
     def hit_spheres(self):
+        if self.suspended:
+            return []
         return [(a, a.center3(), Alien.RADIUS) for a in self.aliens if a.state != DEAD]
 
     def hear(self, pos, radius, kind):
@@ -579,7 +584,20 @@ class AlienManager:
             if a.state == IDLE and math.hypot(pos[0] - a.x, pos[2] - a.z) < radius * .8:
                 a.alert()
 
+    def set_visible(self, on):
+        """Révélation : les araignées (et leurs cadavres) disparaissent / réapparaissent."""
+        for a in self.aliens:
+            if on:
+                a.root.show()
+                if a.puddle is not None:
+                    a.puddle.show()
+            else:
+                a.root.hide()
+                if a.puddle is not None:
+                    a.puddle.hide()
+
     def on_death(self, alien):
+        self.kill_positions.append((alien.x, alien.z))
         if not self.alive:
             self.rest = C.ALIEN_REST_AFTER_GROUP
             self._had_group = False
@@ -594,7 +612,7 @@ class AlienManager:
         L = g.level
         if p is None or not self.can_spawn():
             return 0
-        n = min(n, C.ALIEN_GROUP[1], self.max_count() - len(self.alive))
+        n = min(n, C.ALIEN_GROUP[1] + self.bonus_cap, self.max_count() - len(self.alive))
         cands = []
         for (x, z, kind) in L.spawn_points:
             if kind == "spark":
@@ -659,6 +677,8 @@ class AlienManager:
     # ------------------------------------------------------------------
     def update(self, dt):
         g = self.game
+        if self.suspended:
+            return
         for a in list(self.aliens):
             if not a.update(dt):
                 a.destroy()

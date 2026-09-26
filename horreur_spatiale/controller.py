@@ -212,6 +212,7 @@ class InputManager:
         "menu_up": "dpad_up", "menu_down": "dpad_down",
         # navette
         "ship_assist": "triangle", "ship_brake": "circle", "ship_camera": "r3",
+        "journal": "create",
     }
     # action -> touche clavier / souris
     KB = {
@@ -226,6 +227,8 @@ class InputManager:
         "ship_assist": C.KEYS["ship_assist"], "ship_brake": C.KEYS["ship_brake"],
         "ship_camera": C.KEYS["ship_camera"],
         "debug_power": C.KEYS["debug_power"], "debug_screamer": C.KEYS["debug_screamer"],
+        "debug_docs": C.KEYS["debug_docs"], "debug_reveal": C.KEYS["debug_reveal"],
+        "journal": C.KEYS["journal"], "controls": C.KEYS["controls"],
     }
     # alternatives clavier
     KB_ALT = {"confirm": ["space", C.KEYS["interact"]], "menu_up": [C.KEYS["forward"]],

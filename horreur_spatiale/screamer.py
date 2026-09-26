@@ -84,6 +84,7 @@ class Screamer:
             if others:
                 self.target = self.rng.choice(others)
                 print(f"[screamer] déplacé vers : {self.target.room.name if self.target.room else '?'}")
+                self.game.place_autopsy()       # le rapport d'autopsie suit le casier
 
     # ------------------------------------------------------------------
     def trigger(self, locker=None):

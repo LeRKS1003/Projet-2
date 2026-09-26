@@ -1,16 +1,23 @@
-# ÉPAVE — Le silence du Mnémosyne
+# DÉRIVE
+
+*Kerguelen — dernier contact il y a 41 jours.*
 
 Jeu d'horreur spatial en Python (Ursina + pygame + numpy), ambiance *Alien* (1979), *Dead Space*, *SOMA*.
-Aucun asset externe : toute la géométrie est faite de primitives, les textures et les sons sont générés par code.
+Aucun asset externe : toute la géométrie est faite de primitives, les textures, les images et les sons sont
+générés par code.
 
-1. **Phase 1 – Approche (TPS)** : tu pilotes une navette autour d'un immense vaisseau abandonné qui dérive
+2187. Tu es un agent de récupération de la société Helios Biotech, envoyé à bord du **Kerguelen**, un
+vaisseau de recherche muet depuis 41 jours, pour ramener le disque dur des données du projet. L'histoire se
+découvre à travers les documents laissés par les sept membres d'équipage.
+
+1. **Phase 1 – Approche (TPS)** : tu pilotes une navette autour du Kerguelen qui dérive
    (antennes, panneaux solaires arrachés, débris qui tournent). Trouve l'ouverture du hangar grâce aux balises
    rouges/vertes et à la flèche du HUD. Chaque collision abîme la coque. Une fois l'ouverture franchie, la navette
    se pose toute seule, l'écran s'assombrit, tu sors à pied.
 2. **Phase 2 – Exploration (FPS)** : le vaisseau est **plongé dans le noir total** (plus de courant). Retrouve
    2 ou 3 fusibles, rétablis le courant dans la salle des machines, puis atteins la salle de commandement
-   (verrouillée tant qu'il n'y a pas de courant), récupère le disque dur, reviens au hangar et repars. Une grande créature invulnérable rôde ; de petits parasites attaquent. **Chaque tir déclenche le
-   mode horreur** (alarmes, lumières rouges, musique stridente, la créature fonce vers le bruit, des parasites
+   (verrouillée tant qu'il n'y a pas de courant), récupère le disque dur, reviens au hangar et repars. Une grande créature invulnérable rôde ; de petites créatures attaquent. **Chaque tir déclenche le
+   mode horreur** (alarmes, lumières rouges, musique stridente, la créature fonce vers le bruit, de petites créatures
    sortent des conduits). Couteau et discrétion sont souvent de meilleures options.
 
 ---
@@ -28,8 +35,11 @@ horreur_spatiale/
 ├── rooms.py        construction et décoration de chaque type de salle, portes, grilles, fenêtres, meshes fusionnés
 ├── player.py       contrôleur FPS (marche, course/endurance, accroupi, santé, bruit, interactions, cachette)
 ├── weapons.py      pistolet (hitscan, visée, recul, flash, chargeur) et couteau (durabilité)
-├── inventory.py    inventaire limité, objet équipé, menu d'inventaire SANS pause, lecture des notes
-├── loot.py         casiers, cadavres (parfois infestés), objets, notes de l'équipage, disque dur, tables pondérées
+├── inventory.py    inventaire limité, objet équipé, menu d'inventaire SANS pause
+├── loot.py         casiers, corps de l'équipage, sacs abandonnés, documents, disque dur, tables pondérées
+├── story.py        L'HISTOIRE : bible, équipage, textes des 15 documents + disque dur (modifiable librement)
+├── document_ui.py  rendu des documents (papier, terminal, fiche, photo...), lecture, journal, écran des commandes
+├── hallucinations.py  infection par SINUS, indices hallucinatoires, révélation finale
 ├── creature.py     IA de la grande créature (A*, états, perception) + directrice d'IA
 ├── aliens.py       IA des petites créatures (mouvement saccadé, bonds, apparitions)
 ├── horror.py       mode horreur, propagation du bruit, tension, battements de cœur, événements d'ambiance
@@ -81,7 +91,7 @@ python main.py
 
 Au premier lancement, les sons sont synthétisés dans `generated/sounds/` (environ une seconde).
 La génération du vaisseau prend 2 à 4 secondes à chaque nouvelle partie.
-La seed est affichée dans le menu pause ; fixe `SEED` dans `config.py` pour rejouer la même épave.
+La seed est affichée dans le menu pause ; fixe `SEED` dans `config.py` pour rejouer la même partie.
 
 ## Contrôles
 
@@ -108,12 +118,47 @@ La seed est affichée dans le menu pause ; fixe `SEED` dans `config.py` pour rej
 | changer d'objet équipé / l'utiliser | C, V ou molette / F | Flèches gauche-droite / Flèche bas |
 | inventaire (le jeu continue !) | Tab | Pavé tactile |
 | pause | Échap | Options |
+| lire / ramasser un document | E | Croix |
+| fermer un document | E / Échap | Rond |
+| journal des documents | J | Create (Share) |
+| écran des commandes | I | — |
 | debug manette | F3 | — |
 | test : basculer le courant / déclencher le screamer | F4 / F5 | — |
+| test : tous les documents / révélation finale | F6 / F7 | — |
 
 Dans l'inventaire : flèches/molette pour choisir, **E/Entrée** (Croix) pour utiliser, **Suppr** (Triangle) pour jeter.
 `KEYBOARD_LAYOUT = "qwerty"` dans `config.py` pour un clavier QWERTY (WASD).
 Ursina lit les lettres par position physique : la configuration AZERTY est convertie automatiquement.
+
+## L'histoire (attention : révélations)
+
+<details><summary>Bible de l'histoire — à ne lire qu'après avoir fini le jeu</summary>
+
+* **Mission officielle** du Kerguelen (Helios Biotech) : échantillons minéraux sur l'astéroïde 2187-KX,
+  « Charon ». **Mission réelle** : ramener SINUS (*Souche Isolée Neurotrope Ultra-Stable*), un « cristal » gris
+  trouvé dans la glace, qui vibre à 7 Hz.
+* SINUS est un **virus aéroporté** : il passe par la ventilation, attaque le cerveau et fait voir à chacun une
+  créature construite à partir de ses peurs. **Les créatures n'ont jamais existé.** L'équipage s'est entretué,
+  caché, blessé tout seul. Helios le savait.
+* Le joueur respire l'air du bord dès le hangar : les créatures qu'il affronte sont, elles aussi, des
+  hallucinations. Il le découvre en branchant le disque dur.
+* Équipage : commandante Irène Vasseur (passerelle), Dr Mara Keating (cheffe scientifique, corps jamais
+  retrouvé), Dr Samuel Okafor (médecin), Tomasz Lebrun (ingénieur en chef, c'est lui qui a coupé le courant et
+  caché les fusibles), Léa Fontaine (pilote), Yuri Andreïev (technicien de labo), Paolo Ricci (cuisinier).
+
+</details>
+
+* **15 documents** à trouver (au moins 12 présents par partie, dont 6 toujours garantis), chacun placé dans sa
+  salle : sur un bureau, une console, un lit, le frigo, une porte, ou sur le corps de son auteur.
+* Chaque document s'ouvre en grand avec un rendu adapté (papier jauni manuscrit, en-tête officiel Helios,
+  fiche médicale, écran vert de terminal, transcription audio, post-it, image granuleuse : dessin, scanner
+  cérébral, plan de ventilation tiré du vrai plan de ta partie). **Le jeu continue pendant la lecture.**
+* Le **journal** (J / Create) classe les documents par ordre chronologique (jour 3, jour 9...) et garde un
+  emplacement « Document manquant » pour ceux que tu n'as pas trouvés.
+* Plus tu restes à bord, plus il se passe des choses étranges… rarement, et jamais expliquées.
+* **Modifier les textes** : tout est dans `story.py` (titres, auteurs, jours, salles, emplacements, textes,
+  phrases qui changent à la relecture, contenu du disque dur, messages de fin).
+* Réglages : `INFECTION_TIME`, `HALLU_INTERVAL`, `HALLU_VARIANT_AT`, `HALLU_HUM`, `REVEAL_*` dans `config.py`.
 
 ## Conseils de survie
 
@@ -139,7 +184,7 @@ Ursina lit les lettres par position physique : la configuration AZERTY est conve
   réfléchissante et un petit voyant ambré les trahissent à la lampe), insère-les dans le tableau électrique
   de la salle des machines, puis abaisse le gros levier. Silence… le réacteur démarre, la lumière revient
   salle par salle depuis la salle des machines, chaque néon clignote avant de s'allumer, et 20 à 30 % des
-  lampes restent cassées. **Ce vacarme réveille tout le vaisseau** (mode horreur, créature, parasites).
+  lampes restent cassées. **Ce vacarme réveille tout le vaisseau** (mode horreur, grande créature, petites créatures).
 * Ensuite l'éclairage reste sombre et contrasté, et de rares **coupures** surviennent, surtout en mode horreur
   ou quand la grande créature est proche.
 * **Trop difficile ?** `EMERGENCY_STRIPS = True` ajoute de faibles bandes de secours rouges au ras du sol.
@@ -166,7 +211,7 @@ seule fois par partie. Aucun indice visuel. Réglages : `SCREAMER_ENABLED`, `SCR
 * Réglages : `SHIP_ASSIST_*`, `SHIP_CRUISE*`, `SHIP_BRAKE_RATE`, `SHIP_LOOK_DEADZONE`,
   `SHIP_LOOK_EXPONENT`, `SHIP_MAX_TURN`, `SHIP_TURN_DAMP`, `SHIP_MOUSE_SENS`, `TPS_CAM_FAR_*`.
 * Les cadavres se fouillent (maintenir E) : tu es vulnérable pendant la fouille, et certains sont infestés.
-* Avec le disque dur, le vaisseau se réveille : plus de parasites, la créature te cherche.
+* Avec le disque dur, le vaisseau se réveille : plus de créatures, et la grande t'attend sur le chemin du hangar.
 
 ## Qualité graphique
 

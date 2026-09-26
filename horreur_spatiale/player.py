@@ -92,7 +92,7 @@ class Player:
             return
 
         # --- accroupi -----------------------------------------------------
-        want_toggle = inp.pressed("crouch")
+        want_toggle = inp.pressed("crouch") and not g.ui_consumed     # Rond ferme aussi les documents
         if C.CROUCH_TOGGLE:
             if want_toggle:
                 self.crouched = not self.crouched

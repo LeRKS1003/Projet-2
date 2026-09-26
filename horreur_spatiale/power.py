@@ -2,7 +2,7 @@
 """
 power.py — Le courant du vaisseau, côté gameplay.
 
-Au début de la phase FPS, le Mnémosyne est mort : plus aucune lumière, les
+Au début de la phase FPS, le Kerguelen est mort : plus aucune lumière, les
 portes coulissantes ne fonctionnent plus (entrouvertes, à forcer ou
 bloquées) et la salle de commandement est verrouillée électriquement.
 

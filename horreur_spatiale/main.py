@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-main.py — Point d'entrée et gestionnaire d'états du jeu.
+main.py — DÉRIVE : point d'entrée et gestionnaire d'états du jeu.
 
 États : menu -> chargement -> tps (pilotage) -> landing (atterrissage
 scripté) -> fps (exploration / survie) -> escape (décollage) -> victoire.
@@ -41,7 +41,7 @@ camera.clip_plane_near = 0.05
 
 from controller import InputManager  # noqa: E402
 from audio import AudioSystem  # noqa: E402
-from hud import HUD, MenuScreen  # noqa: E402
+from hud import HUD, MenuScreen, TitleScreen  # noqa: E402
 from generator import ShipLayout, Blocker, ROOM, CORR  # noqa: E402
 from rooms import LevelBuilder  # noqa: E402
 from lighting import LightManager  # noqa: E402
@@ -55,7 +55,9 @@ from creature import Creature, AIDirector  # noqa: E402
 from aliens import AlienManager  # noqa: E402
 from horror import HorrorManager  # noqa: E402
 from postfx import PostFX  # noqa: E402
-from loot import NOTES  # noqa: E402
+import story  # noqa: E402
+from document_ui import DocumentLog, DocumentReader, JournalUI, ControlsOverlay  # noqa: E402
+from hallucinations import Hallucinations, Revelation  # noqa: E402
 from power import PowerSystem  # noqa: E402
 from screamer import Screamer  # noqa: E402
 from lighting import audit_unlit  # noqa: E402
@@ -120,8 +122,14 @@ class Game(Entity):
         self.shuttle = self.player = self.weapons = self.inventory = self.inventory_ui = None
         self.creature = self.aliens = self.director = self.horror = None
         self.power = self.screamer = None
-        self.stats = {"kills": 0, "start": 0.0, "notes": 0}
+        self.docs = self.hallu = self.revelation = None
+        self.stats = {"kills": 0, "start": 0.0, "docs": 0}
         self.current_room = None
+        # interfaces persistantes : lecture des documents, journal, commandes (I)
+        self.reader = DocumentReader(self)
+        self.journal = JournalUI(self)
+        self.controls = ControlsOverlay(self)
+        self.ending_t = 0.0
         self.loading_text = Text(parent=camera.ui, text="", origin=(0, 0), scale=1.4, color=color.rgb(.7, .8, .8),
                                  z=-30)
         self.menu_space = None
@@ -140,14 +148,14 @@ class Game(Entity):
         if self.menu_space is None:
             self.menu_space = Space(random.randint(0, 99999))
         self.audio.stop_all_loops()
-        self.menu_drone = self.audio.loop("menu", "ambience", 1.0, ambient=True)
-        self.menu_drone.set(1.0, fade=.5)
+        # le « chant » de SINUS : bourdonnement grave pulsé à 7 Hz
+        self.menu_drone = self.audio.loop("menu", "sinus_hum", 1.0, ambient=True)
+        self.menu_drone.set(.8, fade=.5)
         camera.position = (0, 0, 0)
         camera.rotation = (0, 0, 0)
         camera.fov = C.FOV
-        self._set_screen(MenuScreen("ÉPAVE", "Le silence du Mnémosyne",
-                                    ["Nouvelle partie", "Quitter"], self._menu_select))
-        self.hud.message("Astuce : F3 affiche le debug de la manette", color.rgb(.5, .6, .6))
+        self._set_screen(TitleScreen(story.GAME_TITLE, story.TITLE_SUBTITLE,
+                                     ["Nouvelle partie", "Commandes", "Quitter"], self._menu_select))
 
     def _set_screen(self, s):
         if self.screen:
@@ -158,6 +166,8 @@ class Game(Entity):
         self.audio.play("ui_select", .6)
         if opt == "Nouvelle partie":
             self.new_game()
+        elif opt == "Commandes":
+            self.controls.toggle()
         elif opt == "Quitter":
             application.quit()
 
@@ -170,7 +180,7 @@ class Game(Entity):
         self.seed = seed
         self._set_screen(None)
         self.state = "loading"
-        self.loading_text.text = f"Génération de l'épave...\nseed {seed}"
+        self.loading_text.text = f"Approche du Kerguelen...\nseed {seed}"
         self.hud.set_fade(1)
         invoke(self._build_world, seed, delay=.15)
 
@@ -195,6 +205,9 @@ class Game(Entity):
         D = self.level.H * C.CELL
         start = (W * .5 + rng.uniform(-25, 25), rng.uniform(15, 28), D + C.SHIP_START_DISTANCE * .6)
         self.shuttle = Shuttle(self, start, 180)
+        self.docs = DocumentLog(self)
+        self.docs.present = set(self.builder.doc_present)
+        self.docs.pickups = self.builder.doc_pickups
         self.inventory = Inventory(self)
         self.inventory_ui = InventoryUI(self)
         self.weapons = Weapons(self)
@@ -202,9 +215,12 @@ class Game(Entity):
         # courant du vaisseau (coupé au départ) et casier piégé
         self.power = PowerSystem(self, self.level, self.builder, random.Random(seed * 5 + 1))
         self.screamer = Screamer(self, self.builder.loot_dir.lockers, random.Random(seed * 11 + 3))
+        self.place_autopsy()
         self.horror = HorrorManager(self)
+        self.hallu = Hallucinations(self)
+        self.revelation = Revelation(self)
         self.player = self.creature = self.aliens = self.director = None
-        self.stats = {"kills": 0, "start": self.time, "notes": 0}
+        self.stats = {"kills": 0, "start": self.time, "docs": 0}
         self.current_room = None
         self.loading_text.text = ""
         print(self.level.debug_ascii())
@@ -230,6 +246,15 @@ class Game(Entity):
             return
         if self.screamer is not None:
             self.screamer.destroy()
+        for obj in (self.hallu, self.revelation):
+            if obj is not None:
+                obj.destroy()
+        self.reader.close()
+        self.journal.close()
+        h = self.hud
+        h.glitch_level = h.truth_level = 0.0
+        h.set_reflection(0.0)
+        h.center_text.text = ""
         self.audio.duck = self.audio.duck_target = 1.0
         for obj in (self.creature, self.aliens, self.shuttle, self.weapons, self.inventory_ui, self.exterior,
                     self.space):
@@ -246,6 +271,7 @@ class Game(Entity):
         self.shuttle = self.player = self.weapons = self.inventory = self.inventory_ui = None
         self.creature = self.aliens = self.director = self.horror = None
         self.power = self.screamer = None
+        self.docs = self.hallu = self.revelation = None
         self.audio.stop_all_loops()
         camera.position = (0, 0, 0)
         camera.rotation = (0, 0, 0)
@@ -266,9 +292,8 @@ class Game(Entity):
         mouse.locked = True
         camera.fov = C.FOV - 10
         self.horror.amb.set(.6)
-        self.hud.message("Épave du MNÉMOSYNE en vue. Silence radio depuis 212 jours.", color.rgb(.7, .85, 1))
-        self.hud.message("Contourne l'épave et entre dans le hangar (balises rouges / vertes).",
-                         color.rgb(.7, .85, 1))
+        for m in story.ARRIVAL_MESSAGES:
+            self.hud.message(m, color.rgb(.7, .85, 1))
 
     def _update_tps(self, dt):
         sh = self.shuttle
@@ -347,6 +372,7 @@ class Game(Entity):
         if not self.power.on:
             self.hud.message("Le vaisseau est mort : plus une seule lumière. Rétablis le courant "
                              "dans la salle des machines.", color.rgb(.7, .8, .9))
+        self.hud.message(story.HANGAR_MESSAGE, color.rgb(.6, .7, .7))
         self.audio.play("door_open", .8)
         # vérification : aucune entité du décor ne doit être restée « non éclairée »
         audit_unlit(application.base.render, "vaisseau")
@@ -356,11 +382,25 @@ class Game(Entity):
         p = self.player
         lt = self.lights
         ui = self.inventory_ui
-        # --- inventaire (sans pause) ------------------------------------
-        if inp.pressed("inventory") and not ui.reading and not p.hidden:
-            ui.toggle()
-        ui.update(dt, inp)
-        self.ui_consumed = ui.open or ui.reading
+        rd, jr = self.reader, self.journal
+        # --- documents, journal (J / Create), inventaire : le jeu continue ---
+        if self.controls.open:
+            pass
+        elif rd.is_open:
+            rd.update(dt, inp)
+        elif jr.open:
+            if inp.pressed("journal"):
+                jr.toggle()
+            else:
+                jr.update(dt, inp)
+        else:
+            if inp.pressed("journal") and not p.hidden:
+                ui.close()
+                jr.toggle()
+            elif inp.pressed("inventory") and not p.hidden:
+                ui.toggle()
+            ui.update(dt, inp)
+        self.ui_consumed = ui.open or rd.is_open or jr.open or self.controls.open
         if not self.ui_consumed:
             if inp.pressed("flashlight"):
                 if lt.battery <= 0:
@@ -425,6 +465,8 @@ class Game(Entity):
         self.horror.update(dt)
         self.power.update(dt)
         self.screamer.update(dt)
+        self.hallu.update(dt)
+        self.revelation.update(dt)
         lt.update(dt, (cp.x, cp.y, cp.z), self.horror.light_level)
         self.shuttle.update_parked(lt.time)
         self.space.update(dt)
@@ -435,6 +477,10 @@ class Game(Entity):
                 self.power.debug_toggle()
             if inp.pressed("debug_screamer"):
                 self.screamer.trigger(None)
+            if inp.pressed("debug_docs"):
+                self.docs.debug_all()
+            if inp.pressed("debug_reveal"):
+                self.revelation.debug_start()
         if inp.debug_overlay:
             cr = self.creature
             pm = lt.power
@@ -446,7 +492,8 @@ class Game(Entity):
                                        f"Aliens : {len(self.aliens.alive)}  horreur={self.horror.level:.2f}\n"
                                        f"Directrice : pression={self.director.pressure:.2f}\n"
                                        f"Courant : {self.power.state} / {pm.state}  "
-                                       + "  ".join(f"{k} {v}" for k, v in sorted(states.items())))
+                                       + "  ".join(f"{k} {v}" for k, v in sorted(states.items()))
+                                       + f"\nInfection : {self.hallu.infection:.2f}  documents {len(self.docs.found)}")
 
     def _room_events(self):
         p = self.player
@@ -498,7 +545,7 @@ class Game(Entity):
             return txt
         if not self.has_hdd():
             return "OBJECTIF : récupère le disque dur dans la salle de commandement"
-        return "OBJECTIF : retourne au hangar et repars avec la navette"
+        return "OBJECTIF : " + story.FINAL_OBJECTIVE
 
     def objective_target(self):
         pw = self.power
@@ -511,18 +558,15 @@ class Game(Entity):
         p = self.shuttle.root.world_position
         return (p.x, p.z)
 
-    def read_next_note(self):
-        inv = self.inventory
-        idx = len(inv.notes_read)
-        if idx >= len(NOTES):
-            self.hud.message("Une note déchirée, illisible.")
-            return
-        inv.notes_read.append(idx)
-        self.stats["notes"] += 1
-        title, body = NOTES[idx]
-        self.inventory_ui.show_note(title, body)
-        self.audio.play("rustle", .7)
-        self.hud.message(f"Note ajoutée au journal : {title}", color.rgb(.9, .8, .55))
+    def place_autopsy(self):
+        """Le rapport d'autopsie de Yuri (D08) est posé au pied du casier piégé (le screamer prend son sens)."""
+        b = self.builder
+        for d in b.doc_deferred:
+            target = self.screamer.target if self.screamer is not None else None
+            if target is not None:
+                b.place_near_locker(d, target)
+            else:
+                b.place_doc_floor(d, "medbay")
 
     def toggle_nightvision(self):
         lt = self.lights
@@ -536,21 +580,9 @@ class Game(Entity):
         self.audio.play("nv_on" if lt.nightvision else "flashlight_click", .7)
 
     def on_hdd_taken(self):
+        """Le disque dur est branché sur la console : la vérité, puis l'hallucination revient en pire."""
         self.audio.play("hdd_pickup", 1.0)
-        self.hud.message("Disque dur récupéré — retourne au hangar !", color.lime)
-        # événement scripté : alerte générale, tout le vaisseau se réveille
-        invoke(self._hdd_alarm, delay=1.5)
-
-    def _hdd_alarm(self):
-        if self.state != "fps":
-            return
-        self.horror.trigger(None, scripted=True, duration=25)
-        cr = self.creature
-        if cr.state == "CACHEE":
-            cr.hidden_timer = min(cr.hidden_timer, 3)
-        else:
-            cr.investigate(self.player.x, self.player.z)
-        self.aliens.spawn_near_player(2, aware=True)
+        self.revelation.begin()
 
     # ==================================================================
     # FIN DE PARTIE
@@ -584,8 +616,12 @@ class Game(Entity):
         sh = self.shuttle
         hx0, hx1, hz0, hz1 = self.level.room("hangar").world_bounds()
         sh.cam_pos = Vec3(hx0 + 5, 7.5, hz1 - 4)
-        sh.start_takeoff(self._victory)
+        sh.start_takeoff(self._ending_start)
         self.hud.fade_to(0, 1.2)
+        self.hallu.hide_all()
+        self.revelation.finish()
+        self.reader.close()
+        self.journal.close()
 
     def _update_escape(self, dt):
         sh = self.shuttle
@@ -604,15 +640,81 @@ class Game(Entity):
         self.lights.update(dt, (cp.x, cp.y, cp.z), 0)
         self.builder.update(dt, [], (cp.x, cp.y, cp.z), fps_mode=False)
 
-    def _victory(self):
+    # ------------------------------------------------------------------
+    # FIN : la navette s'éloigne du Kerguelen... et elle n'est pas seule
+    # ------------------------------------------------------------------
+    def _ending_start(self):
+        self.state = "ending"
+        self.ending_t = 0.0
+        self._ending_flags = set()
+        self.ending_cam = Vec3(camera.world_position)
+
+    def _update_ending(self, dt):
+        sh = self.shuttle
+        self.ending_t += dt
+        t = self.ending_t
+        f = self._ending_flags
+        sh.root.position += sh.root.forward * 30 * dt
+        self.space.update(dt)
+        self.exterior.update(dt)
+        if t < 5.5:
+            # plan extérieur : la navette s'éloigne du Kerguelen qui dérive (derrière elle), planètes au loin
+            from panda3d.core import Vec3 as PVec3
+            p = sh.root.world_position
+            cam = p + sh.root.forward * (30 - t * 3) + sh.root.right * 14 + Vec3(0, 5, 0)
+            ship = Vec3(self.level.W * C.CELL / 2, 0, self.level.H * C.CELL / 2)
+            look = p + (ship - p) * .45          # la navette au premier plan, le Kerguelen derrière elle
+            camera.position = cam
+            camera.lookAt(PVec3(look.x, look.y, look.z), PVec3(0, 1, 0))
+            if t > .6 and "msg" not in f:
+                f.add("msg")
+                self.audio.play("static_burst", .6)
+                self.hud.center_text.text = story.ENDING_SHUTTLE_MESSAGE
+            if t > 4.6:
+                self.hud.center_text.text = ""
+        else:
+            # plan du cockpit : dans le reflet de la verrière, derrière le joueur...
+            if "cockpit" not in f:
+                f.add("cockpit")
+                self.hud.set_fade(0)
+                # on est dans le cockpit : on ne garde que le tableau de bord (la vitre est le reflet du HUD)
+                for c in sh.model.getChildren():
+                    if c != sh.dash:
+                        c.hide()
+                sh.fx_root.hide()
+                self.audio.stop_loop("sinus_low")
+                self.hum_end = self.audio.loop("sinus_end", "sinus_hum", 1.0, ambient=True)
+                self.hum_end.set(.25, fade=.5)
+            cam_p = sh._local_to_world((0, 1.28, 1.42))      # tête du pilote, au-dessus du siège
+            ahead = sh._local_to_world((0, -3.0, 40))                # regard un peu baissé : tableau de bord
+            camera.position = cam_p
+            camera.lookAt(ahead)
+            refl = min(.22, (t - 5.5) * .12)
+            eyes = 1.0 if 8.4 <= t < 8.6 else 0.0
+            self.hud.set_reflection(refl, eyes)
+            if t > 7.9 and "swell" not in f:
+                f.add("swell")
+                self.audio.play("sinus_swell", 1.0)
+                self.hum_end.set(1.0, fade=2.5)
+            if t >= 8.75 and "black" not in f:
+                f.add("black")
+                self.hud.set_fade(1)
+                self.hud.set_reflection(0.0)
+                self.audio.stop_all_loops()
+            if t >= 10.8 and "screen" not in f:
+                f.add("screen")
+                self._final_screen()
+
+    def _final_screen(self):
         self.state = "victory"
         mouse.locked = False
         t = self.time - self.stats["start"]
-        sub = (f"Tu as quitté l'épave avec le disque dur.\n"
-               f"Temps : {int(t // 60)} min {int(t % 60)} s   —   Créatures tuées : {self.stats['kills']}   —   "
-               f"Notes : {self.stats['notes']}/{len(NOTES)}")
-        self._set_screen(MenuScreen("ÉCHAPPÉ", sub, ["Nouvelle partie", "Menu principal", "Quitter"],
-                                    self._end_select, title_color=color.rgb(.6, 1, .7), bg_alpha=.5))
+        n = len(self.docs.found) if self.docs else 0
+        total = self.docs.total if self.docs else len(story.DOCUMENTS)
+        sub = (f"{story.ENDING_CAPTION}\n\nDocuments retrouvés : {n}/{total}\n"
+               f"Temps à bord : {int(t // 60)} min {int(t % 60)} s   —   Créatures « abattues » : {self.stats['kills']}")
+        self._set_screen(MenuScreen(story.GAME_TITLE, sub, ["Nouvelle partie", "Menu principal", "Quitter"],
+                                    self._end_select, title_color=color.rgb(.92, .93, .95), bg_alpha=.9))
 
     def game_over(self, cause):
         if self.state not in ("fps", "tps", "landing"):
@@ -627,11 +729,11 @@ class Game(Entity):
         elif cause == "shuttle":
             self.audio.play("ship_hit", 1.0, .7)
             self.hud.fade_to(1, .6)
-            sub = "La navette s'est disloquée contre l'épave."
+            sub = "La navette s'est disloquée contre la coque du Kerguelen."
         else:
             self.audio.play("death_sting", .7, .8)
             self.hud.fade_to(1, 1.2)
-            sub = "Les parasites t'ont submergé."
+            sub = "Les petites créatures t'ont submergé."
         self.audio.stop_all_loops()
         invoke(self._show_gameover, sub, delay=1.6)
 
@@ -640,7 +742,7 @@ class Game(Entity):
             self.inventory_ui.hide_all()
         mouse.locked = False
         self.hud.set_mode("none")
-        self._set_screen(MenuScreen("TU ES MORT", sub, ["Réessayer (même épave)", "Nouvelle épave",
+        self._set_screen(MenuScreen("TU ES MORT", sub, ["Réessayer (même partie)", "Nouvelle partie",
                                                          "Menu principal"], self._end_select,
                                     title_color=color.rgb(.9, .15, .1), bg_alpha=.2))
 
@@ -648,7 +750,7 @@ class Game(Entity):
         self.audio.play("ui_select", .6)
         if opt.startswith("Réessayer"):
             self.new_game(self.seed)
-        elif opt in ("Nouvelle épave", "Nouvelle partie"):
+        elif opt == "Nouvelle partie":
             self.new_game(None)
         elif opt == "Menu principal":
             self.show_menu()
@@ -662,8 +764,9 @@ class Game(Entity):
         self.paused = not self.paused
         if self.paused:
             mouse.locked = False
-            self._set_screen(MenuScreen("PAUSE", f"seed {self.seed}", ["Reprendre", "Recommencer", "Menu principal",
-                                                                      "Quitter"], self._pause_select, bg_alpha=.6))
+            self._set_screen(MenuScreen("PAUSE", f"{story.GAME_TITLE} — seed {self.seed}",
+                                        ["Reprendre", "Commandes", "Recommencer", "Menu principal", "Quitter"],
+                                        self._pause_select, bg_alpha=.6))
         else:
             self._set_screen(None)
             mouse.locked = True
@@ -672,6 +775,8 @@ class Game(Entity):
         self.audio.play("ui_select", .6)
         if opt == "Reprendre":
             self.toggle_pause()
+        elif opt == "Commandes":
+            self.controls.toggle()
         elif opt == "Recommencer":
             self.paused = False
             self.new_game(self.seed)
@@ -691,13 +796,25 @@ class Game(Entity):
         dt = min(utime.dt, 1 / 20)
         self.time += dt
         playing = self.state in ("tps", "landing", "fps")
-        self.inp.update(dt, mouse_look=playing and not self.paused)
-        if playing and self.inp.pressed("pause"):
-            if self.inventory_ui and (self.inventory_ui.open or self.inventory_ui.reading) and not self.paused:
+        self.inp.update(dt, mouse_look=playing and not self.paused and not self.controls.open)
+        # écran des commandes (I) : accessible partout
+        closed_overlay = False
+        if self.controls.open:
+            if self.inp.pressed("controls") or self.inp.pressed("pause") or self.inp.pressed("back"):
+                self.controls.close()
+                closed_overlay = True
+        elif self.inp.pressed("controls") and self.state in ("menu", "tps", "landing", "fps", "victory", "gameover"):
+            self.controls.toggle()
+        if playing and self.inp.pressed("pause") and not closed_overlay and not self.controls.open:
+            if self.reader.is_open and not self.paused:
+                self.reader.close()
+            elif self.journal.open and not self.paused:
+                self.journal.close()
+            elif self.inventory_ui and self.inventory_ui.open and not self.paused:
                 self.inventory_ui.hide_all()
             else:
                 self.toggle_pause()
-        if self.screen:
+        if self.screen and not self.controls.open:
             self.screen.update(dt, self.inp)
         if not self.paused:
             if self.state == "menu":
@@ -711,6 +828,8 @@ class Game(Entity):
                 self._update_fps(dt)
             elif self.state == "escape":
                 self._update_escape(dt)
+            elif self.state == "ending":
+                self._update_ending(dt)
             elif self.state in ("victory",):
                 if self.shuttle:
                     self.shuttle.root.position += self.shuttle.root.forward * 30 * dt

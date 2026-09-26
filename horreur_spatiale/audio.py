@@ -439,6 +439,88 @@ def gen_power_screamer(rng):
     return out
 
 
+# ============================================================================
+# HISTOIRE : LE « CHANT » DE SINUS, CHUCHOTEMENTS, VOIX, GRÉSILLEMENTS
+# ============================================================================
+def _formant_voice(t, f0, vowels, rng, breath=.3):
+    """Voix synthétique : train d'impulsions glottiques filtré par des formants (voyelles)."""
+    ph = _sweep(f0)
+    glott = (np.mod(ph / (2 * np.pi), 1.0) < .08).astype(np.float64)        # impulsions
+    glott = glott - glott.mean()
+    out = np.zeros(len(t))
+    for f1, f2, f3, w in vowels:
+        v = _band(glott, f1 * .8, f1 * 1.2) + .6 * _band(glott, f2 * .85, f2 * 1.15) + .3 * _band(glott, f3 * .9,
+                                                                                                   f3 * 1.1)
+        out += v * w
+    out += _band(_noise(len(t), rng), 800, 5000) * breath
+    return out
+
+
+def gen_story(rng):
+    """Renvoie {nom: signal} pour l'histoire (titre, hallucinations, révélation)."""
+    out = {}
+    # --- bourdonnement grave pulsé à 7 Hz (boucle parfaite de 4 s) ------------
+    d = 4.0
+    t = _t(d)
+    puls = .55 + .45 * np.sin(2 * np.pi * _loop_freq(7, d) * t) ** 2
+    s = (np.sin(2 * np.pi * _loop_freq(49, d) * t) + .55 * np.sin(2 * np.pi * _loop_freq(98, d) * t) +
+         .25 * np.sin(2 * np.pi * _loop_freq(147, d) * t) + .12 * np.sin(2 * np.pi * _loop_freq(203, d) * t))
+    s = s * puls + _periodic_noise_band(len(t), 30, 120, rng) / 25 * puls
+    out["sinus_hum"] = _norm(s, .7)
+    # --- montée du bourdonnement (fin du jeu) ---------------------------------
+    d = 3.5
+    t = _t(d)
+    k = np.clip(t / 3.0, 0, 1)
+    puls = .5 + .5 * np.sin(2 * np.pi * (7 + 5 * k) * t) ** 2
+    s = sum(np.sin(_sweep(np.full(len(t), f) * (1 + .15 * k))) / (h + 1) for h, f in enumerate((49, 98, 147, 196, 294)))
+    s = np.tanh(s * puls * (.3 + 2.5 * k ** 2))
+    s += _band(_noise(len(t), rng), 2000, 8000) * k ** 3 * .6
+    out["sinus_swell"] = _norm(_fade(s, .3, .02), .95)
+    # --- chuchotements (syllabes de souffle filtré, sans source) --------------
+    for i in range(3):
+        d = 1.6 + i * .3
+        t = _t(d)
+        env = np.zeros(len(t))
+        tp = .1
+        while tp < d - .25:
+            ln = rng.uniform(.08, .22)
+            env += np.exp(-((t - tp - ln / 2) / (ln / 2.5)) ** 2) * rng.uniform(.5, 1)
+            tp += ln + rng.uniform(.03, .12)
+        s = 0
+        for lo, hi, a in ((600, 1400, 1.0), (1800, 3200, .7), (3500, 7000, .5)):
+            s = s + _band(_noise(len(t), rng), lo * rng.uniform(.9, 1.1), hi) * a
+        out[f"whisper{i}"] = _norm(_reverb(_fade(s * env, .02, .1), rng, 1.2, .35), .6)
+    # --- voix qui appelle depuis un conduit (« hé... ») -----------------------
+    d = 2.6
+    t = _t(d)
+    f0 = np.where(t < 1.0, 190 - 25 * t, 175 - 30 * (t - 1.2))
+    vowels = [(530, 1840, 2480, 1.0), (730, 1090, 2440, .6)]
+    env = (np.exp(-((t - .45) / .28) ** 2) + .8 * np.exp(-((t - 1.55) / .45) ** 2))
+    s = _formant_voice(t, f0, vowels, rng, .35) * env
+    s = _band(s, 250, 3200)                                     # passé par le métal du conduit
+    out["voice_call"] = _norm(_reverb(_fade(s, .05, .3), rng, 2.2, .55, 2200), .7)
+    # --- grésillement d'enregistrement / de terminal ---------------------------
+    t = _t(.7)
+    crackle = (rng.random(len(t)) > .985) * rng.uniform(-1, 1, len(t)) * 3
+    hiss = _band(_noise(len(t), rng), 1500, 9000) * .5
+    beep = np.sin(2 * np.pi * 1320 * t) * (t < .06) * .6
+    out["static_burst"] = _norm(_fade((crackle + hiss) * np.exp(-t * 3) + beep, .002, .08), .7)
+    # --- glitch numérique (déchirure, bits qui sautent) ------------------------
+    t = _t(1.2)
+    s = np.zeros(len(t))
+    tp = 0.0
+    while tp < 1.1:
+        ln = rng.uniform(.02, .09)
+        m = (t >= tp) & (t < tp + ln)
+        f = rng.uniform(80, 2400)
+        s += m * np.sign(np.sin(2 * np.pi * f * t)) * rng.uniform(.3, 1)
+        tp += ln + rng.uniform(0, .05)
+    s += _band(_noise(len(t), rng), 300, 9000) * .4 * (np.sin(2 * np.pi * 7 * t) > 0)
+    s += np.sin(2 * np.pi * 49 * t) * .8
+    out["glitch_burst"] = _norm(_fade(np.tanh(s * 1.5), .001, .1), .85)
+    return out
+
+
 def gen_all(force=False):
     """Génère tous les sons manquants. Renvoie la liste des noms."""
     os.makedirs(SOUND_DIR, exist_ok=True)
@@ -807,6 +889,13 @@ def gen_all(force=False):
     ps = gen_power_screamer(np.random.default_rng(666)) if need_ps else {}
     for name, sig in ps.items():
         _write(name, sig)
+    # histoire (titre, hallucinations, révélation)
+    st_names = ("sinus_hum", "sinus_swell", "whisper2", "voice_call", "static_burst", "glitch_burst")
+    need_st = force or any(not os.path.exists(os.path.join(SOUND_DIR, n + ".wav")) for n in st_names)
+    st = gen_story(np.random.default_rng(2187)) if need_st else {}
+    for name, sig in st.items():
+        _write(name, sig)
+    ps.update(st)
     for name in pending:
         if name in ws:
             continue

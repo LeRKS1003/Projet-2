@@ -78,6 +78,7 @@ class Creature:
         self.roar_cd = 0.0
         self.speed_now = 0.0
         self.alert_flash = 0.0
+        self.suspended = False       # révélation : l'hallucination est « tombée »
         self._build_model()
         self.growl = game.audio.loop("creature_growl", "creature_growl", 1.0)
 
@@ -331,6 +332,9 @@ class Creature:
         g = self.game
         p = g.player
         L = self.level
+        if self.suspended:
+            self.growl.set(0)
+            return
         self.state_timer += dt
         self.roar_cd = max(0.0, self.roar_cd - dt)
         self.alert_flash = max(0.0, self.alert_flash - dt)
@@ -502,6 +506,18 @@ class Creature:
         self.visible = False
         self.root.enabled = False
         self.path = []
+
+    def appear_at(self, x, z):
+        """Réapparaît à un endroit précis (révélation : entre le joueur et le hangar)."""
+        self.x, self.z = x, z
+        self.visible = True
+        self.root.enabled = True
+        self.stun = 0.0
+        self.hidden_timer = 0.0
+        self.set_state(WANDER)
+        self.path = []
+        self.pause = .3
+        self._animate(0.0, 0.0)
 
     def _reappear(self):
         L = self.level

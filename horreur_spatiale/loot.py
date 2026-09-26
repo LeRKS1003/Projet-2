@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
 loot.py — Loot du vaisseau : casiers (qui servent aussi de cachettes),
-cadavres fouillables (parfois infestés), objets posés, notes de
-l'équipage, disque dur. Tables de loot pondérées selon le type de salle.
+corps de l'équipage du Kerguelen (fouillables, parfois « infestés »), sacs
+abandonnés, objets posés, documents de l'histoire, disque dur. Tables de
+loot pondérées selon le type de salle.
 """
 import math
 import random
@@ -16,72 +17,22 @@ from lighting import mark_emissive
 
 # ----------------------------------------------------------------------------
 # TABLES DE LOOT PONDÉRÉES (objet, poids)
+# Les documents de l'histoire (story.py) sont placés à part, par rooms.py.
 # ----------------------------------------------------------------------------
 LOOT_TABLES = {
-    "crew":    [("battery", 28), ("ammo", 22), ("medkit", 12), ("knife", 10), ("note", 18), (None, 14)],
-    "medbay":  [("medkit", 46), ("battery", 14), ("ammo", 6), ("note", 12), (None, 10)],
-    "engine":  [("battery", 34), ("ammo", 22), ("knife", 12), ("medkit", 8), ("note", 8), (None, 12)],
+    "crew":    [("battery", 32), ("ammo", 26), ("medkit", 14), ("knife", 10), (None, 18)],
+    "medbay":  [("medkit", 50), ("battery", 16), ("ammo", 8), (None, 14)],
+    "engine":  [("battery", 38), ("ammo", 24), ("knife", 12), ("medkit", 8), (None, 14)],
     "storage": [("battery", 25), ("ammo", 30), ("medkit", 12), ("knife", 12), (None, 15)],
-    "command": [("ammo", 40), ("battery", 20), ("medkit", 15), ("note", 10), (None, 10)],
-    "mess":    [("battery", 20), ("medkit", 14), ("knife", 16), ("note", 14), (None, 20)],
+    "command": [("ammo", 44), ("battery", 22), ("medkit", 16), (None, 12)],
+    "mess":    [("battery", 24), ("medkit", 16), ("knife", 18), (None, 24)],
     "hangar":  [("battery", 35), ("ammo", 30), ("medkit", 10), (None, 20)],
-    "corpse":  [("ammo", 28), ("battery", 20), ("medkit", 12), ("knife", 10), ("note", 22), (None, 10)],
+    "corpse":  [("ammo", 34), ("battery", 26), ("medkit", 16), ("knife", 12), (None, 12)],
 }
-
-# ----------------------------------------------------------------------------
-# NOTES DE L'ÉQUIPAGE (ordre de lecture = ordre de découverte)
-# ----------------------------------------------------------------------------
-NOTES = [
-    ("Journal du capitaine Varga — jour 112",
-     "Nous avons arrimé le fragment de la comète K7-Hadès dans la soute.\n"
-     "Le labo parle de matière organique fossile. L'équipage est euphorique :\n"
-     "la prime paiera la retraite de tout le monde."),
-    ("Dr Okonkwo, médecin de bord",
-     "Hollis se plaint de démangeaisons depuis l'EVA de prélèvement. 39,8 °C.\n"
-     "Sous sa peau, des filaments noirs qui BOUGENT quand j'approche la lampe.\n"
-     "Quarantaine immédiate à l'infirmerie."),
-    ("Note griffonnée",
-     "Ils disent que Hollis est mort.\n"
-     "Alors pourquoi j'entends gratter dans le conduit au-dessus de ma couchette ?"),
-    ("Chef mécanicien Brandt",
-     "Les filtres des conduits sont colmatés par une résine. Quelque chose y a pondu.\n"
-     "J'ai scellé la grille 4. Puis la 6. Il y en a partout.\n"
-     "Piles de rechange dans les casiers de la salle des machines."),
-    ("Dr Okonkwo — rapport 3",
-     "Le corps de Hollis a disparu de la morgue. Les petites créatures — j'en ai\n"
-     "compté au moins vingt — sont attirées par le bruit et la chaleur.\n"
-     "Une lame suffit si on les surprend. Elles se cachent dans les morts."),
-    ("Journal du capitaine — jour 119",
-     "Nous avons vu la grande. Elle ÉTAIT Hollis, je crois. Trois mètres.\n"
-     "Elle ne nous court pas après : elle ÉCOUTE. Au premier coup de feu de Reyes,\n"
-     "elle a traversé le pont en moins d'une minute. Ordre : AUCUNE arme à feu."),
-    ("Reyes, sécurité",
-     "Les balles ne font que la ralentir. Elle recule, secoue la tête, puis revient.\n"
-     "Si vous devez vous cacher : les casiers. Ne respirez pas. Ne bougez pas.\n"
-     "Et ne vous cachez jamais sous ses yeux."),
-    ("Message enregistré — cuisine",
-     "Si quelqu'un lit ça : marchez accroupi. Elle entend les pas.\n"
-     "Mathis a couru. Mathis n'est pas revenu.\n"
-     "On a laissé des kits de soin à l'infirmerie."),
-    ("Brandt — dernière note",
-     "J'ai coupé la propulsion. On dérive. Personne ne doit ramener ça sur Terre.\n"
-     "Le disque dur de la passerelle contient tout : coordonnées de K7-Hadès,\n"
-     "analyses, journaux. Une équipe de récupération devra l'emporter... ou le détruire."),
-    ("Journal du capitaine — dernière entrée",
-     "Il ne reste que moi sur la passerelle. Je garde le disque.\n"
-     "Je l'entends dans les conduits : elle fredonne avec la voix de Hollis.\n"
-     "Qui que vous soyez : prenez le disque et partez. Ne revenez jamais."),
-    ("Dessin scotché dans un casier",
-     "Un vaisseau, des étoiles, un bonhomme qui fait coucou.\n"
-     "« Papa rentre bientôt. »"),
-    ("Liste de maintenance",
-     "- Grille du hangar desserrée, à revoir.\n- Néons du couloir C : remplacer les ballasts.\n"
-     "- NE PAS OUVRIR LA SOUTE 2."),
-]
 
 ITEM_NAMES = {
     "ammo": "munitions", "battery": "pile", "medkit": "kit de soin", "knife": "couteau",
-    "note": "note", "nv_helmet": "casque de vision nocturne", "hdd": "disque dur", "fuse": "fusible",
+    "nv_helmet": "casque de vision nocturne", "hdd": "disque dur", "fuse": "fusible", "doc": "document",
 }
 
 
@@ -113,10 +64,11 @@ def roll_contents(table, rng, n_min=1, n_max=2):
 def give_contents(game, contents, source):
     """Transfère le contenu vers l'inventaire. Renvoie le reste (inventaire plein)."""
     got, left = [], []
+    docs = []
     for kind, n in contents:
-        if kind == "note":
-            game.read_next_note()
-            got.append("une note")
+        if kind == "doc":
+            docs.append(n)            # n = identifiant du document (story.py)
+            got.append("un document")
             continue
         added = game.inventory.add(kind, n)
         if added > 0:
@@ -130,6 +82,8 @@ def give_contents(game, contents, source):
         game.hud.message(f"{source} : vide")
     if left:
         game.hud.message("Inventaire plein !", color.orange)
+    for d in docs:
+        game.docs.collect(d)
     return left
 
 
@@ -247,14 +201,18 @@ class Locker(Interactable):
 
 
 class Corpse(Interactable):
-    """Cadavre d'un membre d'équipage, fouillable (fouille = vulnérable)."""
+    """
+    Corps d'un membre d'équipage (story.CREW), fouillable (fouille = vulnérable).
+    y0 : hauteur du support (0 = sol, ~0,9 = table d'opération).
+    """
     hold_time = C.SEARCH_TIME
 
-    def __init__(self, level, builders, x, z, yaw, rng, uniform_col=None):
+    def __init__(self, level, builders, x, z, yaw, rng, uniform_col=None, crew=None, y0=0.0):
         self.level = level
-        self.pos = (x, 0.4, z)
+        self.pos = (x, 0.4 + y0, z)
         self.searched = False
-        self.infested = rng.random() < C.INFESTED_CORPSE_CHANCE
+        self.crew = crew
+        self.infested = rng.random() < C.INFESTED_CORPSE_CHANCE and y0 == 0.0
         self.contents = roll_contents("corpse", rng, 1, 2)
         mb = builders["struct"]
         dec = builders["decal"]
@@ -266,28 +224,37 @@ class Corpse(Interactable):
         def L(lx, lz):  # local -> monde
             return (x + lx * ca + lz * sa, z - lx * sa + lz * ca)
 
-        # flaque de sang
+        # flaque de sang (au sol, même sous la table d'opération)
         dec.decal((x, .012, z), rng.uniform(1.6, 2.4), rng.uniform(0, 360), (1, 1, 1, 1))
         # corps allongé (le long de l'axe local z)
+        y = y0
         px, pz = L(0, 0)
-        mb.box_rot((px, .14, pz), (.42, .22, .72), yaw, uni)                # torse
+        mb.box_rot((px, y + .14, pz), (.42, .22, .72), yaw, uni)                # torse
         px, pz = L(0, .5)
-        mb.box_rot((px, .13, pz), (.22, .2, .24), yaw + rng.uniform(-30, 30), skin)   # tête
+        mb.box_rot((px, y + .13, pz), (.22, .2, .24), yaw + rng.uniform(-30, 30), skin)   # tête
         for side in (-1, 1):
             px, pz = L(side * .3, .1 + rng.uniform(-.1, .2))
-            mb.box_rot((px, .08, pz), (.12, .12, .6), yaw + side * rng.uniform(10, 60), uni)   # bras
+            mb.box_rot((px, y + .08, pz), (.12, .12, .6), yaw + side * rng.uniform(10, 60), uni)   # bras
             px, pz = L(side * .12, -.7)
-            mb.box_rot((px, .1, pz), (.16, .16, .8), yaw + side * rng.uniform(0, 20), (.12, .12, .14))  # jambes
+            mb.box_rot((px, y + .1, pz), (.16, .16, .8), yaw + side * rng.uniform(0, 20), (.12, .12, .14))  # jambes
+        if crew is not None:
+            # badge nominatif sur la poitrine
+            px, pz = L(.1, .15)
+            mb.box_rot((px, y + .256, pz), (.08, .01, .05), yaw, (.85, .85, .8))
         if self.infested:
             # bosses suspectes sur le torse
             for _ in range(3):
                 px, pz = L(rng.uniform(-.15, .15), rng.uniform(-.2, .2))
-                mb.box_rot((px, .27, pz), (.1, .08, .1), rng.uniform(0, 90), (.12, .05, .08))
+                mb.box_rot((px, y + .27, pz), (.1, .08, .1), rng.uniform(0, 90), (.12, .05, .08))
         level.add_interactable(self, x, z)
 
     def prompt(self, game):
         if self.searched:
             return None
+        if self.crew is not None:
+            import story
+            name = story.CREW[self.crew]["name"].split(",")[0]
+            return f"Fouiller le corps (badge : {name}) — maintenir"
         return "Fouiller le cadavre (maintenir)"
 
     def interact(self, game):
@@ -325,8 +292,6 @@ class Pickup(Interactable):
             Entity(parent=self.entity, model='cube', color=color.red, scale=(.08, .102, .04), y=.05)   # croix peinte
         elif kind == "ammo":
             Entity(parent=self.entity, model='cube', color=color.rgb(.25, .3, .2), scale=(.16, .08, .1), y=.04)
-        elif kind == "note":
-            Entity(parent=self.entity, model='cube', color=color.rgb(.85, .82, .7), scale=(.2, .005, .28), y=.003)
         elif kind == "nv_helmet":
             Entity(parent=self.entity, model='sphere', color=color.rgb(.2, .22, .2), scale=(.28, .24, .3), y=.12)
             mark_emissive(Entity(parent=self.entity, model='cube', color=color.rgb(.1, .6, .1), scale=(.18, .06, .08),
@@ -341,15 +306,109 @@ class Pickup(Interactable):
     def interact(self, game):
         if self.taken:
             return
-        if self.kind == "note":
-            game.read_next_note()
-            left = []
-        else:
-            left = give_contents(game, [(self.kind, self.amount)], "Ramassé")
+        left = give_contents(game, [(self.kind, self.amount)], "Ramassé")
         if not left:
             self.taken = True
             destroy(self.entity)
             self.level.remove_interactable(self)
+
+
+class Cache(Interactable):
+    """Sac de survie abandonné par l'équipage, à fouiller (maintenir)."""
+    hold_time = C.SEARCH_TIME * .6
+
+    def __init__(self, level, builders, x, z, yaw, rng):
+        self.level = level
+        self.pos = (x, 0.25, z)
+        self.searched = False
+        self.contents = roll_contents("corpse", rng, 1, 2)
+        mb = builders["struct"]
+        col = rng.choice([(.3, .33, .22), (.45, .2, .12), (.2, .24, .3), (.42, .4, .36)])
+        mb.box_rot((x, .14, z), (.36, .28, .62), yaw, col)                               # sac
+        mb.box_rot((x, .29, z), (.05, .04, .5), yaw + 90, (.08, .08, .08))              # sangle
+        mb.box_rot((x, .15, z), (.37, .03, .2), yaw, (.1, .1, .1))
+        level.add_interactable(self, x, z)
+
+    def prompt(self, game):
+        return None if self.searched else "Fouiller le sac abandonné (maintenir)"
+
+    def interact(self, game):
+        if self.searched:
+            return
+        self.searched = True
+        game.audio.play_at("rustle", self.pos, .8, 1.2)
+        self.contents = give_contents(game, self.contents, "Sac fouillé")
+        if self.contents:
+            self.searched = False
+
+
+class DocumentPickup(Interactable):
+    """
+    Document de l'histoire posé dans le décor : feuille, carnet, tablette
+    (journal de bord), enregistreur audio, photo, post-it (vertical sur une
+    porte ou sur le frigo). Ramassé -> ajouté au journal et ouvert en lecture.
+    """
+    radius = 1.7
+
+    def __init__(self, level, parent, doc, x, y, z, yaw=0, vertical=False):
+        self.level = level
+        self.doc = doc
+        self.pos = (x, y + .05, z)
+        self.taken = False
+        self.parent = parent
+        self.entity = Entity(parent=parent, position=(x, y, z), rotation_y=yaw)
+        if vertical:
+            self.entity.rotation_x = -90          # collé sur une surface verticale
+        self._build(doc)
+        level.add_interactable(self, x, z)
+
+    def _build(self, doc):
+        e = self.entity
+        st = doc["style"]
+        if st in ("terminal",):
+            Entity(parent=e, model='cube', color=color.rgb(.08, .08, .09), scale=(.2, .015, .28), y=.008)
+            mark_emissive(Entity(parent=e, model='cube', color=color.rgb(.15, .6, .3), scale=(.17, .002, .22),
+                                 y=.017))
+        elif st == "audio":
+            Entity(parent=e, model='cube', color=color.rgb(.12, .12, .13), scale=(.07, .03, .12), y=.015)
+            mark_emissive(Entity(parent=e, model='cube', color=color.rgb(1, .1, .05), scale=(.012, .005, .012),
+                                 position=(.02, .032, .04)))
+        elif st == "postit":
+            Entity(parent=e, model='cube', color=color.rgb(.95, .88, .35), scale=(.09, .002, .09), y=.001)
+        elif st == "photo":
+            Entity(parent=e, model='cube', color=color.rgb(.9, .88, .82), scale=(.2, .003, .16), y=.002)
+            Entity(parent=e, model='cube', color=color.rgb(.2, .2, .22), scale=(.17, .004, .12), y=.003)
+        elif doc["type"] in ("cahier", "journal"):
+            Entity(parent=e, model='cube', color=color.rgb(.25, .12, .1), scale=(.17, .02, .23), y=.01)
+            Entity(parent=e, model='cube', color=color.rgb(.9, .87, .78), scale=(.16, .012, .22), y=.022)
+        else:
+            # feuille (légèrement claire : elle accroche la lampe)
+            Entity(parent=e, model='cube', color=color.rgb(.9, .87, .76), scale=(.21, .003, .29), y=.002)
+            if st == "helios":
+                Entity(parent=e, model='cube', color=color.rgb(.85, .45, .1), scale=(.05, .004, .05),
+                       position=(-.07, .003, .11))
+
+    def move_to(self, x, y, z, yaw=0):
+        """Déplace le document (le casier du screamer a été déplacé)."""
+        self.level.remove_interactable(self)
+        self.pos = (x, y + .05, z)
+        self.entity.position = (x, y, z)
+        self.entity.rotation_y = yaw
+        self.level.add_interactable(self, x, z)
+
+    def prompt(self, game):
+        if self.taken:
+            return None
+        verb = "Écouter" if self.doc["style"] == "audio" else "Lire"
+        return f"{verb} : {self.doc['title']}"
+
+    def interact(self, game):
+        if self.taken:
+            return
+        self.taken = True
+        destroy(self.entity)
+        self.level.remove_interactable(self)
+        game.docs.collect(self.doc["id"])
 
 
 class FusePickup(Interactable):
@@ -431,7 +490,7 @@ class HardDrive(Interactable):
 
 
 class LootDirector:
-    """Répartit le loot garanti (casque de vision nocturne unique, notes)."""
+    """Répartit le loot garanti (casque de vision nocturne unique)."""
 
     def __init__(self, rng):
         self.rng = rng
@@ -443,13 +502,3 @@ class LootDirector:
         cands = [l for l in self.lockers if l.table != "hangar"]
         if cands:
             self.rng.choice(cands).contents.append(("nv_helmet", 1))
-        # au moins 5 notes réparties
-        holders = self.lockers + self.corpses
-        n_notes = sum(1 for h in holders for k, _ in h.contents if k == "note")
-        self.rng.shuffle(holders)
-        for h in holders:
-            if n_notes >= 5:
-                break
-            if not any(k == "note" for k, _ in h.contents):
-                h.contents.append(("note", 1))
-                n_notes += 1

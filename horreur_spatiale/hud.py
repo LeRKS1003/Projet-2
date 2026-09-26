@@ -55,6 +55,25 @@ class HUD:
         # flash blanc d'une seule image (screamer ; désactivable : config.SCREAMER_FLASH)
         self.white = _overlay(None, color.rgba(1, 1, 1, 0), z=-19)
         self._white_frames = 0
+        # histoire : glitch (signal perdu), « vérité » (couleurs éteintes), reflet de la verrière
+        self.glitch = _overlay(textures.get('glitch'), color.rgba(1, 1, 1, 0), z=-18)
+        self.truth = _overlay(None, color.rgba(.55, .58, .6, 0), z=4.2)
+        self.reflection = _overlay(None, color.rgba(1, 1, 1, 0), z=-17)
+        self.eyes = []
+        for k in range(2):
+            e = Entity(parent=camera.ui, model='quad', texture=textures.get('glow'), color=color.rgba(1, 1, 1, 0),
+                       scale=.03, position=(-.215 + k * .05, .06), z=-17.5)
+            e.setTransparency(TransparencyAttrib.MAlpha)
+            self.eyes.append(e)
+        self.glitch_level = 0.0
+        self.truth_level = 0.0
+        self.center_text = Text(parent=camera.ui, text='', position=(0, .08), origin=(0, 0), scale=1.5,
+                                color=color.rgb(.8, .95, .85), z=-18.5)
+        self.suit_box = Entity(parent=camera.ui, model='quad', color=color.rgba(0, .08, .04, 0), scale=(.9, .13),
+                               position=(0, -.25), z=-1)
+        self.suit_text = Text(parent=camera.ui, text='', position=(-.43, -.205), scale=.85,
+                              color=color.rgb(.4, 1, .55), z=-1.1)
+        self._suit_t = 0.0
         self.fade_target = 0.0
         self.fade_speed = 1.0
         self.fade_value = 0.0
@@ -160,6 +179,21 @@ class HUD:
         self.fade_target = alpha
         self.fade_speed = 1.0 / max(.01, duration)
 
+    def suit_log(self, text, duration=8.0):
+        """Message du journal de la combinaison (encadré vert, en bas de l'écran)."""
+        self.suit_text.text = text
+        self._suit_t = duration
+
+    def set_reflection(self, alpha, eyes=0.0):
+        """Fin du jeu : reflet dans la verrière du cockpit (et deux points blancs derrière le joueur)."""
+        if alpha > 0 and self.reflection.texture is None:
+            from document_ui import reflection_image
+            from ursina import Texture
+            self.reflection.texture = Texture(reflection_image())
+        self.reflection.color = color.rgba(1, 1, 1, alpha)
+        for e in self.eyes:
+            e.color = color.rgba(1, 1, 1, eyes)
+
     def flash_frame(self):
         """Flash blanc plein écran pendant une image."""
         self._white_frames = 1
@@ -176,6 +210,25 @@ class HUD:
             self._white_frames -= 1
         elif self.white.color.a > 0:
             self.white.color = color.rgba(1, 1, 1, 0)
+        # glitch : bandes de signal perdu qui sautent d'une image à l'autre
+        gl = self.glitch_level
+        if gl > .01:
+            self.glitch.color = color.rgba(1, 1, 1, min(.85, gl * (.4 + .6 * random.random())))
+            self.glitch.texture_offset = (random.random(), random.random())
+            self.glitch.texture_scale = (1, random.uniform(.5, 2))
+            self.glitch.x = random.uniform(-.03, .03) * gl
+        elif self.glitch.color.a > 0:
+            self.glitch.color = color.rgba(1, 1, 1, 0)
+        self.truth.color = color.rgba(.55, .58, .6, .22 * self.truth_level)
+        # journal de la combinaison
+        if self._suit_t > 0:
+            self._suit_t -= dt
+            a = min(1.0, self._suit_t / 1.0)
+            self.suit_box.color = color.rgba(0, .08, .04, .75 * a)
+            self.suit_text.color = color.rgba(.4, 1, .55, a if (self._suit_t % .9) > .06 else .3)
+        elif self.suit_text.text:
+            self.suit_text.text = ''
+            self.suit_box.color = color.rgba(0, .08, .04, 0)
         # fondu au noir
         if self.fade_value != self.fade_target:
             d = self.fade_target - self.fade_value
@@ -451,3 +504,57 @@ class MenuScreen:
 
     def destroy(self):
         destroy(self.root)
+
+
+# ============================================================================
+class TitleScreen(MenuScreen):
+    """
+    Écran titre de DÉRIVE : le mot en grandes lettres blanches fines sur fond
+    d'espace, qui tremble et se dédouble de temps en temps (image qui perd le
+    signal), sous-titre « Kerguelen — dernier contact il y a 41 jours ».
+    """
+
+    def __init__(self, title, subtitle, options, on_select):
+        super().__init__(title, subtitle, options, on_select, title_color=color.rgb(.95, .96, .97), bg_alpha=.25)
+        self.title.scale = 7
+        self.title.y = .24
+        self.subtitle.y = .1
+        self.subtitle.scale = .95
+        self.subtitle.color = color.rgb(.62, .66, .7)
+        # copies décalées rouge / cyan pour le dédoublement
+        self.ghosts = []
+        for c in (color.rgba(1, .2, .2, 0), color.rgba(.2, 1, 1, 0)):
+            g = Text(parent=self.root, text=title, position=self.title.position, origin=(0, 0), scale=7, color=c)
+            self.ghosts.append(g)
+        self.scan = Entity(parent=self.root, model='quad', texture=textures.get('glitch'), color=color.rgba(1, 1, 1, 0),
+                           scale=(1.2, .16), position=(0, .24), z=-.1)
+        self._glitch = 0.0
+        self._next = random.uniform(1.5, 4)
+        self.hint.text = "Haut/Bas + Entrée  —  Croix pour valider  —  I : commandes"
+
+    def update(self, dt, inp):
+        super().update(dt, inp)
+        self._next -= dt
+        if self._next <= 0:
+            self._next = random.uniform(1.2, 5.0)
+            self._glitch = random.uniform(.12, .45)
+        if self._glitch > 0:
+            self._glitch -= dt
+            j = .02
+            self.title.x = random.uniform(-j, j)
+            for k, g in enumerate(self.ghosts):
+                g.x = self.title.x + (-.02 if k == 0 else .02) * random.uniform(.4, 1.6)
+                g.y = self.title.y + random.uniform(-.006, .006)
+                c = g.color
+                g.color = color.rgba(c.r, c.g, c.b, random.uniform(.3, .7))
+            self.scan.color = color.rgba(1, 1, 1, random.uniform(.2, .6))
+            self.scan.texture_offset = (random.random(), random.random())
+            self.scan.y = self.title.y + random.uniform(-.06, .06)
+        else:
+            self.title.x = 0
+            for g in self.ghosts:
+                c = g.color
+                if c.a > 0:
+                    g.color = color.rgba(c.r, c.g, c.b, 0)
+            if self.scan.color.a > 0:
+                self.scan.color = color.rgba(1, 1, 1, 0)

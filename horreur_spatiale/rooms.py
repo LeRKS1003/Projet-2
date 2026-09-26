@@ -18,6 +18,7 @@ from ursina import Entity, color, Vec3
 import config as C
 import textures
 import loot
+import story
 from geometry import MeshBuilder, jitter_color
 from generator import SOLID, ROOM, CORR, VENT, DIRS, Blocker
 from lighting import Fixture, mark_emissive
@@ -75,7 +76,7 @@ class Group:
     # battery : voyants sur batterie de secours (clignotent même sans courant) ;
     # strip : bandes de secours au sol (option config.EMERGENCY_STRIPS)
     KINDS = ("struct", "floor", "hazard", "decal", "smear", "glass", "emissive", "screen", "reactor", "battery",
-             "strip")
+             "strip", "claw")
     POWERED = {"emissive": "emissive", "screen": "screen", "reactor": "reactor", "battery": "battery"}
 
     def __init__(self, name, parent, bounds, is_room=False):
@@ -85,10 +86,11 @@ class Group:
         self.bounds = bounds       # (x0, x1, z0, z1)
         self.enabled = True
         self.is_room = is_room
+        self.claw_node = None      # traces de griffes (cachées pendant la révélation)
 
     def build(self, power=None):
         tex = {"hazard": textures.get('hazard'), "decal": textures.get('blood'),
-               "smear": textures.get('smear'), "screen": textures.get('screen')}
+               "smear": textures.get('smear'), "screen": textures.get('screen'), "claw": textures.get('claws')}
         # matériaux complets (albédo + normal map + brillance) pour les surfaces éclairées
         mats = {"struct": ("panel", None), "floor": ("floor", None), "hazard": ("painted", tex["hazard"])}
         for k, mb in self.b.items():
@@ -100,7 +102,9 @@ class Group:
             else:
                 e = mb.build(parent=self.root, texture=tex.get(k), name=f"{self.name}_{k}",
                              tangents=False)
-            if k in ("decal", "smear", "glass"):
+            if k == "claw":
+                self.claw_node = e
+            if k in ("decal", "smear", "glass", "claw"):
                 e.setTransparency(TransparencyAttrib.MAlpha)
                 e.setDepthWrite(False)
                 e.setBin('transparent', 10)
@@ -240,6 +244,15 @@ class LevelBuilder:
         self.spark_points = []     # câbles arrachés (étincelles)
         self.power_panel = None    # tableau électrique principal (salle des machines)
         self.fuses = []            # fusibles à retrouver
+        self.seed = seed
+        self.spots = {}            # salle -> {type d'emplacement : [(x, y, z, lacet, vertical)]} pour les documents
+        self.crew_corpses = {}     # membre d'équipage -> corps (story.CREW)
+        self.claw_nodes = []
+        self.doc_present = set()
+        self.doc_pickups = {}
+        self.doc_deferred = []     # documents placés plus tard (près du casier du screamer)
+        self.fridge_placer = None
+        self.dock_placer = None
         self.hdd = None
         self.pad_center = None
         self.reactor_pos = None
@@ -290,11 +303,15 @@ class LevelBuilder:
             getattr(self, "_room_" + room.type)(room)
             self._room_lights(room)
             self._room_clutter(room)
-        self._place_corpses()
+        self._place_caches()
+        self._place_crew()
         self._place_fuses()
+        self._place_documents()
         self.loot_dir.finalize()
         for g in self.groups.values():
             g.build(self.lights.power)
+            if g.claw_node is not None:
+                self.claw_nodes.append(g.claw_node)
         # retards d'allumage (propagation depuis la salle des machines) et lampes cassées
         self.lights.power.finalize(L, L.room("engine"), random.Random(self.rng.random()))
 
@@ -517,6 +534,8 @@ class LevelBuilder:
         grille.open_dir = (-dx, -dz)
         self.grille_visuals.append(grille)
         GrilleInteract(L, grille)
+        if self.rng.random() < .5:
+            self._wall_claw(g, *grille.room_cell)       # griffures autour des grilles
         # du noir derrière la grille pour suggérer la profondeur du conduit
         if self.rng.random() < .25:
             grille.set_open(True)   # certaines grilles ont été arrachées
@@ -620,6 +639,26 @@ class LevelBuilder:
                                rng.uniform(0, 360), (1, 1, 1, 1))
         if rng.random() < .12:
             self._wall_smear(g, i, j)
+        if rng.random() < .07:
+            self._wall_claw(g, i, j)
+
+    def _wall_claw(self, g, i, j):
+        """Traces de griffes sur un mur (elles n'existent que dans la tête de ceux qui les voient)."""
+        L = self.level
+        rng = self.rng
+        walls = [(dx, dz) for dx, dz in DIRS if L.edge_state(i, j, i + dx, j + dz) == "wall"]
+        if not walls:
+            return
+        dx, dz = rng.choice(walls)
+        cx, cz = L.cell_center(i, j)
+        Cc = C.CELL
+        off = rng.uniform(-.6, .6)
+        y = rng.uniform(.6, 1.9)
+        if dx != 0:
+            p = (cx + dx * (Cc / 2 - .012), y, cz + off)
+        else:
+            p = (cx + off, y, cz + dz * (Cc / 2 - .012))
+        g.b["claw"].decal(p, rng.uniform(.5, .9), rng.uniform(-35, 35), (1, 1, 1, 1), normal=(-dx, 0, -dz))
 
     def _wall_smear(self, g, i, j, col=(1, 1, 1, 1)):
         L = self.level
@@ -719,6 +758,7 @@ class LevelBuilder:
             for sx in (-.42, .42):
                 pl.box(mb, (lat + sx, .95, .95), (.06, 1.9, .06), frame)
         self.block_placer(pl, (lat, 0), (.95, 2.0), .6)
+        self._spot(room, "bed", pl.pt(lat + .15, .5, .35), pl.yaw + 15)
         if medical and self.rng.random() < .6:
             # potence à perfusion
             pl.cyl(mb, (lat + .65, .9, .7), .02, 1.8, (.7, .7, .72))
@@ -744,6 +784,7 @@ class LevelBuilder:
             pl.box(g.b["battery"], (width / 2 - .12, .99, .12), (.04, .02, .04),
                    self.rng.choice([(1, .35, .05), (1, .08, .05)]))
         self.block_placer(pl, (0, 0), (width, .7), 1.0)
+        self._spot(room, "console", pl.pt(-width / 4, 1.005, .05), pl.yaw + 5)
         x, _, z = pl.pt(0, 1.3, .2)
         self.lights.add_fixture(Fixture((x, 1.3, z), (.25, .9, .45) if not red else (1, .2, .1), 3.5, "pulse", None,
                                         .35, kind="console"))
@@ -860,6 +901,9 @@ class LevelBuilder:
         for _ in range(rng.randint(0, 3)):
             i, j = rng.choice(cells)
             self._wall_smear(g, i, j)
+        for _ in range(rng.randint(0, 2)):
+            i, j = rng.choice(cells)
+            self._wall_claw(g, i, j)
         # traces de brûlure (décalque teinté noir)
         for _ in range(rng.randint(0, 2)):
             i, j = rng.choice(cells)
@@ -937,7 +981,13 @@ class LevelBuilder:
             loot.Pickup(L, gg.root, "knife", 1, kx, ky, kz, pl.yaw + 70)
             bx, by, bz = pl.pt(-.4, .9, .05)
             loot.Pickup(L, gg.root, "battery", 1, bx, by, bz)
+            self._spot(room, "workbench", pl.pt(-.05, .895, -.15), pl.yaw - 8)
             self.add_room_fixture(room, *pl.pt(0, 0, .2)[::2], 2.2, (1, .85, .6), "steady", 5, .8, (.6, .04, .1))
+        # console d'amarrage
+        if slots:
+            s = slots.pop()
+            self.prop_console(room, s, width=1.2)
+            self.dock_placer = self.slot_placer(s, .8)
         # un casier de maintenance
         if slots:
             self.prop_locker(room, slots.pop(), "hangar")
@@ -1027,7 +1077,8 @@ class LevelBuilder:
         g.b["decal"].decal((cx, .87, cz), 1.0, rng.uniform(0, 360), (1, 1, 1, 1))
         self.block(cx - .4, cx + .4, cz - 1, cz + 1, .9)
         # kit de soin posé
-        loot.Pickup(self.level, g.root, "medkit", 1, cx + .2, .91, cz + .5, rng.uniform(0, 90))
+        loot.Pickup(self.level, g.root, "medkit", 1, cx + .22, .91, cz + .88, rng.uniform(0, 90))
+        self.optable = (cx, cz)
 
     def _room_crew(self, room):
         rng = self.rng
@@ -1046,9 +1097,10 @@ class LevelBuilder:
             pl.box(gg.b["screen"], (.2, 1.0, -.2), (.5, .35, .03), (1, 1, 1))
             pl.box(gg.b["struct"], (0, .45, .6), (.45, .06, .45), (.2, .2, .22))   # chaise
             self.block_placer(pl, (0, 0), (1.3, .65), .8)
-            if rng.random() < .6:
-                x, y, z = pl.pt(-.3, .78, .05)
-                loot.Pickup(self.level, gg.root, rng.choice(["note", "battery"]), 1, x, y, z, rng.uniform(0, 90))
+            self._spot(room, "desk", pl.pt(-.3, .78, .05), pl.yaw + 10)
+            if rng.random() < .4:
+                x, y, z = pl.pt(.4, .78, .12)
+                loot.Pickup(self.level, gg.root, "battery", 1, x, y, z, rng.uniform(0, 90))
             x, y, z = pl.pt(.2, 1.0, 0)
             self.lights.add_fixture(Fixture((x, y, z), (.3, .9, .5), 3, "pulse", None, .3, room, kind="console"))
         # affaires personnelles au sol
@@ -1107,9 +1159,9 @@ class LevelBuilder:
                               kind="console")
         # le capitaine est mort à son poste
         cxp, _, czp = pl.pt(0, 0, 1.3)
-        c = loot.Corpse(L, gg.b, cxp, czp, pl.yaw + 160, rng, (.15, .18, .3))
+        c = loot.Corpse(L, gg.b, cxp, czp, pl.yaw + 160, rng, story.CREW["vasseur"]["uniform"], crew="vasseur")
         c.infested = False
-        c.contents.append(("note", 1))
+        self.crew_corpses["vasseur"] = c
         self.loot_dir.corpses.append(c)
         for s2 in self.take_slots(slots, 1):
             self.prop_locker(room, s2, "command")
@@ -1150,6 +1202,8 @@ class LevelBuilder:
             pl.box(gg.b["struct"], (0, 1.0, 0), (1.0, 2.0, .8), (.7, .72, .72))       # frigo
             pl.box(gg.b["emissive"], (.3, 1.4, .41), (.08, .04, .01), (.2, .9, .3))
             self.block_placer(pl, (0, 0), (1.0, .8), 2.0)
+            self.fridge_placer = pl
+            self._spot(room, "fridge", pl.pt(-.12, 1.5, .415), pl.yaw, vertical=True)
         for s in self.take_slots(slots, 1):
             self.prop_locker(room, s, "mess")
         # plateaux au sol
@@ -1250,7 +1304,8 @@ class LevelBuilder:
               ", ".join(L.room_at(f.pos[0], f.pos[2]).name for f in self.fuses))
 
     # ------------------------------------------------------------------
-    def _place_corpses(self):
+    def _place_caches(self):
+        """Sacs de survie abandonnés (loot) là où l'équipage a fui ; traces de sang aux murs."""
         L = self.level
         rng = self.rng
         cands = [r for r in L.rooms if r.type not in ("hangar", "command")]
@@ -1264,16 +1319,208 @@ class LevelBuilder:
                 if L.blocked_point(x, .3, z, .5):
                     continue
                 g = self.group_for(i, j)
-                self.loot_dir.corpses.append(loot.Corpse(L, g.b, x, z, rng.uniform(0, 360), rng))
+                loot.Cache(L, g.b, x, z, rng.uniform(0, 360), rng)
                 self._wall_smear(g, i, j)
         corr = [c for c in L.links if L.kind[c[0]][c[1]] == CORR]
         rng.shuffle(corr)
         for (i, j) in corr[:4]:
             x, z = L.cell_center(i, j)
             g = self.group_for(i, j)
-            self.loot_dir.corpses.append(loot.Corpse(L, g.b, x, z, rng.uniform(0, 360), rng))
+            loot.Cache(L, g.b, x + rng.uniform(-.3, .3), z + rng.uniform(-.3, .3), rng.uniform(0, 360), rng)
             for _ in range(2):
                 self._wall_smear(g, i, j)
+
+    # ------------------------------------------------------------------
+    # HISTOIRE : corps de l'équipage et documents
+    # ------------------------------------------------------------------
+    def _spot(self, room, kind, pt, yaw, vertical=False):
+        if room is None:
+            return
+        self.spots.setdefault(room.id, {}).setdefault(kind, []).append((pt[0], pt[1], pt[2], yaw, vertical))
+
+    def _free_floor(self, room, rng, margin=.45, near=None, radius=None):
+        """Point libre au sol dans une salle (optionnellement près d'un point)."""
+        L = self.level
+        cells = list(room.cells())
+        for _ in range(60):
+            if near is not None:
+                x = near[0] + rng.uniform(-radius, radius)
+                z = near[1] + rng.uniform(-radius, radius)
+                if L.room_at(x, z) is not room:
+                    continue
+            else:
+                i, j = rng.choice(cells)
+                cx, cz = L.cell_center(i, j)
+                x, z = cx + rng.uniform(-.8, .8), cz + rng.uniform(-.8, .8)
+            if not L.blocked_point(x, .3, z, margin):
+                return x, z
+        return None
+
+    def _crew_corpse(self, who, room, x, z, yaw, rng, y0=0.0):
+        L = self.level
+        g = self.group_for(*L.cell_at(x, z))
+        c = loot.Corpse(L, g.b, x, z, yaw, rng, story.CREW[who]["uniform"], crew=who, y0=y0)
+        self.crew_corpses[who] = c
+        self.loot_dir.corpses.append(c)
+        return c
+
+    def _place_crew(self):
+        """Corps de l'équipage du Kerguelen, chacun dans « sa » salle (Keating : jamais retrouvée)."""
+        L = self.level
+        rng = random.Random(self.seed * 5 + 29)
+        # Lebrun, l'ingénieur, près du tableau électrique qu'il a lui-même coupé
+        eng = L.room("engine")
+        if eng is not None:
+            near = None
+            if self.power_panel is not None:
+                px, _, pz = self.power_panel["pos"]
+                fx, fz = self.power_panel["facing"]
+                near = (px + fx * .9, pz + fz * .9)
+            p = self._free_floor(eng, rng, near=near, radius=1.4) if near else None
+            p = p or self._free_floor(eng, rng)
+            if p:
+                self._crew_corpse("lebrun", eng, p[0], p[1], rng.uniform(0, 360), rng)
+        # Fontaine, la pilote, près de la console d'amarrage du hangar
+        hg = L.room("hangar")
+        if hg is not None:
+            near = None
+            if self.dock_placer is not None:
+                near = self.dock_placer.pt(0, 0, 1.4)[::2]
+            p = self._free_floor(hg, rng, near=near, radius=1.2) if near else None
+            p = p or self._free_floor(hg, rng)
+            if p:
+                self._crew_corpse("fontaine", hg, p[0], p[1], rng.uniform(0, 360), rng)
+        # Andreïev, autopsié : sur la table d'opération de l'infirmerie
+        mb = L.room("medbay")
+        if mb is not None and getattr(self, "optable", None):
+            cx, cz = self.optable
+            self._crew_corpse("andreiev", mb, cx, cz - .08, 0.0, rng, y0=.9)
+        # Okafor et Ricci : la fusillade de la salle à manger
+        ms = L.room("mess")
+        if ms is not None:
+            near = self.fridge_placer.pt(0, 0, 1.2)[::2] if self.fridge_placer else None
+            p = self._free_floor(ms, rng, near=near, radius=1.0) if near else None
+            p = p or self._free_floor(ms, rng)
+            if p:
+                self._crew_corpse("ricci", ms, p[0], p[1], rng.uniform(0, 360), rng)
+            p = self._free_floor(ms, rng)
+            if p:
+                self._crew_corpse("okafor", ms, p[0], p[1], rng.uniform(0, 360), rng)
+        for c in self.crew_corpses.values():
+            i, j = L.cell_at(c.pos[0], c.pos[2])
+            self._wall_smear(self.group_for(i, j), i, j)
+
+    def _doc_room(self, d, crew_rooms):
+        L = self.level
+        if d["room"] == "crew":
+            if not crew_rooms:
+                return None
+            if "Keating" in d["author"]:
+                return crew_rooms[1 % len(crew_rooms)]
+            return crew_rooms[0]
+        if d["room"] == "corridor":
+            return None
+        return L.room(d["room"])
+
+    def _door_spot(self, crew_rooms):
+        """Post-it collé côté couloir, à côté de la porte d'une chambre."""
+        for room in crew_rooms:
+            for door in room.doors:
+                ri, rj = door.room_cell
+                oi, oj = door.out_cell
+                dx, dz = oi - ri, oj - rj
+                off = C.DOOR_WIDTH / 2 + .3
+                if door.axis == "x":
+                    x, z = door.pos[0] + dx * .08, door.pos[1] + off
+                else:
+                    x, z = door.pos[0] + off, door.pos[1] + dz * .08
+                return (x, 1.55, z, math.degrees(math.atan2(dx, dz)), True)
+        return None
+
+    def _place_documents(self):
+        """Place les documents de story.py (garantis + une sélection, au moins MIN_DOCUMENTS)."""
+        L = self.level
+        rng = random.Random(self.seed * 7 + 187)
+        docs = story.DOCUMENTS
+        optional = [d for d in docs if not d["guaranteed"]]
+        rng.shuffle(optional)
+        drop = rng.randint(0, max(0, len(docs) - story.MIN_DOCUMENTS))
+        absent = {d["id"] for d in optional[:drop]}
+        crew_rooms = sorted(L.rooms_of_type("crew"), key=lambda r: r.id)
+        for d in docs:
+            if d["id"] in absent:
+                continue
+            if self._place_doc(d, rng, crew_rooms):
+                self.doc_present.add(d["id"])
+        missing = sorted(set(x["id"] for x in docs) - self.doc_present)
+        print(f"[histoire] {len(self.doc_present)} documents placés sur {len(docs)} (absents : {', '.join(missing)})")
+
+    def _place_doc(self, d, rng, crew_rooms):
+        L = self.level
+        place = d["place"]
+        if place.startswith("corpse:"):
+            c = self.crew_corpses.get(place[7:])
+            if c is not None:
+                c.contents.insert(0, ("doc", d["id"]))
+                c.infested = False          # un corps « important » ne cache pas de mauvaise surprise
+                return True
+            place = "floor"
+        if place == "near_screamer":
+            self.doc_deferred.append(d)     # placé par main.py une fois le casier piégé choisi
+            return True
+        spot = None
+        room = self._doc_room(d, crew_rooms)
+        if place == "door":
+            spot = self._door_spot(crew_rooms)
+        elif room is not None:
+            lst = self.spots.get(room.id, {}).get(place)
+            if lst:
+                spot = lst.pop(rng.randrange(len(lst)))
+        if spot is None and room is not None:
+            p = self._free_floor(room, rng)
+            if p:
+                spot = (p[0], .012, p[1], rng.uniform(0, 360), False)
+        if spot is None:
+            return False
+        x, y, z, yaw, vertical = spot
+        g = self.group_for(*L.cell_at(x, z))
+        self.doc_pickups[d["id"]] = loot.DocumentPickup(L, g.root, d, x, y, z, yaw, vertical)
+        return True
+
+    def place_near_locker(self, d, locker):
+        """Le rapport d'autopsie de Yuri (enfermé dans un casier) posé au pied du casier piégé."""
+        L = self.level
+        fx, fz = locker.facing
+        x, z = locker.pos[0] + fx * .3, locker.pos[2] + fz * .3
+        pk = self.doc_pickups.get(d["id"])
+        if pk is None:
+            g = self.group_for(*L.cell_at(x, z))
+            pk = loot.DocumentPickup(L, g.root, d, x, .012, z, locker.base_yaw + 20)
+            self.doc_pickups[d["id"]] = pk
+        elif not pk.taken:
+            pk.move_to(x, .012, z, locker.base_yaw + 20)
+        return pk
+
+    def place_doc_floor(self, d, room_type):
+        """Repli : document posé au sol dans une salle."""
+        room = self.level.room(room_type)
+        if room is None:
+            return None
+        rng = random.Random(self.seed + 3)
+        p = self._free_floor(room, rng)
+        if p is None:
+            return None
+        g = self.group_for(*self.level.cell_at(*p))
+        pk = loot.DocumentPickup(self.level, g.root, d, p[0], .012, p[1], rng.uniform(0, 360))
+        self.doc_pickups[d["id"]] = pk
+        return pk
+
+    def set_claws_visible(self, on):
+        for n in self.claw_nodes:
+            if on:
+                n.show()
+            else:
+                n.hide()
 
     # ==================================================================
     # MISE À JOUR : portes, grilles, casiers, champ de force, culling

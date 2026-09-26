@@ -9,7 +9,7 @@ le volume, la seed de génération, etc.
 # ----------------------------------------------------------------------------
 # GÉNÉRAL / FENÊTRE
 # ----------------------------------------------------------------------------
-TITLE = "ÉPAVE — Le silence du Mnémosyne"
+TITLE = "DÉRIVE"
 SEED = None                 # None = seed aléatoire à chaque partie, sinon un entier
 WINDOW_SIZE = (1280, 720)
 FULLSCREEN = False
@@ -45,6 +45,8 @@ KEYS_AZERTY = {
     "prev_item": "c", "next_item": "v", "drop": "delete",
     "pause": "escape", "debug": "f3",
     "debug_power": "f4", "debug_screamer": "f5",   # touches de test (voir DEBUG_KEYS)
+    "debug_docs": "f6", "debug_reveal": "f7",
+    "journal": "j", "controls": "i",
     # navette
     "ship_up": "space", "ship_down": "control", "ship_boost": "shift",
     "ship_roll_left": "a", "ship_roll_right": "e",
@@ -304,7 +306,21 @@ SCREAMER_VOLUME = 1.0        # volume du cri et du stinger
 SCREAMER_FLASH = True        # flash blanc d'une image (False pour les personnes sensibles aux flashs)
 SCREAMER_MUSIC_TIME = 25.0   # durée de la musique angoissante qui suit
 CUSTOM_SOUND_DIR = "sounds"  # un fichier screamer.wav ou screamer.ogg placé ici remplace le cri généré
-DEBUG_KEYS = True            # F4 : bascule le courant, F5 : déclenche le screamer (tests)
+DEBUG_KEYS = True            # F4 courant, F5 screamer, F6 tous les documents, F7 révélation finale (tests)
+
+# ----------------------------------------------------------------------------
+# HISTOIRE : INFECTION PAR SINUS ET HALLUCINATIONS
+# ----------------------------------------------------------------------------
+INFECTION_START = 0.05       # le joueur respire l'air du bord dès le hangar
+INFECTION_TIME = 1500.0      # secondes à bord pour atteindre une infection complète
+HALLU_FIRST_DELAY = (90.0, 150.0)   # premier indice
+HALLU_INTERVAL = (70.0, 140.0)      # intervalle entre deux indices (se raccourcit avec l'infection)
+HALLU_VARIANT_AT = 0.4       # à partir de là, une phrase d'un document déjà lu change à la relecture
+HALLU_HUM = 0.12             # volume du bourdonnement à 7 Hz à infection maximale (très discret)
+REVEAL_TRUTH_TIME = 6.5      # durée pendant laquelle « l'hallucination tombe »
+REVEAL_EXTRA_ALIENS = 2      # petites créatures en plus du plafond après la révélation
+REVEAL_CREATURE_DIST = 14.0  # la grande créature réapparaît à cette distance, entre toi et le hangar
+
 
 # ----------------------------------------------------------------------------
 # ARMES

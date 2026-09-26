@@ -2,7 +2,7 @@
 """
 inventory.py — Inventaire limité en place, objets empilables, objet
 équipé (utilisation rapide), casque de vision nocturne, couteaux avec
-durabilité, journal des notes lues.
+durabilité. Les documents de l'histoire sont dans le journal (document_ui.py).
 
 Le menu d'inventaire NE met PAS le jeu en pause : la créature continue
 de rôder pendant que tu fouilles ton sac.
@@ -12,7 +12,7 @@ import textwrap
 from ursina import Entity, Text, camera, color
 
 import config as C
-from loot import ITEM_NAMES, NOTES
+from loot import ITEM_NAMES
 
 DESCRIPTIONS = {
     "ammo": "Balles de 9 mm pour le pistolet.",
@@ -20,7 +20,7 @@ DESCRIPTIONS = {
     "medkit": "Soigne {} points de santé.".format(C.MEDKIT_HEAL),
     "knife": "Silencieux. S'use à chaque coup porté.",
     "nv_helmet": "Vision nocturne (N / L1). Consomme la batterie. Les lumières éblouissent.",
-    "hdd": "Les données du Mnémosyne. Ramène-le à la navette.",
+    "hdd": "Les données du projet SINUS, extraites du Kerguelen.",
 }
 USABLE = ("medkit", "battery")
 
@@ -38,7 +38,6 @@ class Inventory:
     def __init__(self, game):
         self.game = game
         self.slots = []
-        self.notes_read = []
         self.equipped = "medkit"        # objet d'utilisation rapide
         self.nv_equipped = False
 
@@ -174,7 +173,6 @@ class InventoryUI:
     def __init__(self, game):
         self.game = game
         self.open = False
-        self.reading = False
         self.sel = 0
         self.root = Entity(parent=camera.ui, enabled=False, z=-2)
         Entity(parent=self.root, model='quad', color=color.rgba(0, 0, 0, .78), scale=(.9, .66), position=(0, 0))
@@ -188,15 +186,12 @@ class InventoryUI:
             self.rows.append((bg, t))
         self.desc = Text(parent=self.root, text="", position=(.12, .2), scale=.75, color=color.rgb(.8, .8, .75))
         self.journal = Text(parent=self.root, text="", position=(.12, -.05), scale=.7, color=color.rgb(.6, .7, .6))
-        # panneau de lecture de note
-        self.note_root = Entity(parent=camera.ui, enabled=False, z=-3)
-        Entity(parent=self.note_root, model='quad', color=color.rgba(.05, .05, .04, .92), scale=(1.05, .5))
-        self.note_title = Text(parent=self.note_root, text="", position=(-.49, .2), scale=1.05,
-                               color=color.rgb(.95, .85, .6))
-        self.note_body = Text(parent=self.note_root, text="", position=(-.49, .12), scale=.8,
-                              color=color.rgb(.85, .85, .8))
-        Text(parent=self.note_root, text="[E / Croix] fermer", position=(-.49, -.2), scale=.7,
-             color=color.rgb(.5, .5, .5))
+
+    @property
+    def reading(self):
+        """Un document est-il ouvert en lecture ? (le joueur ne se déplace pas pendant la lecture)"""
+        r = getattr(self.game, "reader", None)
+        return r is not None and r.is_open
 
     def toggle(self):
         self.open = not self.open
@@ -210,24 +205,9 @@ class InventoryUI:
 
     def hide_all(self):
         self.close()
-        self.reading = False
-        self.note_root.enabled = False
-
-    def show_note(self, title, body):
-        self.reading = True
-        self.note_root.enabled = True
-        self.note_title.text = title
-        self.note_body.text = body
-        self._note_timer = 0.3
 
     def update(self, dt, inp):
         inv = self.game.inventory
-        if self.reading:
-            self._note_timer -= dt
-            if self._note_timer <= 0 and (inp.pressed("interact") or inp.pressed("confirm") or inp.pressed("back")):
-                self.reading = False
-                self.note_root.enabled = False
-            return True
         if not self.open:
             return False
         n = len(inv.slots)
@@ -263,7 +243,9 @@ class InventoryUI:
             self.desc.text = textwrap.fill(DESCRIPTIONS.get(inv.slots[self.sel].kind, ""), 30)
         else:
             self.desc.text = "Vide."
-        self.journal.text = f"Notes trouvées : {len(inv.notes_read)}/{len(NOTES)}\nPlaces libres : {inv.free_slots()}"
+        docs = self.game.docs
+        self.journal.text = (f"Documents : {len(docs.found)}/{docs.total}  (journal : J / Create)\n"
+                             f"Places libres : {inv.free_slots()}")
         pad = self.game.inp.using_pad
         self.hint.text = ("Croix: utiliser   Triangle: jeter   Pavé: fermer" if pad
                           else "Flèches/molette: choisir   E/Entrée: utiliser   Suppr: jeter   Tab: fermer")
@@ -272,4 +254,3 @@ class InventoryUI:
     def destroy(self):
         from ursina import destroy
         destroy(self.root)
-        destroy(self.note_root)

@@ -708,6 +708,7 @@ class LightManager:
         self._visible = []
         self.fog_density = 0.0
         self._fog_applied = None
+        self.glitch = 0.0           # révélation : les lumières sautent au rythme du glitch
         self.power = PowerManager(self)
 
         # lumière ambiante (quasi nulle en FPS)
@@ -914,6 +915,8 @@ class LightManager:
             if fx is None:
                 continue
             b = fx.brightness * fx.intensity * nv_boost * (C.LIGHT_INTENSITY if fx.powered else 1.0)
+            if self.glitch > 0 and random.random() < self.glitch * .5:
+                b *= random.uniform(0, .25)
             r, g, bb = fx.current_color(horror)
             slot[1].setColor(Vec4(r * b, g * b, bb * b, 1))
         if self.postfx is not None:
