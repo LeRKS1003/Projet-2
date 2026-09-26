@@ -520,7 +520,7 @@ class Flashlight:
         # masque projeté (« cookie ») : anneaux LED et bords doux
         self.cookie_root = None
         if q["cookie"] and world_root is not None:
-            tex = textures.get('cookie')._texture
+            tex = textures.get('flash_cookie')._texture
             tex.setWrapU(PTexture.WM_border_color)
             tex.setWrapV(PTexture.WM_border_color)
             tex.setBorderColor(Vec4(1, 1, 1, 1))
@@ -528,7 +528,10 @@ class Flashlight:
             self.cookie_stage.setMode(TextureStage.MModulate)
             self.cookie_stage.setSort(40)
             world_root.projectTexture(self.cookie_stage, tex, self.np)
+            # décalage des coordonnées projetées : (0, 0) = actif ; hors de [0, 1] = bord blanc = neutre
+            world_root.setTexOffset(self.cookie_stage, .0001, 0)
             self.cookie_root = world_root
+            self._cookie_on = True
         # cône volumétrique : trois coques emboîtées, plus denses au centre
         self.cone = None
         if q["volumetric"]:
@@ -634,6 +637,10 @@ class Flashlight:
         # montée / descente douce (sauf coupures du scintillement)
         self.level += (target_level - self.level) * min(1, dt * 25)
         lv = self.level * self.scare_mult
+        # lampe éteinte : le cookie ne doit plus rien modifier dans le décor
+        if self.cookie_root is not None and (lv > .02) != self._cookie_on:
+            self._cookie_on = lv > .02
+            self.cookie_root.setTexOffset(self.cookie_stage, .0001 if self._cookie_on else 5.0, 0)
         kk = C.FLASHLIGHT_INTENSITY * lv * (.4 if nightvision else 1.0)
         c = C.FLASHLIGHT_COLOR
         self.spot.setColor(Vec4(c[0] * kk, c[1] * kk, c[2] * kk, 1))

@@ -79,6 +79,8 @@ class Creature:
         self.speed_now = 0.0
         self.alert_flash = 0.0
         self.suspended = False       # révélation : l'hallucination est « tombée »
+        self.attack_cd = 0.0         # délai avant le prochain coup
+        self.since_hit = 0.0         # temps depuis le dernier coup porté au joueur
         self._build_model()
         self.growl = game.audio.loop("creature_growl", "creature_growl", 1.0)
 
@@ -461,13 +463,18 @@ class Creature:
                 self.yaw = _lerp_angle(self.yaw, want, min(1, dt * 6))
         self.speed_now = moved / max(dt, 1e-5)
 
-        # --- mise à mort --------------------------------------------------
+        # --- contact : peur par derrière, coups par devant (mort au 5e) -----
+        self.attack_cd = max(0.0, self.attack_cd - dt)
         if p is not None and p.alive:
+            self.since_hit += dt
+            if p.creature_hits > 0 and self.since_hit > C.CREATURE_HITS_DECAY:
+                p.creature_hits -= 1
+                self.since_hit = C.CREATURE_HITS_DECAY * .6
             d = math.hypot(p.x - self.x, p.z - self.z)
-            if d < C.CREATURE_KILL_DIST and self.stun <= 0 and not self.calm:
+            if d < C.CREATURE_KILL_DIST and self.stun <= 0 and not self.calm and self.attack_cd <= 0:
                 if not p.hidden or (p.saw_hide and self.state == CHASE):
-                    g.game_over("creature")
-                    return
+                    if self._contact(p, d):
+                        return
 
         self._animate(dt, moved)
         self._sounds(dt, moved)
@@ -518,6 +525,56 @@ class Creature:
         self.visible = False
         self.root.enabled = False
         self.path = []
+
+    def _contact(self, p, d):
+        """
+        La bête touche le joueur. Dans son dos : elle hurle, fait très peur et
+        repart sans le blesser. De face : elle frappe ; le 5e coup est mortel.
+        Renvoie True si la partie est perdue.
+        """
+        g = self.game
+        dx, dz = self.x - p.x, self.z - p.z
+        dn = math.hypot(dx, dz) or 1.0
+        fx, fz = p.forward2()
+        facing = (fx * dx + fz * dz) / dn          # 1 = devant le joueur, -1 = dans son dos
+        pos3 = (self.x, 2.0, self.z)
+        if C.CREATURE_BEHIND_SCARE and facing < -.1 and not p.hidden:
+            # --- par derrière : juste la peur ---------------------------------
+            g.audio.play("creature_roar", 1.0, random.uniform(.95, 1.1))
+            g.audio.play_var("alien_shriek", 3, .7, pitch_range=(.55, .7))
+            g.audio.play("heartbeat", 1.0)
+            g.inp.rumble(1, 1, 700)
+            g.shake(.9)
+            p.trauma = 1.0
+            p.hurt_flash = max(p.hurt_flash, .35)
+            g.horror.scripted_scare(1.0)
+            g.hud.message("Un souffle brûlant dans ta nuque... puis plus rien.", color.rgb(.9, .6, .5))
+            self.attack_cd = 6.0
+            self.stun = 1.2
+            self.start_retreat()                      # elle retourne dans les conduits
+            return False
+        # --- de face : un coup -------------------------------------------------
+        p.creature_hits += 1
+        self.since_hit = 0.0
+        self.attack_cd = C.CREATURE_ATTACK_COOLDOWN
+        self.stun = .7
+        g.audio.play("creature_roar", .9, random.uniform(1.0, 1.15))
+        g.audio.play("knife_flesh", .8, .6)
+        if p.creature_hits >= C.CREATURE_HITS_TO_KILL:
+            g.game_over("creature")
+            return True
+        # dégâts, mais jamais mortels avant le dernier coup
+        p.damage(max(0, min(C.CREATURE_HIT_DAMAGE, p.health - 1)), source=pos3)
+        # le coup projette le joueur en arrière
+        push = 1.6
+        nx, nz = p.x - dx / dn * push, p.z - dz / dn * push
+        p.x, p.z = self.level.collide(nx, nz, C.PLAYER_RADIUS, .05, p.height)
+        g.shake(.7)
+        g.inp.rumble(1, .8, 400)
+        left = C.CREATURE_HITS_TO_KILL - p.creature_hits
+        g.hud.message(f"Elle t'a frappé ! Encore {left} coup{'s' if left > 1 else ''} et c'est fini. FUIS !",
+                      color.rgb(1, .3, .25))
+        return False
 
     def appear_at(self, x, z):
         """Réapparaît à un endroit précis (révélation : entre le joueur et le hangar)."""

@@ -125,6 +125,8 @@ class HUD:
         self.stamina_bar = _bar(self.fps, (-ar / 2 + .04, -.415), .2, color.rgb(.7, .7, .6), .005)
         Text(parent=self.fps, text='BATTERIE', position=(-ar / 2 + .04, -.43), scale=.7, color=color.rgb(.8, .8, .5))
         self.battery_bar = _bar(self.fps, (-ar / 2 + .04, -.455), .22, color.rgb(.95, .85, .3), .008)
+        self.wounds_text = Text(parent=self.fps, text='', position=(-ar / 2 + .36, -.387), scale=.65,
+                                color=color.rgb(1, .35, .3))
         self.battery_text = Text(parent=self.fps, text='', position=(-ar / 2 + .27, -.445), scale=.65,
                                  color=color.rgb(.8, .8, .5))
         self.ammo_text = Text(parent=self.fps, text='', position=(ar / 2 - .05, -.39), origin=(.5, 0), scale=1.6,
@@ -366,6 +368,8 @@ class HUD:
         self.battery_bar[1].color = color.rgb(1, .3, .2) if lt.battery < 15 else color.rgb(.95, .85, .3)
         mode = "VISION NOCT." if lt.nightvision else ("LAMPE" if lt.flashlight_on else "")
         _tx(self.battery_text, f"{lt.battery:.0f}%  {mode}")
+        hits = p.creature_hits
+        _tx(self.wounds_text, f"Coups de la bête : {hits}/{C.CREATURE_HITS_TO_KILL}" if hits else "")
         if w.has_pistol:
             _tx(self.ammo_text, f"{w.mag} | {w.reserve}" + ("  RECHARGE..." if w.reloading > 0 else ""))
         else:

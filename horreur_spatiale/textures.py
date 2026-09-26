@@ -473,6 +473,26 @@ def _gen_cookie(rng):
     return _to_tex(np.dstack([v, v, v, np.ones_like(v)]), 'bilinear')
 
 
+def _gen_flash_cookie(rng):
+    """
+    Cookie de la lampe, version neutre hors du faisceau : 1 = aucune influence.
+    (L'ancien cookie assombrissait tout le cadre carré de projection hors du
+    faisceau : un « rectangle sombre » visible dès que les salles sont éclairées.)
+    À l'intérieur du faisceau : anneaux d'optique LED et légers défauts.
+    """
+    s = 256
+    yy, xx = np.mgrid[0:s, 0:s] / (s - 1) - .5
+    r = np.sqrt(xx ** 2 + yy ** 2) * 2
+    ang = np.arctan2(yy, xx)
+    inside = np.clip((.75 - r) / .2, 0, 1)                  # 1 dans le faisceau, 0 au-delà (fondu doux)
+    rings = 1 - .1 * (np.sin(r * 38) * .5 + .5) ** 3 * np.clip(r * 1.4, 0, 1)
+    dirt = 1 - .06 * fractal_noise(s, s, rng, 4, base=3)
+    wobble = 1 - .035 * (np.sin(ang * 7 + r * 5) * .5 + .5) * (r > .25)
+    v = rings * dirt * wobble
+    v = np.clip(1 - (1 - v) * inside, 0, 1)                  # hors du faisceau : exactement 1
+    return _to_tex(np.dstack([v, v, v, np.ones_like(v)]), 'bilinear')
+
+
 def _flash_star(rng):
     """Flash de bouche en étoile : branches irrégulières + cœur brillant."""
     s = 128

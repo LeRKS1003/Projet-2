@@ -165,6 +165,9 @@ Ursina lit les lettres par position physique : la configuration AZERTY est conve
 
 * **Tant que le courant n'est pas rétabli**, la grande créature erre sans t'attaquer si tu restes discret :
   seul un gros bruit (un coup de feu) la réveille et déclenche l'alerte (`CREATURE_CALM_UNTIL_POWER`).
+* **Si la bête arrive dans ton dos**, elle hurle et te fait une peur bleue... puis repart dans les conduits.
+  **De face**, elle frappe : le HUD compte ses coups, et c'est **le 5e qui tue** (`CREATURE_HITS_TO_KILL`).
+  Chaque coup te projette en arrière : profites-en pour fuir.
 * **Une alerte ne dure jamais plus d'une minute** (`HORROR_MAX_TIME`), même si tu continues à tirer.
 * **R3 / G** achève une araignée au corps à corps en un seul coup, sans user ton couteau.
 

@@ -48,6 +48,7 @@ class Player:
         self.last_damage_dir = 0.0
         self.saw_hide = False
         self.kills = 0
+        self.creature_hits = 0       # coups encaissés de la grande créature (mort au 5e)
 
     # ------------------------------------------------------------------
     @property
