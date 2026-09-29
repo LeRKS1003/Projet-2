@@ -46,6 +46,12 @@ horreur_spatiale/
 ├── lighting.py     lumière ambiante, lampe torche, pool de lumières, néons, vision nocturne, PowerManager (courant)
 ├── power.py        courant du vaisseau : fusibles, tableau et levier, séquence de redémarrage, coupures, portes
 ├── screamer.py     casier piégé (jumpscare) : visage en primitives, cri, stinger, musique qui suit
+├── safety.py       apparition sûre dans le hangar (rayon vers le sol) + filet de sécurité (jamais hors du vaisseau)
+├── guidance.py     guidage : flèche qui suit le chemin A*, marqueur en bord d'écran, traits lumineux au sol
+├── vertigo.py      crises de vertige après le disque dur (image, son, contrôles, vibrations) + réglage d'intensité
+├── ending.py       cinématique de fin (cockpit, décollage, portes du hangar, plans extérieurs, reflet, crédits)
+├── corpses.py      corps de l'équipage : silhouettes organiques articulées, combinaisons, badges, poses
+├── interior.py     habillage : signalétique, portes détaillées, tuyaux, grilles, désordre, identité des salles
 ├── space.py        skybox : milliers d'étoiles, nébuleuse, planètes (dont une à anneaux), soleil
 ├── audio.py        synthèse numpy -> .wav au premier lancement, lecture 2D/3D/boucles
 ├── hud.py          HUD TPS/FPS, messages en fondu, surimpressions, écrans de menu
@@ -114,11 +120,12 @@ La seed est affichée dans le menu pause ; fixe `SEED` dans `config.py` pour rej
 | lampe torche | L | Triangle |
 | vision nocturne (casque requis) | N | L1 |
 | interagir / fouiller (maintenir) | E | Croix |
-| kit de soin | H | Flèche haut |
-| changer d'objet équipé / l'utiliser | C, V ou molette / F | Flèches gauche-droite / Flèche bas |
+| bandage (2 s, tu es vulnérable) | H | Flèche haut |
+| changer d'objet équipé / l'utiliser | C, V ou molette / F | Flèche gauche / Flèche droite |
+| traits lumineux vers l'objectif (quelques secondes) | G | Flèche bas |
 | inventaire (le jeu continue !) | Tab | Pavé tactile |
 | pause | Échap | Options |
-| tuer une araignée au corps à corps (un seul coup) | G | R3 |
+| tuer une araignée au corps à corps (un seul coup) | B | R3 |
 | lire / ramasser un document | E | Croix |
 | fermer un document | E / Échap | Rond |
 | journal des documents | J | Create (Share) |
@@ -126,6 +133,7 @@ La seed est affichée dans le menu pause ; fixe `SEED` dans `config.py` pour rej
 | debug manette | F3 | — |
 | test : basculer le courant / déclencher le screamer | F4 / F5 | — |
 | test : tous les documents / révélation finale | F6 / F7 | — |
+| test : son / hangar après atterrissage / cinématique de fin / crise de vertige | F8 / F9 / F10 / F11 | — |
 
 Dans l'inventaire : flèches/molette pour choisir, **E/Entrée** (Croix) pour utiliser, **Suppr** (Triangle) pour jeter.
 `KEYBOARD_LAYOUT = "qwerty"` dans `config.py` pour un clavier QWERTY (WASD).
@@ -169,7 +177,18 @@ Ursina lit les lettres par position physique : la configuration AZERTY est conve
   **De face**, elle frappe : le HUD compte ses coups, et c'est **le 5e qui tue** (`CREATURE_HITS_TO_KILL`).
   Chaque coup te projette en arrière : profites-en pour fuir.
 * **Une alerte ne dure jamais plus d'une minute** (`HORROR_MAX_TIME`), même si tu continues à tirer.
-* **R3 / G** achève une araignée au corps à corps en un seul coup, sans user ton couteau.
+* **R3 / B** achève une araignée au corps à corps en un seul coup, sans user ton couteau.
+* **Perdu ?** La flèche du haut suit le vrai chemin (couloirs, portes) vers l'objectif en cours et vise le
+  prochain virage ; le marqueur (nom de la pièce + distance) reste collé au bord de l'écran quand l'objectif
+  est hors champ. **G / flèche bas** dessine quelques secondes des traits lumineux au sol le long du trajet.
+* **Casiers** : environ 7 sur 10 contiennent de l'équipement (munitions, bandages, piles), pondéré selon la
+  salle. Le **casque de vision nocturne** (un seul) est toujours dans un casier des quartiers ou de l'infirmerie.
+* **Bandage** (H / flèche haut) : 2 secondes pendant lesquelles tu avances lentement, arme baissée. Un coup
+  reçu l'interrompt.
+* **Après le disque dur**, l'infection s'aggrave : crises de vertige (image qui tangue, sons étouffés, pas qui
+  dérivent, impossible de courir, parfois tu trébuches). Elles sont plus fréquentes quand la bête est proche.
+  **Accessibilité** : menu pause > *Vertiges : Désactivé / Faible / Normal / Fort* (`VERTIGO_INTENSITY`).
+* **La fin** se passe en maintenant **Espace / Croix**.
 
 * Marcher fait du bruit, courir beaucoup, accroupi presque rien ; l'indicateur **BRUIT** du HUD te le montre.
 * La lampe te fait repérer de plus loin. La vision nocturne voit dans le noir mais les néons éblouissent.
@@ -253,7 +272,13 @@ puis `WINDOW_SIZE`. `CULL_DISTANCE` (salles actives autour du joueur) aide aussi
 ## Réglages utiles (`config.py`)
 
 * Difficulté : `CREATURE_SPEED_CHASE`, `CREATURE_VIEW_DIST`, `ALIEN_MAX`, `ALIEN_DAMAGE`, `PISTOL_START_*`,
-  `OBJECTIVE_COMPASS = False` (plus de flèche d'objectif).
+  `OBJECTIVE_COMPASS = False` (plus aucun guidage).
+* Guidage : `GUIDE_COLOR`, `GUIDE_ARROW_SIZE`, `GUIDE_PULSE`, `GUIDE_EDGE_MARKER`, `GUIDE_TRAIL*`.
+* Loot : `LOCKER_FILL_CHANCE`, `LOCKER_TABLES` (poids par salle), `LOCKER_AMOUNTS`, `NV_HELMET_ROOMS`,
+  `BANDAGE_HEAL`, `BANDAGE_TIME`.
+* Vertiges : `VERTIGO_INTENSITY`, `VERTIGO_INTERVAL`, `VERTIGO_DURATION`, `VERTIGO_STUMBLE_CHANCE`,
+  `VERTIGO_SCREEN_FX` (flou / dédoublement / désaturation).
+* Apparition : `SPAWN_SIDE_DISTANCE`, `SAFETY_CHECK` (replacement automatique si le joueur sort du vaisseau).
 * Performances : `QUALITY`, `CULL_DISTANCE`, `WINDOW_SIZE`, `VSYNC`, `LIGHT_REACH_CELLS`.
 * Lampe torche : `FLASHLIGHT_TEMPERATURE` (kelvins), `FLASHLIGHT_INTENSITY`, `FLASHLIGHT_ATTENUATION`
   (constante, linéaire, quadratique), `FLASHLIGHT_FOV`, `FLASHLIGHT_OFFSET`, `FLASHLIGHT_LAG`.

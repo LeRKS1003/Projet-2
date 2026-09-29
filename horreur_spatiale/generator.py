@@ -854,12 +854,15 @@ class Level:
                 self.links[(i, j)] = lst
 
     def find_path(self, start, goal, agent="creature", max_nodes=6000):
-        """A* sur les cases. agent : 'creature' (évite les conduits) ou 'alien'."""
+        """
+        A* sur les cases. agent : 'creature' (évite les conduits), 'alien', ou
+        'player' (guidage : préfère nettement les couloirs et les portes).
+        """
         if start == goal:
             return [goal]
         if start not in self.links or goal not in self.links:
             return None
-        vent_cost = 2.6 if agent == "creature" else 1.0
+        vent_cost = {"creature": 2.6, "player": 6.0}.get(agent, 1.0)
         gx, gz = goal
         openh = [(0, 0, start)]
         g = {start: 0}
@@ -891,6 +894,24 @@ class Level:
                     g[nxt] = ng
                     parent[nxt] = cur
                     heapq.heappush(openh, (ng + abs(ni - gx) + abs(nj - gz), ng, nxt))
+        return None
+
+    def nearest_linked_cell(self, x, z, max_r=4):
+        """Case praticable la plus proche d'un point du monde (pour les objectifs posés contre un mur)."""
+        ci, cj = self.cell_at(x, z)
+        if (ci, cj) in self.links:
+            return (ci, cj)
+        best, bd = None, 1e18
+        for r in range(1, max_r + 1):
+            for i in range(ci - r, ci + r + 1):
+                for j in range(cj - r, cj + r + 1):
+                    if (i, j) in self.links and self.kind[i][j] != VENT:
+                        cx, cz = self.cell_center(i, j)
+                        d = (cx - x) ** 2 + (cz - z) ** 2
+                        if d < bd:
+                            best, bd = (i, j), d
+            if best is not None:
+                return best
         return None
 
     def random_cell(self, kinds=(ROOM, CORR), near=None, radius=None, min_radius=0.0, exclude_rooms=()):

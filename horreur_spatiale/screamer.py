@@ -102,7 +102,8 @@ class Screamer:
         g.audio.silence(keep=("locker_open",))
         # récompense : un bon loot au fond du casier
         if locker is not None:
-            locker.contents = [("ammo", self.rng.randint(8, 11)), ("medkit", 1)]
+            keep = [c for c in locker.contents if c[0] == "nv_helmet"]    # le casque garanti reste là
+            locker.contents = [("ammo", self.rng.randint(8, 11)), ("bandage", 1)] + keep
             if self.rng.random() < .5:
                 locker.contents.append(("battery", 1))
 

@@ -47,7 +47,9 @@ KEYS_AZERTY = {
     "debug_power": "f4", "debug_screamer": "f5",   # touches de test (voir DEBUG_KEYS)
     "debug_docs": "f6", "debug_reveal": "f7", "debug_sound": "f8",
     "journal": "j", "controls": "i",
-    "melee": "g",               # mise à mort au corps à corps (R3 à la manette)
+    "melee": "b",               # mise à mort au corps à corps (R3 à la manette)
+    "guide": "g",               # traits lumineux au sol vers l'objectif (flèche bas à la manette)
+    "debug_hangar": "f9", "debug_ending": "f10", "debug_vertigo": "f11",
     # navette
     "ship_up": "space", "ship_down": "control", "ship_boost": "shift",
     "ship_roll_left": "a", "ship_roll_right": "e",
@@ -161,12 +163,40 @@ STAMINA_DRAIN = 16.0        # par seconde de course
 STAMINA_REGEN = 11.0
 MAX_HEALTH = 100
 LOW_HEALTH = 35
-MEDKIT_HEAL = 45
+BANDAGE_HEAL = 35          # santé rendue par un bandage
+BANDAGE_TIME = 2.0         # durée d'application (le joueur est vulnérable : lent, arme baissée)
+BANDAGE_SLOW = 0.35        # vitesse de déplacement pendant l'application
 FOV = 80
 ADS_FOV = 58
 INTERACT_DISTANCE = 2.3
 SEARCH_TIME = 1.8           # durée de fouille d'un cadavre
-OBJECTIVE_COMPASS = True    # flèche discrète vers l'objectif (False = plus difficile)
+OBJECTIVE_COMPASS = True    # guidage vers l'objectif (False = plus difficile, aucune flèche)
+
+# ----------------------------------------------------------------------------
+# GUIDAGE (flèche qui suit le vrai chemin A*, marqueur en bord d'écran, traits au sol)
+# ----------------------------------------------------------------------------
+GUIDE_COLOR = (0.35, 1.0, 0.55)       # couleur de la flèche / du marqueur (r, g, b entre 0 et 1)
+GUIDE_ARROW_SIZE = 0.055              # taille de la flèche en haut de l'écran
+GUIDE_PULSE = 0.12                    # amplitude de la pulsation (0 = fixe)
+GUIDE_EDGE_MARKER = True              # marqueur de destination (bord d'écran si hors champ)
+GUIDE_REPATH_TIME = 0.35              # recalcul du chemin (secondes)
+GUIDE_LOOKAHEAD = 14                  # nombre max de cases du trajet testées pour « couper » les virages
+GUIDE_TRAIL = True                    # traits lumineux au sol (touche G / flèche bas)
+GUIDE_TRAIL_TIME = 6.0                # durée d'affichage des traits (secondes)
+GUIDE_TRAIL_LENGTH = 70.0             # longueur max du tracé au sol (mètres)
+GUIDE_TRAIL_SPACING = 1.1             # espacement des traits (mètres)
+GUIDE_TRAIL_COLOR = (0.3, 0.95, 0.6)
+GUIDE_TRAIL_COOLDOWN = 1.0
+
+# ----------------------------------------------------------------------------
+# APPARITION ET FILET DE SÉCURITÉ
+# ----------------------------------------------------------------------------
+SPAWN_SIDE_DISTANCE = 4.2             # distance entre le centre de la navette posée et le joueur (porte latérale)
+SPAWN_RAY_HEIGHT = 4.0                # hauteur de départ du rayon lancé vers le sol
+SPAWN_MAX_WAIT_FRAMES = 90            # images max d'attente du sol avant repli (y = 0)
+SAFETY_CHECK = True                   # replace le joueur s'il sort du vaisseau (bug de collision...)
+SAFETY_SAVE_INTERVAL = 0.4            # mémorisation du dernier point sûr (secondes)
+SAFETY_MIN_Y = -0.6                   # sous cette hauteur, on considère que le joueur « tombe »
 
 # ----------------------------------------------------------------------------
 # LAMPE / BATTERIE / VISION NOCTURNE
@@ -252,7 +282,9 @@ LIGHT_RANGE = 9.0
 LIGHT_REACH_CELLS = 9       # seules les lumières à moins de N cases (en suivant les passages) sont rendues
 LIGHT_INTENSITY = 1.25      # multiplicateur global des luminaires du vaisseau (courant rétabli)
 LIGHT_COLOR_WARM = (1.0, 0.78, 0.55)   # sodium / tungstène (quartiers, machines)
-LIGHT_COLOR_COLD = (0.72, 0.84, 1.0)   # néons froids (couloirs, infirmerie, passerelle)
+LIGHT_COLOR_COLD = (0.72, 0.84, 1.0)   # néons froids (couloirs, passerelle)
+LIGHT_COLOR_MEDBAY = (0.86, 0.94, 1.0)  # infirmerie : blanc clinique
+LIGHT_COLOR_MESS = (1.0, 0.72, 0.46)    # salle à manger : lumière chaude, « domestique »
 # flash de bouche du pistolet (éclaire brièvement la pièce)
 MUZZLE_LIGHT_INTENSITY = 5.0
 MUZZLE_LIGHT_ATTENUATION = (1.0, 0.12, 0.05)
@@ -322,6 +354,29 @@ REVEAL_TRUTH_TIME = 6.5      # durée pendant laquelle « l'hallucination tombe 
 REVEAL_EXTRA_ALIENS = 2      # petites créatures en plus du plafond après la révélation
 REVEAL_CREATURE_DIST = 14.0  # la grande créature réapparaît à cette distance, entre toi et le hangar
 
+# ----------------------------------------------------------------------------
+# VERTIGES (après la révélation du disque dur)
+# ACCESSIBILITÉ : ces effets peuvent donner le mal des transports. Réglable aussi
+# dans le menu pause. Valeurs : "desactive", "faible", "normal", "fort".
+# ----------------------------------------------------------------------------
+VERTIGO_INTENSITY = "normal"
+VERTIGO_LEVELS = {"desactive": 0.0, "faible": 0.45, "normal": 1.0, "fort": 1.5}
+VERTIGO_FIRST_DELAY = 25.0          # première crise N secondes après la révélation
+VERTIGO_INTERVAL = (30.0, 90.0)     # temps entre deux crises (secondes)
+VERTIGO_DURATION = (3.0, 8.0)       # durée d'une crise (secondes)
+VERTIGO_NEAR_DIST = 14.0            # créature plus proche que ça : crises plus fréquentes...
+VERTIGO_NEAR_FACTOR = 2.2           # ... le compte à rebours va N fois plus vite (idem pendant l'alerte)
+VERTIGO_STUMBLE_CHANCE = 0.45       # chance de trébucher pendant une crise
+VERTIGO_STUMBLE_TIME = 1.6          # durée du trébuchement (chute à moitié puis relevé)
+VERTIGO_SCREEN_FX = True            # flou des bords / dédoublement / désaturation (rendu secondaire)
+VERTIGO_BUFFER_SCALE = 0.5          # résolution du rendu secondaire (0.5 = moitié : rapide et flou)
+
+# ----------------------------------------------------------------------------
+# CINÉMATIQUE DE FIN
+# ----------------------------------------------------------------------------
+ENDING_SKIP_HOLD = 1.5              # maintenir Croix / Espace N secondes pour passer la cinématique
+ENDING_CREDITS_SPEED = 0.055        # vitesse de défilement des crédits (hauteur d'écran par seconde)
+
 
 # ----------------------------------------------------------------------------
 # ARMES
@@ -336,7 +391,32 @@ PISTOL_RANGE = 60.0
 PISTOL_SPREAD_HIP = 2.6     # degrés
 PISTOL_SPREAD_ADS = 0.35
 PISTOL_RECOIL = 2.6         # degrés de relevé
-AMMO_PICKUP = (3, 7)
+AMMO_PICKUP = (3, 7)        # munitions trouvées sur un cadavre / dans un sac
+
+# ----------------------------------------------------------------------------
+# CASIERS : LOOT (toutes les quantités et probabilités sont ici)
+# ----------------------------------------------------------------------------
+LOCKER_FILL_CHANCE = 0.70   # proportion de casiers qui contiennent de l'équipement utile
+LOCKER_EMPTY_JUNK = 0.55    # parmi les autres : chance d'y trouver un objet sans utilité (sinon vide)
+LOCKER_EXTRA_ITEM = 0.30    # chance d'un 2e objet utile dans un casier rempli
+LOCKER_AMOUNTS = {          # quantité (min, max) par type d'objet trouvé dans un casier
+    "ammo": (6, 12), "bandage": (1, 2), "battery": (1, 1),
+}
+# poids par type de salle : plus de bandages à l'infirmerie, de piles à la salle des machines,
+# de munitions près de la salle de commandement
+LOCKER_TABLES = {
+    "medbay":  {"bandage": 60, "battery": 20, "ammo": 20},
+    "engine":  {"battery": 55, "ammo": 25, "bandage": 20},
+    "command": {"ammo": 60, "battery": 20, "bandage": 20},
+    "crew":    {"ammo": 34, "battery": 33, "bandage": 33},
+    "mess":    {"bandage": 35, "battery": 35, "ammo": 30},
+    "storage": {"battery": 40, "ammo": 35, "bandage": 25},
+    "hangar":  {"battery": 45, "ammo": 35, "bandage": 20},
+}
+LOCKER_NEAR_COMMAND_DIST = 22.0     # un casier à moins de N m de la passerelle compte comme « près »
+LOCKER_NEAR_COMMAND_AMMO_BONUS = 30  # poids ajouté aux munitions dans ce cas
+NV_HELMET_ROOMS = ("crew", "medbay")  # le casque de vision nocturne (unique) est dans un casier de ces salles
+LOCKER_GLOW_TIME = 2.6      # durée de la lueur sur les objets à l'ouverture
 KNIFE_DAMAGE = 1
 KNIFE_STEALTH_MULT = 2      # dégâts x2 sur une cible qui ne t'a pas repéré
 KNIFE_RANGE = 1.9
@@ -347,7 +427,7 @@ KNIFE_DURABILITY = 10
 # INVENTAIRE
 # ----------------------------------------------------------------------------
 INVENTORY_SLOTS = 8
-STACK_SIZES = {"medkit": 3, "battery": 4, "ammo": 24, "knife": 1, "nv_helmet": 1, "hdd": 1}
+STACK_SIZES = {"bandage": 4, "battery": 4, "ammo": 24, "knife": 1, "nv_helmet": 1, "hdd": 1}
 
 # ----------------------------------------------------------------------------
 # BRUIT (rayon en mètres)

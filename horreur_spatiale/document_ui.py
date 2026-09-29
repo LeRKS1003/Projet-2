@@ -821,8 +821,10 @@ CONTROL_ROWS = [
     ("Fermer un document", "Échap / E", "Rond"),
     ("Journal des documents", "journal", "Create"),
     ("Inventaire (le jeu continue)", "inventory", "Pavé tactile"),
-    ("Soin / objet équipé", "heal/use_item", "Haut / Bas (croix directionnelle)"),
-    ("Changer d'objet", "prev_item/next_item", "Gauche / Droite"),
+    ("Bandage (2 s, vulnérable)", "heal", "Haut (croix directionnelle)"),
+    ("Utiliser l'objet équipé", "use_item", "Droite (croix directionnelle)"),
+    ("Changer d'objet", "prev_item/next_item", "Gauche"),
+    ("Traits lumineux vers l'objectif", "guide", "Bas (croix directionnelle)"),
     ("NAVETTE", None, None),
     ("Poussée / strafe", "forward/left/back/right", "Stick gauche"),
     ("Monter / descendre", "ship_up/ship_down", "R2 / L2"),
@@ -834,6 +836,7 @@ CONTROL_ROWS = [
     ("Debug : manette / courant / screamer", "debug/debug_power/debug_screamer", "—"),
     ("Debug : tous les documents / révélation", "debug_docs/debug_reveal", "—"),
     ("Debug : son de test", "debug_sound", "—"),
+    ("Debug : hangar / fin / vertige", "debug_hangar/debug_ending/debug_vertigo", "—"),
 ]
 
 

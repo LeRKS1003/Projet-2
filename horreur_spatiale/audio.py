@@ -524,6 +524,96 @@ def gen_story(rng):
     return out
 
 
+def gen_late(rng):
+    """
+    Sons ajoutés pour les vertiges (fin de partie) et la cinématique de fin :
+    sifflement d'oreilles, pression « sous l'eau », respiration, démarrage du
+    cockpit, portes du hangar, musique de fin (nappes graves qui montent).
+    """
+    out = {}
+    # --- sifflement dans les oreilles (boucle de 3 s, deux sinus qui battent) --
+    d = 3.0
+    t = _t(d)
+    am = .7 + .3 * np.sin(2 * np.pi * _loop_freq(.67, d) * t)
+    s = (np.sin(2 * np.pi * _loop_freq(6300, d) * t) + .6 * np.sin(2 * np.pi * _loop_freq(6317, d) * t) +
+         .25 * np.sin(2 * np.pi * _loop_freq(4100, d) * t)) * am
+    s += _periodic_noise_band(len(t), 5000, 9000, rng) / 60
+    out["vertigo_ring"] = _norm(s, .5)
+    # --- pression « sous l'eau » : grondement sourd + pulsations lentes ---------
+    d = 4.0
+    t = _t(d)
+    s = _periodic_noise_band(len(t), 25, 260, rng) / 8
+    pulse = .6 + .4 * np.sin(2 * np.pi * _loop_freq(1.0, d) * t) ** 8
+    s = s * pulse + .5 * np.sin(2 * np.pi * _loop_freq(38, d) * t) * pulse
+    out["vertigo_muffle"] = _norm(s, .8)
+    # --- respiration lourde du joueur (boucle de 3,5 s : inspiration / expiration) --
+    d = 3.5
+    t = _t(d)
+    ph = (t / d) % 1.0
+    env_in = np.clip(np.sin(np.pi * np.clip(ph / .42, 0, 1)), 0, 1) ** 1.5
+    env_out = np.clip(np.sin(np.pi * np.clip((ph - .5) / .45, 0, 1)), 0, 1) ** 1.2
+    n1 = _periodic_noise_band(len(t), 500, 2600, rng)
+    n2 = _periodic_noise_band(len(t), 250, 1400, rng)
+    s = n1 / np.abs(n1).max() * env_in * .6 + n2 / np.abs(n2).max() * env_out * .9
+    out["vertigo_breath"] = _norm(s, .6)
+    # --- démarrage du cockpit : relais, montée des turbines, bips des écrans ---
+    d = 3.2
+    t = _t(d)
+    s = np.zeros(len(t))
+    for k, tc in enumerate((.05, .25, .42, .9, 1.05)):
+        m = t >= tc
+        s += m * np.exp(-(t - tc) * 60) * np.sin(2 * np.pi * (900 + 300 * k) * t) * .8
+        s += m * np.exp(-(t - tc) * 120) * _noise(len(t), rng) * .6
+    k = np.clip((t - .8) / 2.2, 0, 1)
+    s += np.sin(_sweep(220 + 900 * k ** 1.5)) * k * .35
+    s += np.sin(_sweep(55 + 40 * k)) * k * .6
+    for tb in (1.6, 1.85, 2.1):
+        s += (t >= tb) * (t < tb + .09) * np.sin(2 * np.pi * 1760 * t) * .35
+    out["cockpit_start"] = _norm(_fade(s, .005, .3), .85)
+    # --- écrans qui s'allument (grésillement + petit carillon) ------------------
+    t = _t(1.1)
+    s = _band(_noise(len(t), rng), 2000, 7000) * np.exp(-t * 9) * .5
+    s += np.sin(2 * np.pi * 50 * t) * np.exp(-t * 3) * .4
+    s += (t > .35) * np.sin(2 * np.pi * 1318 * t) * np.exp(-(t - .35) * 6) * .5
+    s += (t > .55) * np.sin(2 * np.pi * 1976 * t) * np.exp(-(t - .55) * 6) * .4
+    out["screens_on"] = _norm(_fade(s, .002, .1), .7)
+    # --- lourdes portes du hangar / décollage (grondement + claquement) ---------
+    t = _t(4.5)
+    s = _band(_noise(len(t), rng), 30, 400) * np.clip(t / .6, 0, 1) * np.exp(-np.clip(t - 3.2, 0, None) * 3)
+    s += np.sin(2 * np.pi * 41 * t) * .6 * np.clip(t / 1.0, 0, 1) * np.exp(-np.clip(t - 3.2, 0, None) * 3)
+    s += (t > 3.3) * _metal_ring(t - 3.3, (140, 311, 523), 2.5, rng) * .8
+    out["hangar_doors"] = _norm(_reverb(_fade(s, .05, .3), rng, 2.0, .4), .9)
+    # --- musique de fin : nappes graves et lentes qui montent jusqu'au reflet (~38 s) ---
+    d = 42.0
+    t = _t(d)
+    grow = np.clip(t / 38.0, 0, 1) ** 1.8
+    chords = [(55.0, 65.4, 82.4), (49.0, 61.7, 73.4), (43.7, 55.0, 65.4), (41.2, 49.0, 61.7)]
+    s = np.zeros(len(t))
+    seg = d / len(chords)
+    for ci, ch in enumerate(chords):
+        a0 = ci * seg
+        w = np.clip(1 - np.abs((t - a0 - seg / 2) / (seg * .8)), 0, 1) ** .8
+        for f in ch:
+            for h, amp in ((1, 1.0), (2, .45), (3, .22), (4, .1)):
+                s += w * amp * np.sin(2 * np.pi * f * h * t + rng.uniform(0, 6.28)) * (1 + .002 * h)
+    # souffle filtré et pulsation à 7 Hz qui s'installe à la fin
+    s *= .2 + .8 * grow
+    s += _band(_noise(len(t), rng), 80, 900) * (.04 + .3 * grow)
+    s *= 1 + .4 * grow ** 3 * np.sin(2 * np.pi * 7 * t)
+    s = np.tanh(s * .6)
+    out["ending_music"] = _norm(_fade(s, 2.5, .8), .85)
+    # --- générique : nappe douce et sobre qui s'éteint lentement ------------------
+    d = 36.0
+    t = _t(d)
+    s = np.zeros(len(t))
+    for f, a in ((110.0, 1.0), (164.8, .6), (220.0, .45), (329.6, .2), (82.4, .7)):
+        s += a * np.sin(2 * np.pi * f * t + rng.uniform(0, 6.28)) * (.6 + .4 * np.sin(2 * np.pi * .05 * t + f))
+    s += _band(_noise(len(t), rng), 200, 1500) * .06
+    s *= np.exp(-t / 30.0)
+    out["credits_music"] = _norm(_reverb(_fade(s, 3.0, 5.0), rng, 3.0, .45), .5)
+    return out
+
+
 def _missing(name):
     """
     Vrai si le .wav n'existe pas OU est vide / tronqué (génération interrompue,
@@ -911,6 +1001,14 @@ def gen_all(force=False):
     for name, sig in st.items():
         _write(name, sig)
     ps.update(st)
+    # vertiges et cinématique de fin
+    lt_names = ("vertigo_ring", "vertigo_muffle", "vertigo_breath", "cockpit_start", "screens_on",
+                "hangar_doors", "ending_music", "credits_music")
+    need_lt = force or any(_missing(n) for n in lt_names)
+    lt = gen_late(np.random.default_rng(3141)) if need_lt else {}
+    for name, sig in lt.items():
+        _write(name, sig)
+    ps.update(lt)
     for name in pending:
         if name in ws:
             continue
@@ -1015,6 +1113,9 @@ class AudioSystem:
         self.duck_target = 1.0
         self.duck_rate = 1.0
         self.duck_exempt = set()
+        # « sous l'eau » (vertiges) : 1 = normal ; les sons listés dans muffle_exempt n'y sont pas soumis
+        self.muffle = 1.0
+        self.muffle_exempt = set()
         self.failed = []
         for name, path in self.paths.items():
             n = self.POLY.get(name, 1)
@@ -1056,6 +1157,7 @@ class AudioSystem:
         """Annule tout silence en cours (screamer, levier) : appelé au menu et à chaque nouvelle partie."""
         self.duck = self.duck_target = 1.0
         self.duck_exempt = set()
+        self.muffle = 1.0
 
     def test_sound(self):
         """F8 : son de test à plein volume (ignore le silence du screamer) + état de l'audio."""
@@ -1117,6 +1219,8 @@ class AudioSystem:
         vol = volume * self.master * (C.MUSIC_VOLUME if music else C.SFX_VOLUME)
         if not ignore_duck:
             vol *= self.duck
+            if name not in self.muffle_exempt:
+                vol *= self.muffle
         s.setVolume(max(0.0, min(1.0, vol)))
         s.setPlayRate(pitch)
         s.setBalance(max(-1, min(1, balance)))
@@ -1198,4 +1302,7 @@ class AudioSystem:
             if self.duck >= 1.0:
                 self.duck_exempt = set()
         for key, lp in self.loops.items():
-            lp.update(dt, self.master * (1.0 if key in self.duck_exempt else self.duck))
+            k = 1.0 if key in self.duck_exempt else self.duck
+            if key not in self.muffle_exempt:
+                k *= self.muffle
+            lp.update(dt, self.master * k)

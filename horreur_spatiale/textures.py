@@ -368,6 +368,190 @@ def _gen_arrow(rng):
     return _to_tex(np.dstack([o, o, o, a]))
 
 
+def _gen_guide_arrow(rng):
+    """
+    Flèche de guidage (pointe vers le haut) : remplissage blanc (teinté par la
+    couleur du HUD) cerné d'un contour noir, bords anticrénelés.
+    """
+    s = 128
+    yy, xx = np.mgrid[0:s, 0:s].astype(np.float32) / (s - 1)
+    yy = 1 - yy                                   # 0 en bas, 1 en haut
+
+    def shape(grow):
+        # pointe triangulaire + queue rectangulaire
+        head = (yy > .42 - grow) & (yy < .95 + grow) & (np.abs(xx - .5) < (.95 + grow - yy) * .78 + grow * .3)
+        tail = (yy > .06 - grow) & (yy <= .44) & (np.abs(xx - .5) < .14 + grow)
+        return (head | tail).astype(np.float32)
+
+    def blur(a):
+        return (a + np.roll(a, 1, 0) + np.roll(a, -1, 0) + np.roll(a, 1, 1) + np.roll(a, -1, 1)) / 5
+
+    fill = blur(blur(shape(0.0)))
+    outline = blur(blur(shape(.05)))
+    rgb = np.dstack([fill, fill, fill])            # blanc dedans, noir sur le contour
+    alpha = np.clip(outline, 0, 1)
+    return _to_tex(np.dstack([rgb, alpha]))
+
+
+def _gen_guide_marker(rng):
+    """Marqueur de destination : losange creux blanc cerné de noir."""
+    s = 96
+    yy, xx = np.mgrid[0:s, 0:s].astype(np.float32) / (s - 1)
+    d = np.abs(xx - .5) + np.abs(yy - .5)
+    ring = np.clip(1 - np.abs(d - .33) / .07, 0, 1)
+    dot = np.clip(1 - d / .1, 0, 1)
+    outline = np.clip(1 - np.abs(d - .33) / .12, 0, 1)
+    white = np.clip(ring + dot, 0, 1)
+    alpha = np.clip(np.maximum(outline, dot * 1.2), 0, 1)
+    return _to_tex(np.dstack([white, white, white, alpha]))
+
+
+def _gen_guide_dash(rng):
+    """Trait lumineux au sol : bâtonnet doux (mélange additif)."""
+    w, h = 32, 96
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    u = (xx - (w - 1) / 2) / (w / 2)
+    v = (yy - (h - 1) / 2) / (h / 2)
+    a = np.clip(1 - u * u, 0, 1) ** 1.5 * np.clip(1 - np.abs(v) ** 4, 0, 1)
+    return _to_tex(np.dstack([a, a, a, a]))
+
+
+def _gen_handprint(rng):
+    """Trace de main ensanglantée (paume + doigts), teintée par la couleur du décalque."""
+    s = 128
+    img = Image.new('L', (s, s), 0)
+    d = ImageDraw.Draw(img)
+    d.ellipse((38, 58, 92, 112), fill=230)                          # paume
+    for k, (x, ln) in enumerate(((40, 34), (54, 44), (67, 46), (80, 40))):
+        d.rounded_rectangle((x - 5, 58 - ln, x + 6, 66), radius=6, fill=210)
+    d.rounded_rectangle((88, 64, 118, 76), radius=6, fill=200)       # pouce
+    m = np.asarray(img, np.float32) / 255
+    m = (m + np.roll(m, 1, 0) + np.roll(m, -1, 1) + np.roll(m, 1, 1)) / 4
+    n = fractal_noise(s, s, rng, 4)
+    a = np.clip(m * (.55 + .6 * n), 0, 1)
+    rgb = np.dstack([np.full_like(a, .55), np.full_like(a, .08), np.full_like(a, .06)])
+    return _to_tex(np.dstack([rgb, a]))
+
+
+# planche de signalétique : 2 colonnes x 16 lignes de cases 512 x 128
+SIGN_CELLS = {
+    "hangar": 0, "engine": 1, "medbay": 2, "command": 3, "mess": 4, "crew": 5, "storage": 6,
+    "evac_right": 7, "evac_left": 8, "helios": 9, "voltage": 10, "biohazard": 11,
+    "msg0": 12, "msg1": 13, "msg2": 14, "msg3": 15, "msg4": 16, "msg5": 17,
+    "sec1": 18, "sec2": 19, "sec3": 20, "sec4": 21, "sec5": 22, "sec6": 23, "sec7": 24, "sec8": 25,
+    "noentry": 26, "oxygen": 27,
+}
+SIGN_TEXT = {
+    "hangar": "HANGAR", "engine": "SALLE DES MACHINES", "medbay": "INFIRMERIE",
+    "command": "SALLE DE COMMANDEMENT", "mess": "SALLE À MANGER", "crew": "QUARTIERS ÉQUIPAGE",
+    "storage": "RÉSERVE",
+}
+WALL_MESSAGES = ["ILS SONT DANS LES MURS", "NE L'ÉCOUTEZ PAS", "7 Hz", "PERSONNE NE REPART",
+                 "C'EST DANS L'AIR", "ELLE NOUS REGARDE"]
+
+
+def sign_uv(name):
+    """Rectangle UV (u0, v0, u1, v1) d'une case de la planche de signalétique."""
+    k = SIGN_CELLS[name]
+    col, row = k % 2, k // 2
+    u0, u1 = col * .5, col * .5 + .5
+    v1 = 1 - row / 16
+    v0 = v1 - 1 / 16
+    return u0, v0, u1, v1
+
+
+def _gen_signs(rng):
+    """Panneaux (noms des salles, évacuation, logo, dangers, numéros de section) et messages écrits au mur."""
+    from document_ui import font as dfont          # polices Windows / Linux avec repli
+    W, H = 1024, 2048
+    img = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    big, mid, small = dfont("sans_bold", 64), dfont("sans_bold", 46), dfont("sans_bold", 30)
+
+    def cell(name):
+        k = SIGN_CELLS[name]
+        x0, y0 = (k % 2) * 512, (k // 2) * 128
+        return x0, y0
+
+    def plate(name, bg, fg, text, font, border=None, stripes=False):
+        x0, y0 = cell(name)
+        d.rectangle((x0 + 6, y0 + 10, x0 + 505, y0 + 117), fill=bg)
+        if stripes:
+            for k in range(0, 520, 36):
+                d.polygon([(x0 + k, y0 + 10), (x0 + k + 18, y0 + 10), (x0 + k - 6, y0 + 117), (x0 + k - 24, y0 + 117)],
+                          fill=(20, 20, 20, 255))
+            d.rectangle((x0 + 40, y0 + 28, x0 + 470, y0 + 100), fill=bg)
+        if border:
+            d.rectangle((x0 + 6, y0 + 10, x0 + 505, y0 + 117), outline=border, width=5)
+        tw = d.textlength(text, font=font)
+        d.text((x0 + 256 - tw / 2, y0 + 64 - getattr(font, "size", 30) * .62), text, fill=fg, font=font)
+
+    for key, txt in SIGN_TEXT.items():
+        f = big if len(txt) < 12 else (mid if len(txt) < 17 else small)
+        plate(key, (28, 30, 33, 255), (225, 222, 205, 255), txt, f, border=(150, 150, 140, 255))
+    plate("evac_right", (20, 110, 55, 255), (235, 245, 235, 255), "ÉVACUATION      ", mid)
+    plate("evac_left", (20, 110, 55, 255), (235, 245, 235, 255), "      ÉVACUATION", mid)
+    # flèches d'évacuation dessinées (pas de caractère spécial : toutes les polices ne l'ont pas)
+    for name, right in (("evac_right", True), ("evac_left", False)):
+        x0, y0 = cell(name)
+        ax = x0 + (440 if right else 72)
+        sgn = 1 if right else -1
+        d.polygon([(ax - sgn * 34, y0 + 44), (ax + sgn * 10, y0 + 44), (ax + sgn * 10, y0 + 30), (ax + sgn * 44, y0 + 64),
+                   (ax + sgn * 10, y0 + 98), (ax + sgn * 10, y0 + 84), (ax - sgn * 34, y0 + 84)],
+                  fill=(235, 245, 235, 255))
+    plate("voltage", (230, 180, 20, 255), (20, 20, 20, 255), "HAUTE TENSION", mid, stripes=True)
+    plate("noentry", (170, 25, 20, 255), (240, 235, 230, 255), "ACCÈS RESTREINT", mid)
+    plate("oxygen", (30, 70, 140, 255), (230, 235, 245, 255), "RÉSERVE O2", mid)
+    # logo Helios Biotech : soleil stylisé + nom
+    x0, y0 = cell("helios")
+    cx, cy = x0 + 70, y0 + 64
+    for k in range(12):
+        a = k * np.pi / 6
+        d.line((cx + np.cos(a) * 30, cy + np.sin(a) * 30, cx + np.cos(a) * 48, cy + np.sin(a) * 48),
+               fill=(230, 160, 40, 255), width=6)
+    d.ellipse((cx - 24, cy - 24, cx + 24, cy + 24), fill=(235, 170, 45, 255))
+    d.text((x0 + 132, y0 + 20), "HELIOS", fill=(220, 220, 215, 255), font=big)
+    d.text((x0 + 136, y0 + 84), "B I O T E C H", fill=(170, 170, 165, 255), font=small)
+    # danger biologique : symbole (trois croissants) + texte
+    x0, y0 = cell("biohazard")
+    d.rectangle((x0 + 6, y0 + 10, x0 + 505, y0 + 117), fill=(235, 190, 25, 255))
+    cx, cy = x0 + 70, y0 + 64
+    for k in range(3):
+        a = -np.pi / 2 + k * 2 * np.pi / 3
+        px, py = cx + np.cos(a) * 22, cy + np.sin(a) * 22
+        d.ellipse((px - 22, py - 22, px + 22, py + 22), outline=(15, 15, 15, 255), width=9)
+    d.ellipse((cx - 9, cy - 9, cx + 9, cy + 9), outline=(15, 15, 15, 255), width=5)
+    d.text((x0 + 136, y0 + 34), "DANGER BIOLOGIQUE", fill=(15, 15, 15, 255), font=small)
+    d.text((x0 + 136, y0 + 72), "LABORATOIRE — NIVEAU 3", fill=(40, 40, 40, 255), font=dfont("sans_bold", 22))
+    # numéros de section peints au pochoir (fond transparent)
+    for k in range(1, 9):
+        x0, y0 = cell(f"sec{k}")
+        t = f"SECTION {k:02d}"
+        tw = d.textlength(t, font=big)
+        d.text((x0 + 256 - tw / 2, y0 + 26), t, fill=(215, 205, 175, 235), font=big)
+    # messages écrits à la main (sang séché / peinture), lettres tremblées
+    for k, msg in enumerate(WALL_MESSAGES):
+        x0, y0 = cell(f"msg{k}")
+        size = 70
+        f = dfont("marker", size)
+        while size > 24 and d.textlength(msg, font=f) > 440:
+            size -= 4
+            f = dfont("marker", size)
+        x = x0 + 18
+        for ch in msg:
+            yj = y0 + 34 + rng.integers(-6, 7)
+            d.text((x, yj), ch, fill=(120, 18, 12, 240), font=f)
+            x += d.textlength(ch, font=f) + rng.integers(-2, 3)
+            if x > x0 + 500:
+                break
+        # coulures
+        for _ in range(10):
+            px = x0 + rng.integers(20, 480)
+            py = y0 + rng.integers(60, 90)
+            d.line((px, py, px, py + rng.integers(8, 34)), fill=(110, 15, 10, 200), width=2)
+    return _to_tex(np.asarray(img, np.float32) / 255, 'mipmap')
+
+
 # ----------------------------------------------------------------------------
 # ESPACE
 # ----------------------------------------------------------------------------
@@ -803,7 +987,64 @@ def _mat_suit(rng):
     return alb[..., None].repeat(3, 2), h, rough, (.1, 8, 2.0)
 
 
+def _mat_suitcloth(rng):
+    """
+    Tissu épais de combinaison (cadavres) : trame serrée, plis doux, coutures
+    piquées. Légèrement brillant (enduit) pour accrocher la lampe torche.
+    """
+    s = 256
+    yy, xx = np.mgrid[0:s, 0:s].astype(np.float32)
+    weave = (np.sin(xx * 1.6) * np.sin(yy * 1.6)) * .5 + .5
+    n = fractal_noise(s, s, rng, 5)
+    folds = fractal_noise(s, s, rng, 3, base=2)
+    h = weave * .25 + folds * .7
+    # coutures piquées (lignes de points) tous les 64 pixels
+    seam = (np.abs((xx % 64) - 32) < 1.2) & ((yy % 6) < 3)
+    h[seam] -= .35
+    alb = .78 + .12 * n - .08 * weave
+    alb[seam] *= .6
+    grime = fractal_noise(s, s, rng, 4, base=2)
+    alb *= .75 + .25 * grime
+    rough = np.clip(.55 + .25 * grime - .1 * folds, .2, 1)
+    return alb[..., None].repeat(3, 2), h, rough, (.35, 18, 2.2)
+
+
+def _mat_skin(rng):
+    """Peau (mate, marbrures froides)."""
+    s = 128
+    n = fractal_noise(s, s, rng, 5)
+    blotch = fractal_noise(s, s, rng, 3, base=2)
+    alb = .8 + .1 * n - .15 * np.clip(blotch - .55, 0, 1)
+    h = n * .15
+    rough = np.full((s, s), .95, np.float32)
+    rgb = np.dstack([alb * .98, alb * .94, alb * .97])
+    return rgb, h, rough, (.05, 6, 1.0)
+
+
+def _mat_grate(rng):
+    """Grille de sol perforée (trous ronds en quinconce), métal usé."""
+    s = 512
+    yy, xx = np.mgrid[0:s, 0:s].astype(np.float32)
+    n = fractal_noise(s, s, rng, 5)
+    gx = (xx % 32) - 16
+    gy = ((yy + 16 * ((xx // 32) % 2)) % 32) - 16
+    d = np.sqrt(gx ** 2 + gy ** 2)
+    hole = d < 7
+    h = np.clip((d - 7) / 3, 0, 1) * .6 + .3
+    frame = ((xx % 256) < 8) | ((yy % 256) < 8)
+    h[frame] = .9
+    alb = .5 + .25 * n
+    alb[hole] = .05                       # on devine le noir (et les câbles) sous la grille
+    alb[frame] *= .8
+    grime = fractal_noise(s, s, rng, 4, base=2)
+    alb *= .65 + .35 * grime
+    rough = np.clip(.4 + .4 * grime, .1, 1)
+    rough[hole] = 1
+    return alb[..., None].repeat(3, 2), h, rough, (.6, 32, 2.0)
+
+
 MATERIALS = {
+    "suitcloth": _mat_suitcloth, "skin": _mat_skin, "grate": _mat_grate,
     "panel": _mat_panel, "floor": _mat_floor, "brushed": _mat_brushed, "painted": _mat_painted,
     "hullplates": _mat_hullplates, "gunmetal": _mat_gunmetal, "polymer": _mat_polymer, "suit": _mat_suit,
 }

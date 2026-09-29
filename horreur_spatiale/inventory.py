@@ -17,12 +17,13 @@ from loot import ITEM_NAMES
 DESCRIPTIONS = {
     "ammo": "Balles de 9 mm pour le pistolet.",
     "battery": "Recharge la lampe torche / le casque (+{:.0f} %).".format(C.BATTERY_PICKUP),
-    "medkit": "Soigne {} points de santé.".format(C.MEDKIT_HEAL),
+    "bandage": "Soigne {} points de santé. {:.0f} s pour l'appliquer : tu es vulnérable (H / flèche haut)."
+               .format(C.BANDAGE_HEAL, C.BANDAGE_TIME),
     "knife": "Silencieux. S'use à chaque coup porté.",
     "nv_helmet": "Vision nocturne (N / L1). Consomme la batterie. Les lumières éblouissent.",
     "hdd": "Les données du projet SINUS, extraites du Kerguelen.",
 }
-USABLE = ("medkit", "battery")
+USABLE = ("bandage", "battery")
 
 
 class Slot:
@@ -38,7 +39,7 @@ class Inventory:
     def __init__(self, game):
         self.game = game
         self.slots = []
-        self.equipped = "medkit"        # objet d'utilisation rapide
+        self.equipped = "bandage"       # objet d'utilisation rapide
         self.nv_equipped = False
 
     # ------------------------------------------------------------------
@@ -123,14 +124,15 @@ class Inventory:
         if not self.has(kind):
             g.hud.message(f"Aucun(e) {ITEM_NAMES.get(kind, kind)}")
             return False
-        if kind == "medkit":
-            if g.player.health >= C.MAX_HEALTH:
+        if kind == "bandage":
+            p = g.player
+            if p.bandaging > 0:
+                return False
+            if p.health >= C.MAX_HEALTH:
                 g.hud.message("Santé déjà au maximum")
                 return False
-            self.remove("medkit")
-            g.player.heal(C.MEDKIT_HEAL)
-            g.audio.play("rustle", .6)
-            g.hud.message(f"Kit de soin utilisé (+{C.MEDKIT_HEAL})", color.lime)
+            # application en BANDAGE_TIME secondes : le bandage n'est consommé qu'à la fin
+            p.start_bandage()
             return True
         if kind == "battery":
             if g.lights.battery >= C.BATTERY_MAX - 1:

@@ -567,8 +567,7 @@ class Creature:
         p.damage(max(0, min(C.CREATURE_HIT_DAMAGE, p.health - 1)), source=pos3)
         # le coup projette le joueur en arrière
         push = 1.6
-        nx, nz = p.x - dx / dn * push, p.z - dz / dn * push
-        p.x, p.z = self.level.collide(nx, nz, C.PLAYER_RADIUS, .05, p.height)
+        p.push(-dx / dn * push, -dz / dn * push)      # par petits pas : jamais à travers un mur
         g.shake(.7)
         g.inp.rumble(1, .8, 400)
         left = C.CREATURE_HITS_TO_KILL - p.creature_hits

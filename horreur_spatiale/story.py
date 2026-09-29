@@ -52,7 +52,7 @@ COMPANY = "HELIOS BIOTECH"
 CREW = {
     "vasseur": {"name": "Commandante Irène Vasseur", "room": "command", "uniform": (.16, .19, .32)},
     "keating": {"name": "Dr Mara Keating, cheffe scientifique", "room": None, "uniform": (.75, .75, .72)},
-    "okafor": {"name": "Dr Samuel Okafor, médecin", "room": "mess", "uniform": (.62, .66, .68)},
+    "okafor": {"name": "Dr Samuel Okafor, médecin", "room": "medbay", "uniform": (.62, .66, .68)},
     "lebrun": {"name": "Tomasz Lebrun, ingénieur en chef", "room": "engine", "uniform": (.45, .3, .15)},
     "fontaine": {"name": "Léa Fontaine, pilote", "room": "hangar", "uniform": (.2, .3, .22)},
     "andreiev": {"name": "Yuri Andreïev, technicien de laboratoire", "room": "medbay", "uniform": (.32, .34, .36)},
@@ -187,7 +187,7 @@ DOCUMENTS = [
     {
         "id": "D14", "type": "lettre", "style": "paper",
         "title": "Lettre inachevée", "author": "Dr Samuel Okafor", "day": 21,
-        "room": "mess", "place": "corpse:okafor", "guaranteed": False, "image": None,
+        "room": "medbay", "place": "corpse:okafor", "guaranteed": False, "image": None,
         "text": "Ma chérie,\n\nsi ce message t'arrive, sache que papa a essayé de soigner tout le monde. "
                 "Il y a quelque chose ici qui",
         "variants": [],

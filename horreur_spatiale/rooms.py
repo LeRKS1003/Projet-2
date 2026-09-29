@@ -76,7 +76,7 @@ class Group:
     # battery : voyants sur batterie de secours (clignotent même sans courant) ;
     # strip : bandes de secours au sol (option config.EMERGENCY_STRIPS)
     KINDS = ("struct", "floor", "hazard", "decal", "smear", "glass", "emissive", "screen", "reactor", "battery",
-             "strip", "claw")
+             "strip", "claw", "hand", "sign", "grate", "painted", "pipe")
     POWERED = {"emissive": "emissive", "screen": "screen", "reactor": "reactor", "battery": "battery"}
 
     def __init__(self, name, parent, bounds, is_room=False):
@@ -90,9 +90,11 @@ class Group:
 
     def build(self, power=None):
         tex = {"hazard": textures.get('hazard'), "decal": textures.get('blood'),
-               "smear": textures.get('smear'), "screen": textures.get('screen'), "claw": textures.get('claws')}
+               "smear": textures.get('smear'), "screen": textures.get('screen'), "claw": textures.get('claws'),
+               "hand": textures.get('handprint'), "sign": textures.get('signs')}
         # matériaux complets (albédo + normal map + brillance) pour les surfaces éclairées
-        mats = {"struct": ("panel", None), "floor": ("floor", None), "hazard": ("painted", tex["hazard"])}
+        mats = {"struct": ("panel", None), "floor": ("floor", None), "hazard": ("painted", tex["hazard"]),
+                "grate": ("grate", None), "painted": ("painted", None), "pipe": ("brushed", None)}
         for k, mb in self.b.items():
             if mb.is_empty():
                 continue
@@ -104,7 +106,7 @@ class Group:
                              tangents=False)
             if k == "claw":
                 self.claw_node = e
-            if k in ("decal", "smear", "glass", "claw"):
+            if k in ("decal", "smear", "glass", "claw", "hand", "sign"):
                 e.setTransparency(TransparencyAttrib.MAlpha)
                 e.setDepthWrite(False)
                 e.setBin('transparent', 10)
@@ -255,6 +257,7 @@ class LevelBuilder:
         self.dock_placer = None
         self.hdd = None
         self.pad_center = None
+        self.landing = None        # source unique : aire d'atterrissage, cap de la navette, point d'apparition
         self.reactor_pos = None
         self.command_center = None
         self.time = 0.0
@@ -307,13 +310,74 @@ class LevelBuilder:
         self._place_crew()
         self._place_fuses()
         self._place_documents()
-        self.loot_dir.finalize()
+        # habillage : signalétique, portes détaillées, tuyaux, désordre, identité des salles (interior.py)
+        from interior import InteriorDresser
+        InteriorDresser(self).dress()
+        self.loot_dir.finalize(self.command_center)
         for g in self.groups.values():
             g.build(self.lights.power)
             if g.claw_node is not None:
                 self.claw_nodes.append(g.claw_node)
         # retards d'allumage (propagation depuis la salle des machines) et lampes cassées
         self.lights.power.finalize(L, L.room("engine"), random.Random(self.rng.random()))
+        self._validate_landing()
+
+    # ------------------------------------------------------------------
+    # ATTERRISSAGE : une seule source de vérité pour la navette ET le joueur
+    # ------------------------------------------------------------------
+    def _spawn_ok(self, x, z, hangar, pad):
+        """Le point est-il dans le hangar, loin des murs, hors de la navette et sans obstacle ?"""
+        L = self.level
+        x0, x1, z0, z1 = hangar.world_bounds()
+        m = C.PLAYER_RADIUS + .6
+        if not (x0 + m < x < x1 - m and z0 + m < z < z1 - m):
+            return False
+        if L.room_at(x, z) is not hangar:
+            return False
+        # la navette posée occupera un rectangle de 6,2 x 9,2 m autour de l'aire
+        if abs(x - pad[0]) < 3.1 + C.PLAYER_RADIUS and abs(z - pad[1]) < 4.6 + C.PLAYER_RADIUS:
+            return False
+        nx, nz = L.collide(x, z, C.PLAYER_RADIUS + .15, .05, C.PLAYER_HEIGHT)
+        return abs(nx - x) + abs(nz - z) < 1e-3
+
+    def _validate_landing(self):
+        """
+        Calcule (une seule fois, à la génération) où la navette se pose et où le
+        joueur apparaît. Le point d'apparition est vérifié : dans le hangar, sur
+        une case praticable, sans caisse ni fût dessus. Sinon on cherche le point
+        valide le plus proche autour de la navette.
+        """
+        L = self.level
+        hangar = L.room("hangar")
+        pad = self.pad_center
+        yaw = 0.0                         # la navette entre nez en avant : elle pointe vers le fond du hangar
+        # porte latérale : côté droit de la navette. Cap 0° -> droite = +x
+        sx, sz = pad[0] + C.SPAWN_SIDE_DISTANCE, pad[1]
+        if not self._spawn_ok(sx, sz, hangar, pad):
+            found = None
+            for r in (4.2, 4.8, 5.5, 6.5, 7.5):
+                for k in range(24):
+                    a = 2 * math.pi * k / 24                  # on commence côté porte (+x)
+                    x, z = pad[0] + math.cos(a) * r, pad[1] + math.sin(a) * r
+                    if self._spawn_ok(x, z, hangar, pad):
+                        found = (x, z)
+                        break
+                if found:
+                    break
+            if found is None:
+                hx, hz = hangar.world_center()
+                found = (hx, hz + 6)
+                print("[apparition] ATTENTION : aucun point libre près de la navette, repli au centre du hangar")
+            sx, sz = found
+        self.landing = {
+            "pad": (pad[0], pad[1]),
+            "yaw": yaw,
+            "hover_y": 3.6,               # hauteur de stationnaire avant la descente
+            "rest_y": 1.35,               # hauteur du nœud de la navette une fois posée (train sorti)
+            "spawn": (sx, sz),
+            "spawn_yaw": 0.0,             # face à l'intérieur du hangar (+z), dos à l'ouverture
+            "hangar_bounds": hangar.world_bounds(),
+        }
 
     # ------------------------------------------------------------------
     # CASES : sol, plafond, murs
@@ -488,10 +552,11 @@ class LevelBuilder:
         # voyants au-dessus de la porte (des deux côtés)
         lights = []
         for s in (-1, 1):
+            # à droite de la plaque du nom de la salle (interior.py), au-dessus du linteau
             if door.axis == "x":
-                lp = (door.line + s * .2, C.DOOR_HEIGHT + .3, door.mid)
+                lp = (door.line + s * .2, C.DOOR_HEIGHT + .26, door.mid + .62)
             else:
-                lp = (door.mid, C.DOOR_HEIGHT + .3, door.line + s * .2)
+                lp = (door.mid + .62, C.DOOR_HEIGHT + .26, door.line + s * .2)
             e = Entity(parent=g.root, model='cube', color=color.rgb(.3, .3, .32), scale=.1, position=lp)
             e.setPythonTag("emissive", True)     # voyant : émissif seulement quand il est allumé
             lights.append(e)
@@ -871,9 +936,13 @@ class LevelBuilder:
                 # couleur industrielle chaude ou froide selon la salle ; les lampes qui
                 # resteront cassées sont tirées par le gestionnaire de courant
                 r = rng.random()
-                if room.type in ("medbay", "command"):
+                if room.type == "medbay":
+                    col = C.LIGHT_COLOR_MEDBAY            # blanc froid, clinique
+                elif room.type == "command":
                     col = C.LIGHT_COLOR_COLD
-                elif room.type in ("crew", "mess"):
+                elif room.type == "mess":
+                    col = C.LIGHT_COLOR_MESS              # chaleureux, « domestique »
+                elif room.type == "crew":
                     col = C.LIGHT_COLOR_WARM
                 else:
                     col = C.LIGHT_COLOR_WARM if r < .5 else C.LIGHT_COLOR_COLD
@@ -1064,6 +1133,8 @@ class LevelBuilder:
             self.prop_bed(room, s, medical=True)
         for s in self.take_slots(slots, 3):
             self.prop_locker(room, s, "medbay")
+        # un pan de mur libre pour le corps du Dr Okafor
+        self.okafor_slot = slots.pop() if slots else None
         for s in self.take_slots(slots, 1):
             self.prop_console(room, s)
         # scialytique au centre
@@ -1076,8 +1147,8 @@ class LevelBuilder:
         g.b["struct"].box((cx, .42, cz), (.3, .84, .3), (.4, .4, .42))
         g.b["decal"].decal((cx, .87, cz), 1.0, rng.uniform(0, 360), (1, 1, 1, 1))
         self.block(cx - .4, cx + .4, cz - 1, cz + 1, .9)
-        # kit de soin posé
-        loot.Pickup(self.level, g.root, "medkit", 1, cx + .22, .91, cz + .88, rng.uniform(0, 90))
+        # bandage posé
+        loot.Pickup(self.level, g.root, "bandage", 1, cx + .22, .91, cz + .88, rng.uniform(0, 90))
         self.optable = (cx, cz)
 
     def _room_crew(self, room):
@@ -1157,9 +1228,15 @@ class LevelBuilder:
         # lumière rouge d'urgence au-dessus
         self.add_room_fixture(room, hx, hz, room.height - .02, (1, .15, .1), "pulse", 7, 1.0, (.3, .05, .3),
                               kind="console")
-        # le capitaine est mort à son poste
-        cxp, _, czp = pl.pt(0, 0, 1.3)
-        c = loot.Corpse(L, gg.b, cxp, czp, pl.yaw + 160, rng, story.CREW["vasseur"]["uniform"], crew="vasseur")
+        # la commandante est morte à son poste : assise, la tête sur la console
+        mb_ = gg.b["struct"]
+        pl.box(mb_, (0, .45, .95), (.5, .07, .48), (.2, .2, .22))                  # siège
+        pl.box(mb_, (0, .75, 1.2), (.48, .6, .07), (.18, .18, .2))                 # dossier
+        pl.cyl(mb_, (0, .22, .95), .04, .44, (.3, .3, .32))
+        self.block_placer(pl, (0, 1.0), (.55, .6), .6)
+        cxp, _, czp = pl.pt(0, 0, .82)
+        c = loot.Corpse(L, gg.b, cxp, czp, pl.yaw + 180, rng, story.CREW["vasseur"]["uniform"], crew="vasseur",
+                        parent=gg.root, pose="desk", helmet=False)
         c.infested = False
         self.crew_corpses["vasseur"] = c
         self.loot_dir.corpses.append(c)
@@ -1356,31 +1433,53 @@ class LevelBuilder:
                 return x, z
         return None
 
-    def _crew_corpse(self, who, room, x, z, yaw, rng, y0=0.0):
+    def _crew_corpse(self, who, room, x, z, yaw, rng, y0=0.0, pose=None, helmet=None):
         L = self.level
         g = self.group_for(*L.cell_at(x, z))
-        c = loot.Corpse(L, g.b, x, z, yaw, rng, story.CREW[who]["uniform"], crew=who, y0=y0)
+        c = loot.Corpse(L, g.b, x, z, yaw, rng, story.CREW[who]["uniform"], crew=who, y0=y0, parent=g.root,
+                        pose=pose, helmet=helmet)
         self.crew_corpses[who] = c
         self.loot_dir.corpses.append(c)
         return c
 
+    def _room_door_point(self, room):
+        """Point juste à l'intérieur d'une porte de la salle (et direction vers elle)."""
+        L = self.level
+        if not room.doors:
+            return None
+        d = room.doors[0]
+        ci, cj = d.room_cell
+        cx, cz = L.cell_center(ci, cj)
+        dx, dz = d.pos[0] - cx, d.pos[1] - cz
+        n = math.hypot(dx, dz) or 1.0
+        return cx, cz, dx / n, dz / n
+
     def _place_crew(self):
-        """Corps de l'équipage du Kerguelen, chacun dans « sa » salle (Keating : jamais retrouvée)."""
+        """
+        Corps de l'équipage du Kerguelen, chacun dans « sa » salle, dans une pose
+        qui raconte sa fin (Keating : jamais retrouvée ; Vasseur : à son poste,
+        voir _room_command).
+        """
         L = self.level
         rng = random.Random(self.seed * 5 + 29)
-        # Lebrun, l'ingénieur, près du tableau électrique qu'il a lui-même coupé
+        # Lebrun, l'ingénieur : il a tenté de ramper vers la porte de la salle des machines
         eng = L.room("engine")
         if eng is not None:
-            near = None
-            if self.power_panel is not None:
-                px, _, pz = self.power_panel["pos"]
-                fx, fz = self.power_panel["facing"]
-                near = (px + fx * .9, pz + fz * .9)
-            p = self._free_floor(eng, rng, near=near, radius=1.4) if near else None
-            p = p or self._free_floor(eng, rng)
-            if p:
-                self._crew_corpse("lebrun", eng, p[0], p[1], rng.uniform(0, 360), rng)
-        # Fontaine, la pilote, près de la console d'amarrage du hangar
+            dp = self._room_door_point(eng)
+            placed = False
+            if dp is not None:
+                cx, cz, fx, fz = dp
+                for back in (2.2, 2.8, 1.7, 3.4):
+                    x, z = cx - fx * back, cz - fz * back
+                    if L.room_at(x, z) is eng and not L.blocked_point(x, .3, z, .45):
+                        self._crew_corpse("lebrun", eng, x, z, math.degrees(math.atan2(fx, fz)), rng, pose="crawl")
+                        placed = True
+                        break
+            if not placed:
+                p = self._free_floor(eng, rng)
+                if p:
+                    self._crew_corpse("lebrun", eng, p[0], p[1], rng.uniform(0, 360), rng, pose="crawl")
+        # Fontaine, la pilote : recroquevillée près de la console d'amarrage du hangar, casque fêlé
         hg = L.room("hangar")
         if hg is not None:
             near = None
@@ -1389,26 +1488,37 @@ class LevelBuilder:
             p = self._free_floor(hg, rng, near=near, radius=1.2) if near else None
             p = p or self._free_floor(hg, rng)
             if p:
-                self._crew_corpse("fontaine", hg, p[0], p[1], rng.uniform(0, 360), rng)
-        # Andreïev, autopsié : sur la table d'opération de l'infirmerie
+                self._crew_corpse("fontaine", hg, p[0], p[1], rng.uniform(0, 360), rng, pose="curled", helmet=True)
+        # Andreïev, autopsié : allongé sur la table d'opération de l'infirmerie
         mb = L.room("medbay")
         if mb is not None and getattr(self, "optable", None):
             cx, cz = self.optable
-            self._crew_corpse("andreiev", mb, cx, cz - .08, 0.0, rng, y0=.9)
-        # Okafor et Ricci : la fusillade de la salle à manger
+            self._crew_corpse("andreiev", mb, cx, cz + .08, 0.0, rng, y0=.9, pose="supine", helmet=False)
+        # Okafor, le médecin : affalé contre un mur de son infirmerie
+        if mb is not None:
+            slot = getattr(self, "okafor_slot", None)
+            if slot is not None:
+                pl = self.slot_placer(slot, .1)
+                x, _, z = pl.pt(0, 0, .3)
+                self._crew_corpse("okafor", mb, x, z, pl.yaw, rng, pose="slumped", helmet=False)
+            else:
+                p = self._free_floor(mb, rng)
+                if p:
+                    self._crew_corpse("okafor", mb, p[0], p[1], rng.uniform(0, 360), rng, pose="slumped")
+        # Ricci, l'intendant : face contre terre dans la salle à manger, près du frigo
         ms = L.room("mess")
         if ms is not None:
             near = self.fridge_placer.pt(0, 0, 1.2)[::2] if self.fridge_placer else None
             p = self._free_floor(ms, rng, near=near, radius=1.0) if near else None
             p = p or self._free_floor(ms, rng)
             if p:
-                self._crew_corpse("ricci", ms, p[0], p[1], rng.uniform(0, 360), rng)
-            p = self._free_floor(ms, rng)
-            if p:
-                self._crew_corpse("okafor", ms, p[0], p[1], rng.uniform(0, 360), rng)
+                self._crew_corpse("ricci", ms, p[0], p[1], rng.uniform(0, 360), rng, pose="facedown", helmet=False)
         for c in self.crew_corpses.values():
             i, j = L.cell_at(c.pos[0], c.pos[2])
             self._wall_smear(self.group_for(i, j), i, j)
+            # traces d'ongles sur un mur voisin
+            if rng.random() < .7:
+                self._wall_claw(self.group_for(i, j), i, j)
 
     def _doc_room(self, d, crew_rooms):
         L = self.level

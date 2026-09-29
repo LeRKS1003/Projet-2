@@ -63,6 +63,10 @@ from postfx import PostFX  # noqa: E402
 import story  # noqa: E402
 from document_ui import DocumentLog, DocumentReader, JournalUI, ControlsOverlay  # noqa: E402
 from hallucinations import Hallucinations, Revelation  # noqa: E402
+from safety import SpawnGuard  # noqa: E402
+from guidance import Guidance  # noqa: E402
+from vertigo import Vertigo, LABELS as VERTIGO_LABELS  # noqa: E402
+from ending import EndingCinematic, HangarDoors  # noqa: E402
 from power import PowerSystem  # noqa: E402
 from screamer import Screamer  # noqa: E402
 from lighting import audit_unlit  # noqa: E402
@@ -128,6 +132,12 @@ class Game(Entity):
         self.creature = self.aliens = self.director = self.horror = None
         self.power = self.screamer = None
         self.docs = self.hallu = self.revelation = None
+        self.spawn_guard = SpawnGuard(self)
+        self.guidance = None
+        self.vertigo = None
+        self.ending = None
+        self.hangar_doors = None
+        self.vertigo_setting = C.VERTIGO_INTENSITY      # réglage d'accessibilité (menu pause)
         self.stats = {"kills": 0, "start": 0.0, "docs": 0}
         self.current_room = None
         # interfaces persistantes : lecture des documents, journal, commandes (I)
@@ -226,6 +236,7 @@ class Game(Entity):
         self.horror = HorrorManager(self)
         self.hallu = Hallucinations(self)
         self.revelation = Revelation(self)
+        self.vertigo = Vertigo(self)
         self.player = self.creature = self.aliens = self.director = None
         self.stats = {"kills": 0, "start": self.time, "docs": 0}
         self.current_room = None
@@ -253,9 +264,18 @@ class Game(Entity):
             return
         if self.screamer is not None:
             self.screamer.destroy()
-        for obj in (self.hallu, self.revelation):
+        for obj in (self.hallu, self.revelation, self.guidance, self.vertigo):
             if obj is not None:
                 obj.destroy()
+        self.guidance = None
+        self.vertigo = None
+        if self.ending is not None:
+            self.ending.cleanup()
+            self.ending = None
+        if self.hangar_doors is not None:
+            self.hangar_doors.destroy()
+            self.hangar_doors = None
+        self.spawn_guard = SpawnGuard(self)
         self.reader.close()
         self.journal.close()
         h = self.hud
@@ -303,6 +323,9 @@ class Game(Entity):
             self.hud.message(m, color.rgb(.7, .85, 1))
 
     def _update_tps(self, dt):
+        if C.DEBUG_KEYS and self.inp.pressed("debug_hangar"):
+            self.debug_skip_to_hangar()
+            return
         sh = self.shuttle
         sh.update(dt, self.inp, self.exterior.colliders)
         if self.state == "tps":
@@ -311,10 +334,8 @@ class Game(Entity):
             self.state = "landing"
             self.hud.message("Hangar atteint — atterrissage automatique", color.lime)
             sh.silence_aids()
-            pad = self.builder.pad_center
-            sh.start_landing(pad, self._on_landed)
+            sh.start_landing(self.builder.landing, self._on_landed)
         if self.state == "landing":
-            pad = self.builder.pad_center
             hx0, hx1, hz0, hz1 = self.level.room("hangar").world_bounds()
             sh.cinematic_camera(dt, (hx0 + 5, 7.5, hz1 - 4))
         elif self.state == "tps":
@@ -327,7 +348,20 @@ class Game(Entity):
 
     def _on_landed(self):
         self.hud.fade_to(1, 1.3)
-        invoke(self.enter_fps, delay=1.6)
+        seed = self.seed
+        # l'appel différé ne doit concerner QUE cette partie (pas une partie relancée entre-temps)
+        invoke(lambda: self.enter_fps() if self.seed == seed and self.state == "landing" else None, delay=1.6)
+
+    def debug_skip_to_hangar(self):
+        """F9 : saute le pilotage et l'atterrissage, le joueur apparaît directement dans le hangar."""
+        if self.state in ("tps", "landing"):
+            self.shuttle.snap_to_pad(self.builder.landing)
+            self.state = "landing"
+            self.hud.message("[debug] atterrissage immédiat", color.yellow)
+            self.enter_fps()
+        elif self.state == "fps":
+            self.spawn_guard.respawn("[debug] F9")
+            self.hud.message("[debug] retour au hangar", color.yellow)
 
     # ==================================================================
     # PHASE 2 : EXPLORATION
@@ -345,18 +379,29 @@ class Game(Entity):
         for g in self.builder.groups.values():
             g.enabled = True
             g.root.enabled = True
+        # la navette est posée EXACTEMENT sur l'aire prévue par le générateur (source unique)
+        landing = self.builder.landing
+        sh.snap_to_pad(landing)
+        px_, pz_ = landing["pad"]
         # la navette posée bloque le passage
-        p = sh.root.world_position
-        L.add_blocker(Blocker(p.x - 3.1, p.x + 3.1, 0, 3.0, p.z - 4.6, p.z + 4.6, "prop"))
+        L.add_blocker(Blocker(px_ - 3.1, px_ + 3.1, 0, 3.0, pz_ - 4.6, pz_ + 4.6, "prop"))
         self.shuttle_interact = ShuttleInteract(self, L, sh)
         # le phare et les feux de la navette posée éclairent un peu le hangar
         hangar_group = self.builder.groups.get(("room", L.room("hangar").id))
         if hangar_group is not None:
             sh.park_lights(self.lights, hangar_group.root)
-        # le joueur sort par le sas latéral
-        r = sh.root.right
-        px, pz = p.x + r.x * 4.2, p.z + r.z * 4.2
-        self.player = Player(self, L, px, pz, yaw=0)
+        # le joueur sort par le sas latéral : point fixe calculé à la génération, vérifié,
+        # puis posé sur le sol par un rayon (voir safety.py) avant de rendre les contrôles
+        sx, sz = landing["spawn"]
+        self.player = Player(self, L, sx, sz, yaw=landing["spawn_yaw"])
+        self.spawn_guard = SpawnGuard(self)
+        self.spawn_guard.begin(self.player, landing)
+        self.guidance = Guidance(self)
+        # les grandes portes du hangar se referment derrière la navette
+        self.hangar_doors = HangarDoors(self)
+        self.hangar_doors.open_k = 1.0
+        self.hangar_doors.close()
+        invoke(lambda: self.audio.play("hangar_doors", .7) if self.state == "fps" else None, delay=.4)
         self.weapons.give_pistol()
         self.weapons.show(True)
         self.lights.flashlight_on = True
@@ -418,19 +463,22 @@ class Game(Entity):
             if inp.pressed("nightvision"):
                 self.toggle_nightvision()
             if inp.pressed("heal"):
-                self.inventory.use("medkit")
+                self.inventory.use("bandage")
             if inp.pressed("prev_item"):
                 self.inventory.cycle_equipped(-1)
-            if inp.pressed("next_item"):
-                self.inventory.cycle_equipped(1)
+            # manette : Droite utilise l'objet équipé (Gauche change d'objet) ; clavier : F utilise, V change
             if inp.pressed("use_item"):
                 self.inventory.use(self.inventory.equipped)
+            elif inp.pressed("next_item"):
+                self.inventory.cycle_equipped(1)
         # --- joueur et armes ---------------------------------------------
+        self.spawn_guard.update(dt)        # apparition sûre puis filet de sécurité continu
         p.update(dt, inp)
         if self.state != "fps":
             return
         # taper sur la lampe quand elle faiblit (bouton Recharger) : répit de quelques secondes
-        wpn_inp = inp if not self.ui_consumed else self._null
+        # pendant l'application d'un bandage : arme baissée, impossible de tirer (vulnérable)
+        wpn_inp = inp if not (self.ui_consumed or p.bandaging > 0) else self._null
         if (not self.ui_consumed and inp.pressed("reload") and lt.battery < C.FLASHLIGHT_FLICKER
                 and (lt.flashlight_on or lt.battery <= 0) and not lt.nightvision):
             lt.tap_flashlight()
@@ -474,10 +522,13 @@ class Game(Entity):
         self.screamer.update(dt)
         self.hallu.update(dt)
         self.revelation.update(dt)
+        self.vertigo.update(dt)
         lt.update(dt, (cp.x, cp.y, cp.z), self.horror.light_level)
         self.shuttle.update_parked(lt.time)
+        self.hangar_doors.update(dt)
         self.space.update(dt)
         self._room_events()
+        self.guidance.update(dt, inp)
         # touches de test : F4 bascule le courant, F5 déclenche le screamer
         if C.DEBUG_KEYS and not self.ui_consumed:
             if inp.pressed("debug_power"):
@@ -488,6 +539,14 @@ class Game(Entity):
                 self.docs.debug_all()
             if inp.pressed("debug_reveal"):
                 self.revelation.debug_start()
+            if inp.pressed("debug_hangar"):
+                self.debug_skip_to_hangar()
+            if inp.pressed("debug_ending"):
+                self.debug_ending()
+                return
+            if inp.pressed("debug_vertigo"):
+                self.vertigo.start_crisis(forced=True)
+                self.hud.message("[debug] crise de vertige", color.yellow)
         if inp.debug_overlay:
             cr = self.creature
             pm = lt.power
@@ -565,6 +624,34 @@ class Game(Entity):
         p = self.shuttle.root.world_position
         return (p.x, p.z)
 
+    def objective_goal(self):
+        """
+        Destination du guidage : (x, z, libellé). Suit l'objectif en cours :
+        fusibles manquants -> tableau de la salle des machines -> disque dur ->
+        navette.
+        """
+        pw = self.power
+        L = self.level
+        if pw is not None and not pw.on and not self.has_hdd() and pw.spec is not None:
+            if pw.state == "off" and pw.fuses_needed and pw.fuses_inserted + pw.fuses_held < pw.fuses_needed:
+                p = self.player
+                left = [f for f in self.builder.fuses if not f.taken]
+                if left and p is not None:
+                    f = min(left, key=lambda f_: math.hypot(f_.pos[0] - p.x, f_.pos[2] - p.z))
+                    room = L.room_at(f.pos[0], f.pos[2])
+                    where = room.name if room is not None else "couloir"
+                    return (f.pos[0], f.pos[2], f"Fusible ({where})")
+            sp = pw.spec["pos"]
+            return (sp[0], sp[2], "Salle des machines")
+        if not self.has_hdd():
+            h = self.builder.hdd
+            if h and not h.taken:
+                return (h.pos[0], h.pos[2], "Salle de commandement")
+            return None
+        px_, pz_ = self.builder.landing["pad"]
+        sx_, sz_ = self.builder.landing["spawn"]
+        return (px_ + (sx_ - px_) * .8, pz_ + (sz_ - pz_) * .8, "Navette (hangar)")
+
     def place_autopsy(self):
         """Le rapport d'autopsie de Yuri (D08) est posé au pied du casier piégé (le screamer prend son sens)."""
         b = self.builder
@@ -595,122 +682,33 @@ class Game(Entity):
     # FIN DE PARTIE
     # ==================================================================
     def start_escape(self):
+        """Le joueur rejoint la navette avec le disque dur : cinématique de fin (ending.py)."""
         if self.state != "fps":
             return
-        self.state = "escape"
-        self.inventory_ui.close()
-        self.hud.fade_to(1, .8)
-        invoke(self._escape_cinematic, delay=.9)
-
-    def _escape_cinematic(self):
-        self.inventory_ui.hide_all()
-        self.weapons.show(False)
-        self.lights.flashlight_on = False
-        self.lights.set_nightvision(False)
-        self.creature.root.enabled = False
-        for a in self.aliens.aliens:
-            a.root.hide()          # les araignées sont des nœuds Panda3D
-        self.exterior.set_enabled(True)
-        self.builder.show_only({self.level.room("hangar").id})
-        self.lights.set_mode("tps")
-        self.lights.set_sun(-self.space.sun_dir, True)
-        self.space.set_dust(True)
-        self.hud.set_mode("none")
-        self.horror.level = 0
-        self.horror.timer = 0
-        self.horror.update(0.01)
-        self.audio.play("victory", 1.0, music=True)
-        sh = self.shuttle
-        hx0, hx1, hz0, hz1 = self.level.room("hangar").world_bounds()
-        sh.cam_pos = Vec3(hx0 + 5, 7.5, hz1 - 4)
-        sh.start_takeoff(self._ending_start)
-        self.hud.fade_to(0, 1.2)
-        self.hallu.hide_all()
-        self.revelation.finish()
-        self.reader.close()
-        self.journal.close()
-
-    def _update_escape(self, dt):
-        sh = self.shuttle
-        if sh.auto is None:
-            return
-        sh.update(dt, self.inp, [])
-        cx = (self.exterior.open_x0 + self.exterior.open_x1) / 2
-        if sh.auto == "exit" and sh.auto_t > 1.2:
-            sh.cinematic_camera(dt, (cx + 16, 9, -40))
-        else:
-            hx0, hx1, hz0, hz1 = self.level.room("hangar").world_bounds()
-            sh.cinematic_camera(dt, (hx0 + 5, 7.5, hz1 - 4))
-        self.exterior.update(dt)
-        self.space.update(dt)
-        cp = camera.world_position
-        self.lights.update(dt, (cp.x, cp.y, cp.z), 0)
-        self.builder.update(dt, [], (cp.x, cp.y, cp.z), fps_mode=False)
-
-    # ------------------------------------------------------------------
-    # FIN : la navette s'éloigne du Kerguelen... et elle n'est pas seule
-    # ------------------------------------------------------------------
-    def _ending_start(self):
         self.state = "ending"
-        self.ending_t = 0.0
-        self._ending_flags = set()
-        self.ending_cam = Vec3(camera.world_position)
+        if self.vertigo is not None:
+            self.vertigo.stop()
+        self.inventory_ui.close()
+        self.hud.fade_to(1, .7)
+        self.ending = EndingCinematic(self)
+        invoke(self._ending_begin, delay=.8)
+
+    def _ending_begin(self):
+        if self.state == "ending" and self.ending is not None:
+            self.ending.start()
+
+    def debug_ending(self):
+        """F10 : lance directement la cinématique de fin (donne le disque dur si besoin)."""
+        if self.state != "fps":
+            return
+        if not self.has_hdd():
+            self.inventory.add("hdd", 1)
+        self.hud.message("[debug] cinématique de fin", color.yellow)
+        self.start_escape()
 
     def _update_ending(self, dt):
-        sh = self.shuttle
-        self.ending_t += dt
-        t = self.ending_t
-        f = self._ending_flags
-        sh.root.position += sh.root.forward * 30 * dt
-        self.space.update(dt)
-        self.exterior.update(dt)
-        if t < 5.5:
-            # plan extérieur : la navette s'éloigne du Kerguelen qui dérive (derrière elle), planètes au loin
-            from panda3d.core import Vec3 as PVec3
-            p = sh.root.world_position
-            cam = p + sh.root.forward * (30 - t * 3) + sh.root.right * 14 + Vec3(0, 5, 0)
-            ship = Vec3(self.level.W * C.CELL / 2, 0, self.level.H * C.CELL / 2)
-            look = p + (ship - p) * .45          # la navette au premier plan, le Kerguelen derrière elle
-            camera.position = cam
-            camera.lookAt(PVec3(look.x, look.y, look.z), PVec3(0, 1, 0))
-            if t > .6 and "msg" not in f:
-                f.add("msg")
-                self.audio.play("static_burst", .6)
-                self.hud.center_text.text = story.ENDING_SHUTTLE_MESSAGE
-            if t > 4.6:
-                self.hud.center_text.text = ""
-        else:
-            # plan du cockpit : dans le reflet de la verrière, derrière le joueur...
-            if "cockpit" not in f:
-                f.add("cockpit")
-                self.hud.set_fade(0)
-                # on est dans le cockpit : on ne garde que le tableau de bord (la vitre est le reflet du HUD)
-                for c in sh.model.getChildren():
-                    if c != sh.dash:
-                        c.hide()
-                sh.fx_root.hide()
-                self.audio.stop_loop("sinus_low")
-                self.hum_end = self.audio.loop("sinus_end", "sinus_chant", 1.0, ambient=True)
-                self.hum_end.set(.25, fade=.5)
-            cam_p = sh._local_to_world((0, 1.28, 1.42))      # tête du pilote, au-dessus du siège
-            ahead = sh._local_to_world((0, -3.0, 40))                # regard un peu baissé : tableau de bord
-            camera.position = cam_p
-            camera.lookAt(ahead)
-            refl = min(.22, (t - 5.5) * .12)
-            eyes = 1.0 if 8.4 <= t < 8.6 else 0.0
-            self.hud.set_reflection(refl, eyes)
-            if t > 7.9 and "swell" not in f:
-                f.add("swell")
-                self.audio.play("sinus_swell", 1.0)
-                self.hum_end.set(1.0, fade=2.5)
-            if t >= 8.75 and "black" not in f:
-                f.add("black")
-                self.hud.set_fade(1)
-                self.hud.set_reflection(0.0)
-                self.audio.stop_all_loops()
-            if t >= 10.8 and "screen" not in f:
-                f.add("screen")
-                self._final_screen()
+        if self.ending is not None and self.ending.started and not self.ending.done:
+            self.ending.update(dt)
 
     def _final_screen(self):
         self.state = "victory"
@@ -727,6 +725,8 @@ class Game(Entity):
         if self.state not in ("fps", "tps", "landing"):
             return
         self.state = "gameover"
+        if self.vertigo is not None:
+            self.vertigo.stop()
         self.inp.rumble(1, 1, 900)
         if cause == "creature":
             self.hud.set_fade(1)            # écran noir immédiat
@@ -771,15 +771,34 @@ class Game(Entity):
         self.paused = not self.paused
         if self.paused:
             mouse.locked = False
-            self._set_screen(MenuScreen("PAUSE", f"{story.GAME_TITLE} — seed {self.seed}",
-                                        ["Reprendre", "Commandes", "Recommencer", "Menu principal", "Quitter"],
-                                        self._pause_select, bg_alpha=.6))
+            self._pause_menu()
         else:
             self._set_screen(None)
             mouse.locked = True
 
+    def _vertigo_label(self):
+        return "Vertiges : " + VERTIGO_LABELS.get(self.vertigo_setting, "Normal")
+
+    def _pause_menu(self, sel=0):
+        scr = MenuScreen("PAUSE", f"{story.GAME_TITLE} — seed {self.seed}",
+                         ["Reprendre", "Commandes", self._vertigo_label(), "Recommencer", "Menu principal",
+                          "Quitter"], self._pause_select, bg_alpha=.6)
+        scr.sel = sel
+        scr._refresh()
+        self._set_screen(scr)
+
     def _pause_select(self, opt):
         self.audio.play("ui_select", .6)
+        if opt.startswith("Vertiges"):
+            # accessibilité : Désactivé / Faible / Normal / Fort (le mal des transports est possible)
+            if self.vertigo is not None:
+                self.vertigo.cycle_setting()
+            else:
+                from vertigo import ORDER
+                i = ORDER.index(self.vertigo_setting) if self.vertigo_setting in ORDER else 2
+                self.vertigo_setting = ORDER[(i + 1) % len(ORDER)]
+            self._pause_menu(sel=2)
+            return
         if opt == "Reprendre":
             self.toggle_pause()
         elif opt == "Commandes":
@@ -836,8 +855,6 @@ class Game(Entity):
                 self._update_tps(dt)
             elif self.state == "fps":
                 self._update_fps(dt)
-            elif self.state == "escape":
-                self._update_escape(dt)
             elif self.state == "ending":
                 self._update_ending(dt)
             elif self.state in ("victory",):

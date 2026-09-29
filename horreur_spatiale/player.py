@@ -9,7 +9,7 @@ les casiers.
 import math
 import random
 
-from ursina import camera
+from ursina import camera, color
 
 import config as C
 
@@ -19,6 +19,8 @@ class Player:
         self.game = game
         self.level = level
         self.x, self.z = x, z
+        self.y = 0.0                 # hauteur des pieds (posée sur le sol par un rayon à l'apparition)
+        self.spawn_lock = False      # True tant que le joueur n'est pas posé sur le sol (contrôles bloqués)
         self.yaw = yaw
         self.pitch = 0.0
         self.vx = self.vz = 0.0
@@ -49,6 +51,8 @@ class Player:
         self.saw_hide = False
         self.kills = 0
         self.creature_hits = 0       # coups encaissés de la grande créature (mort au 5e)
+        self.bandaging = 0.0         # > 0 : bandage en cours d'application (secondes restantes)
+        self.search_dip = 0.0        # 0 debout -> 1 accroupi au-dessus d'un cadavre qu'on fouille
 
     # ------------------------------------------------------------------
     @property
@@ -61,7 +65,7 @@ class Player:
 
     @property
     def pos3(self):
-        return (self.x, self.eye, self.z)
+        return (self.x, self.y + self.eye, self.z)
 
     def forward2(self):
         a = math.radians(self.yaw)
@@ -75,6 +79,11 @@ class Player:
         if not self.alive:
             return
         g = self.game
+        if self.spawn_lock:
+            # apparition en cours : aucun contrôle tant que le sol n'est pas confirmé
+            self.vx = self.vz = 0.0
+            self._apply_camera(dt)
+            return
         # --- regard -------------------------------------------------------
         if not g.inventory_ui.open:
             self.yaw += inp.look_x
@@ -136,6 +145,9 @@ class Player:
         want_run = inp.held("run") and my > 0.3 and not self.crouched
         if self.exhausted:
             want_run = False
+        vg = getattr(g, "vertigo", None)
+        if vg is not None and vg.blocks_running():
+            want_run = False                  # crise de vertige : impossible de courir
         self.running = want_run and self.moving
         if self.running:
             self.stamina = max(0.0, self.stamina - C.STAMINA_DRAIN * dt)
@@ -156,10 +168,18 @@ class Player:
             speed *= .6
         if self.health < C.LOW_HEALTH:
             speed *= .88
+        if self.bandaging > 0:
+            speed *= C.BANDAGE_SLOW          # on se soigne : lent et arme baissée (vulnérable)
+            self.running = False
         fx, fz = self.forward2()
         rx, rz = fz, -fx
         tvx = (fx * my + rx * mx) * speed
         tvz = (fz * my + rz * mx) * speed
+        if vg is not None:
+            # vertige : les pas dérivent sur le côté, on avance moins vite (et presque plus en trébuchant)
+            side, vk = vg.drift()
+            tvx = tvx * vk + rx * side
+            tvz = tvz * vk + rz * side
         k = min(1.0, C.ACCELERATION * dt)
         self.vx += (tvx - self.vx) * k
         self.vz += (tvz - self.vz) * k
@@ -211,6 +231,16 @@ class Player:
             else:
                 self.focus.interact(g)
 
+        # --- bandage en cours ----------------------------------------------
+        if self.bandaging > 0:
+            self.bandaging -= dt
+            if self.bandaging <= 0:
+                self.bandaging = 0.0
+                if g.inventory.remove("bandage") > 0:
+                    self.heal(C.BANDAGE_HEAL)
+                    g.hud.message(f"Bandage appliqué (+{C.BANDAGE_HEAL} santé)", color.lime)
+                    g.audio.play("rustle", .5, 1.2)
+
         # --- effets de santé ----------------------------------------------
         self.hurt_flash = max(0.0, self.hurt_flash - dt * 1.8)
         self.trauma = max(0.0, self.trauma - dt * 1.5)
@@ -232,16 +262,29 @@ class Player:
         bob_x = math.cos(self._bob * .5) * .02
         fx, fz = self.forward2()
         rx, rz = fz, -fx
+        # fouille d'un cadavre : la caméra se baisse vers le corps
+        dip_target = 1.0 if (self.search_target is not None and hasattr(self.search_target, "pose")) else 0.0
+        self.search_dip += (dip_target - self.search_dip) * min(1.0, dt * 5)
+        dip = self.search_dip * self.search_dip * (3 - 2 * self.search_dip)
         if self.hidden_in is not None:
             hp = self.hidden_in.hide_pos
             camera.position = (hp[0], 1.55, hp[2])
         else:
-            camera.position = (self.x + rx * bob_x, self.eye + bob_y, self.z + rz * bob_x)
+            camera.position = (self.x + rx * bob_x, self.y + self.eye + bob_y - .62 * dip, self.z + rz * bob_x)
         tilt = 0.0
         if self.health < C.LOW_HEALTH:
             tilt = math.sin(g.time * 1.3) * (1 - self.health / C.LOW_HEALTH) * 2.5
-        camera.rotation = (self.pitch + sy, self.yaw + sx, tilt + sx * .5)
-        target = self.fov_target
+        # vertiges : tangage lent, horizon incliné, champ de vision qui respire, trébuchement
+        vp = vyaw = vroll = vfov = vdy = 0.0
+        vg = getattr(g, "vertigo", None)
+        if vg is not None and self.hidden_in is None:
+            vp, vyaw, vroll, vfov, vdy = vg.camera_offsets()
+            if vdy:
+                camera.y += vdy
+        # en se baissant, le regard plonge vers le corps
+        camera.rotation = (self.pitch + sy + vp + 16 * dip * (1 - max(0.0, self.pitch) / 60),
+                           self.yaw + sx + vyaw, tilt + sx * .5 + vroll + 3 * dip)
+        target = self.fov_target + vfov
         if self.health < C.LOW_HEALTH:
             target += math.sin(g.time * 2) * 2
         camera.fov += (target - camera.fov) * min(1, dt * 10)
@@ -282,11 +325,30 @@ class Player:
             a = math.degrees(math.atan2(source[0] - self.x, source[2] - self.z))
             self.last_damage_dir = (a - self.yaw + 180) % 360 - 180
             g.hud.damage_indicator(self.last_damage_dir)
-        # interrompt la fouille
+        # interrompt la fouille et le bandage
         self.search_target = None
+        if self.bandaging > 0:
+            self.bandaging = 0.0
+            g.hud.message("Bandage interrompu !", color.orange)
         if self.health <= 0:
             self.alive = False
             g.game_over("aliens")
+
+    def start_bandage(self):
+        """Commence à appliquer un bandage (BANDAGE_TIME secondes, vulnérable)."""
+        g = self.game
+        self.bandaging = C.BANDAGE_TIME
+        self.search_target = None
+        g.audio.play("rustle", .7, .9)
+        g.hud.message("Tu appliques un bandage...", color.lime)
+
+    def push(self, dx, dz):
+        """Déplacement forcé (coup, recul) par petits pas : impossible de traverser un mur."""
+        dist = math.hypot(dx, dz)
+        steps = max(1, int(dist / .12) + 1)
+        for _ in range(steps):
+            self.x, self.z = self.level.collide(self.x + dx / steps, self.z + dz / steps, C.PLAYER_RADIUS,
+                                                0.05, self.height)
 
     def heal(self, amount):
         self.health = min(C.MAX_HEALTH, self.health + amount)

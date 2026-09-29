@@ -146,6 +146,7 @@ class Shuttle:
         self.auto = None
         self.auto_t = 0.0
         self.landed = False
+        self.landing = None      # aire d'atterrissage (source unique, fournie par le générateur)
         self.cam_pos = Vec3(*pos) - self.root.forward * C.TPS_CAM_DISTANCE + Vec3(0, C.TPS_CAM_HEIGHT, 0)
         self.cam_up = Vec3(0, 1, 0)
         self.blink_t = 0.0
@@ -621,15 +622,35 @@ class Shuttle:
         camera.lookAt(PVec3(p.x, p.y, p.z), PVec3(0, 1, 0))
 
     # ------------------------------------------------------------------
-    def start_landing(self, pad, on_done):
-        """Atterrissage automatique sur l'aire du hangar."""
+    def start_landing(self, landing, on_done):
+        """
+        Atterrissage automatique sur l'aire du hangar. 'landing' est la source
+        unique calculée par le générateur (LevelBuilder.landing) : position de
+        l'aire, cap, hauteurs de stationnaire et de repos.
+        """
         self.auto = "align"
         self.auto_t = 0.0
         self.auto_from = Vec3(self.root.position)
         self.auto_rot = Vec3(self.root.rotation)
-        self.pad = pad
+        self.landing = landing
+        self.pad = landing["pad"]
         self.on_done = on_done
         self.vel = Vec3(0, 0, 0)
+
+    def snap_to_pad(self, landing):
+        """Pose la navette EXACTEMENT sur l'aire prévue (quelle que soit la fin de l'animation)."""
+        self.landing = landing
+        self.pad = landing["pad"]
+        self.auto = None
+        self.vel = Vec3(0, 0, 0)
+        self.root.position = (self.pad[0], landing["rest_y"], self.pad[1])
+        self.root.rotation = (0, landing["yaw"], 0)
+        self._update_gear(1.0)
+        self.landed = True
+        # moteurs coupés : le phare et la lueur des réacteurs s'éteignent (comme après un vrai atterrissage)
+        self.throttle = 0.0
+        application.base.render.clearLight(self.spot_np)
+        application.base.render.clearLight(self.eng_np)
 
     def start_takeoff(self, on_done):
         self.auto = "lift"
@@ -646,16 +667,18 @@ class Shuttle:
         self.in_strafe = self.in_vert = 0.0
         if self.auto == "align":
             k = _smooth(t / 3.2)
-            hover = Vec3(self.pad[0], 3.6, self.pad[1])
+            ld = self.landing
+            hover = Vec3(self.pad[0], ld["hover_y"], self.pad[1])
             self.root.position = self.auto_from + (hover - self.auto_from) * k
             r = self.auto_rot
-            self.root.rotation = (r.x + (0 - r.x) * k, _lerp_angle(r.y, 180, k), r.z + (0 - r.z) * k)
+            self.root.rotation = (r.x + (0 - r.x) * k, _lerp_angle(r.y, ld["yaw"], k), r.z + (0 - r.z) * k)
             self.throttle = .5
             if t >= 3.2:
                 self.auto, self.auto_t = "descend", 0.0
         elif self.auto == "descend":
             k = _smooth(t / 2.2)
-            self.root.y = 3.6 + (1.35 - 3.6) * k
+            ld = self.landing
+            self.root.y = ld["hover_y"] + (ld["rest_y"] - ld["hover_y"]) * k
             self.throttle = .35 * (1 - k)
             self.in_vert = -.6 * (1 - k)            # bouffées RCS pendant la descente
             self._update_gear(_smooth(t / 1.4))     # le train sort
@@ -666,10 +689,13 @@ class Shuttle:
                 self.game.shake(.5)
         elif self.auto == "settle":
             self.throttle = 0
-            self.root.y = 1.35 - .08 * math.sin(min(1, t / .4) * math.pi)
+            self.root.y = self.landing["rest_y"] - .08 * math.sin(min(1, t / .4) * math.pi)
             if t >= 1.4:
                 self.auto = None
                 self.landed = True
+                # position finale imposée (aucune dérive possible de l'animation)
+                self.root.position = (self.pad[0], self.landing["rest_y"], self.pad[1])
+                self.root.rotation = (0, self.landing["yaw"], 0)
                 application.base.render.clearLight(self.spot_np)
                 application.base.render.clearLight(self.eng_np)
                 self.on_done()

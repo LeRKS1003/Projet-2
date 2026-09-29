@@ -206,7 +206,7 @@ class InputManager:
         "fire": "r2", "aim": "l2", "knife": "r1", "reload": "square",
         "flashlight": "triangle", "nightvision": "l1", "interact": "cross",
         "inventory": "touchpad", "heal": "dpad_up", "prev_item": "dpad_left",
-        "next_item": "dpad_right", "use_item": "dpad_down", "pause": "options",
+        "next_item": "dpad_right", "use_item": "dpad_right", "guide": "dpad_down", "pause": "options",
         "crouch": "circle", "run": "l3", "drop": "triangle",
         "confirm": "cross", "back": "circle",
         "menu_up": "dpad_up", "menu_down": "dpad_down",
@@ -230,6 +230,8 @@ class InputManager:
         "debug_docs": C.KEYS["debug_docs"], "debug_reveal": C.KEYS["debug_reveal"],
         "debug_sound": C.KEYS["debug_sound"],
         "journal": C.KEYS["journal"], "controls": C.KEYS["controls"], "melee": C.KEYS["melee"],
+        "guide": C.KEYS["guide"], "debug_hangar": C.KEYS["debug_hangar"],
+        "debug_ending": C.KEYS["debug_ending"], "debug_vertigo": C.KEYS["debug_vertigo"],
     }
     # alternatives clavier
     KB_ALT = {"confirm": ["space", C.KEYS["interact"]], "menu_up": [C.KEYS["forward"]],

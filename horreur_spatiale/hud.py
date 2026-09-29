@@ -347,19 +347,10 @@ class HUD:
         inv = g.inventory
         lt = g.lights
         pad = g.inp.using_pad
-        # objectif + boussole
+        # objectif (la flèche de guidage et le marqueur sont gérés par guidance.py)
         _tx(self.objective, g.objective_text())
-        tgt = g.objective_target()
-        if C.OBJECTIVE_COMPASS and tgt is not None:
-            a = math.degrees(math.atan2(tgt[0] - p.x, tgt[1] - p.z))
-            rel = (a - p.yaw + 180) % 360 - 180
-            self.compass.enabled = True
-            self.compass.rotation_z = rel
-            d = math.hypot(tgt[0] - p.x, tgt[1] - p.z)
-            _tx(self.compass_text, f"{d:.0f} m")
-        else:
-            self.compass.enabled = False
-            _tx(self.compass_text, '')
+        self.compass.enabled = False
+        _tx(self.compass_text, '')
         # barres
         self._set_bar(self.health_bar, .3, p.health / C.MAX_HEALTH)
         self._set_bar(self.stamina_bar, .2, p.stamina / C.STAMINA_MAX)
@@ -378,7 +369,8 @@ class HUD:
         _tx(self.knife_text, f"Couteau {kd}/{C.KNIFE_DURABILITY}" if inv.has("knife") else "Pas de couteau")
         from loot import ITEM_NAMES
         eq = inv.equipped
-        _tx(self.item_text, f"Équipé : {ITEM_NAMES[eq]} x{inv.count(eq)}   Kits : {inv.count('medkit')}")
+        heal_key = "Haut" if pad else C.KEYS_AZERTY.get("heal", "h").upper()
+        _tx(self.item_text, f"Équipé : {ITEM_NAMES[eq]} x{inv.count(eq)}   Bandages : {inv.count('bandage')} [{heal_key}]")
         # bruit
         lvl = p.noise_level
         for k, s in enumerate(self.noise_segs):
@@ -406,6 +398,11 @@ class HUD:
         if p.search_target is not None:
             self.progress[0].enabled = self.progress[1].enabled = True
             self._set_bar(self.progress, .2, p.search_progress / p.search_target.hold_time)
+        elif p.bandaging > 0:
+            # barre de progression du bandage (2 s pendant lesquelles on est vulnérable)
+            self.progress[0].enabled = self.progress[1].enabled = True
+            self._set_bar(self.progress, .2, 1 - p.bandaging / C.BANDAGE_TIME)
+            _tx(self.prompt, "Bandage en cours... (vulnérable)")
         else:
             self.progress[0].enabled = self.progress[1].enabled = False
         # indicateur de dégâts directionnel
