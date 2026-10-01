@@ -138,8 +138,9 @@ class Rifle:
         self.lens.setDepthWrite(False)
         self.lens.setBin('transparent', 30)
         dot = MeshBuilder()
-        dot.cylinder((0, SIGHT_Y, .0965), .0012, .0005, (1, .05, .03, 1), 10, 'z')
+        dot.cylinder((0, 0, 0), .0012, .0005, (1, .05, .03, 1), 10, 'z')
         self.red_dot = _attach(R, dot, "rifle_red_dot", unlit=True)
+        self.red_dot.setPos(0, SIGHT_Y, .0965)     # géométrie centrée : le grossissement reste sur la lentille
         mark_emissive(self.red_dot)
         self.red_dot.setBin('fixed', 31)
         # --- lampe tactique sous le canon ------------------------------------------
