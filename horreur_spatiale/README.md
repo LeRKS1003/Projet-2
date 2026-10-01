@@ -48,6 +48,7 @@ horreur_spatiale/
 ├── lighting.py     lumière ambiante, lampe torche, pool de lumières, néons, vision nocturne, PowerManager (courant)
 ├── power.py        courant du vaisseau : fusibles, tableau et levier, séquence de redémarrage, coupures, portes
 ├── screamer.py     casier piégé (jumpscare) : visage en primitives, cri, stinger, musique qui suit
+├── startup.py      avant la fenêtre : choix du moteur audio (OpenAL, repli FMOD), plein écran fenêtré
 ├── safety.py       apparition sûre dans le hangar (rayon vers le sol) + filet de sécurité (jamais hors du vaisseau)
 ├── guidance.py     guidage : flèche qui suit le chemin A*, marqueur en bord d'écran, traits lumineux au sol
 ├── vertigo.py      crises de vertige après le disque dur (image, son, contrôles, vibrations) + réglage d'intensité
@@ -97,6 +98,9 @@ pip install -r requirements.txt
 python main.py
 ```
 
+Le jeu démarre en **plein écran** (sans bordure, à la taille de ton écran) : **F11** ou **Alt+Entrée**
+bascule en fenêtre (`FULLSCREEN` dans `config.py`).
+
 Au premier lancement, les sons sont synthétisés dans `generated/sounds/` (environ une seconde).
 La génération du vaisseau prend 2 à 4 secondes à chaque nouvelle partie.
 La seed est affichée dans le menu pause ; fixe `SEED` dans `config.py` pour rejouer la même partie.
@@ -136,7 +140,9 @@ La seed est affichée dans le menu pause ; fixe `SEED` dans `config.py` pour rej
 | debug manette | F3 | — |
 | test : basculer le courant / déclencher le screamer | F4 / F5 | — |
 | test : tous les documents / révélation finale | F6 / F7 | — |
-| test : son / hangar après atterrissage / cinématique de fin / crise de vertige | F8 / F9 / F10 / F11 | — |
+| **plein écran / fenêtre** | **F11** ou **Alt+Entrée** (ou menu « Plein écran ») | — |
+| son de test / **essayer l'autre moteur audio** (OpenAL ↔ FMOD, relance le jeu) | F8 / **Maj+F8** | — |
+| test : hangar après atterrissage / cinématique de fin / crise de vertige | F9 / F10 / Maj+F11 | — |
 | test : obtenir le fusil + munitions / déclencher l'alarme | F12 / Maj+F12 | — |
 
 Dans l'inventaire : flèches/molette pour choisir, **E/Entrée** (Croix) pour utiliser, **Suppr** (Triangle) pour jeter.
@@ -304,6 +310,21 @@ puis `WINDOW_SIZE`. `CULL_DISTANCE` (salles actives autour du joueur) aide aussi
   `GAMEPAD_PROFILE` et tous les index d'axes/boutons dans `GAMEPAD_PROFILES`.
 
 ---
+
+## Dépannage son
+
+L'écran titre affiche l'état du son en bas : **vert** = OK, **rouge** = aucune sortie audio.
+
+1. Appuie sur **F8** : un bip et un coup de feu doivent sonner.
+2. Pas de son ? Appuie sur **Maj+F8** : le jeu se relance avec l'autre moteur audio (OpenAL ↔ FMOD,
+   les deux sont fournis avec Panda3D sous Windows). Le choix est mémorisé
+   (`generated/audio_backend.txt` ; supprime ce fichier pour revenir au choix automatique).
+   Si OpenAL n'ouvre aucune sortie son, le jeu passe tout seul à FMOD au lancement (`AUDIO_BACKEND = "auto"`).
+3. Windows : clic droit sur l'icône haut-parleur > **Mélangeur de volume** : vérifie que **Python** n'est
+   pas coupé ni à 0 (Windows mémorise le volume de chaque application), et que la bonne sortie
+   (casque / haut-parleurs) est celle **par défaut**. Branche le casque **avant** de lancer le jeu.
+4. Le rapport `generated/rapport_son.txt` résume l'état du son (moteur, périphérique, sons chargés) :
+   envoie-le si le problème persiste.
 
 ## Dépannage manette
 

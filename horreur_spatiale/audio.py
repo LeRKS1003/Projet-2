@@ -1375,16 +1375,45 @@ class AudioSystem:
         self.report()
 
     # ------------------------------------------------------------------
-    def report(self):
-        """Message clair dans le terminal : l'audio est-il prêt ? combien de sons ?"""
+    def backend_name(self):
+        import startup
+        return startup.NAMES.get(startup.STATE["backend"], "?")
+
+    def status_line(self):
+        """(texte, ok) : état du son affiché sur l'écran titre."""
         loaded = len(self.pool) - len(self.failed)
         if not self.ok:
-            print("[audio] ERREUR : aucun périphérique audio utilisable (Panda3D utilise un gestionnaire NUL).")
+            return (f"SON : AUCUNE SORTIE AUDIO ({self.backend_name()})  —  Maj+F8 : essayer l'autre moteur audio,"
+                    " F8 : test", False)
+        if loaded == 0:
+            return "SON : aucun son chargé  —  mets REGENERATE_SOUNDS = True dans config.py", False
+        return (f"Son : OK ({self.backend_name()}, {loaded} sons)  —  F8 : test  —  "
+                "pas de son ? Maj+F8 : autre moteur audio", True)
+
+    def report(self):
+        """Message clair dans le terminal (et generated/rapport_son.txt) : l'audio est-il prêt ?"""
+        import startup
+        loaded = len(self.pool) - len(self.failed)
+        lines = [f"moteur audio : {self.backend_name()}"
+                 + (" (relance automatique : OpenAL ne fonctionnait pas)" if startup.STATE["auto_switched"] else ""),
+                 f"gestionnaire : {type(self.mgr).__name__ if self.mgr is not None else 'aucun'}"
+                 f"  valide={self.ok}",
+                 f"sons chargés : {loaded} / {len(self.pool)}  (dossier {SOUND_DIR})",
+                 f"volumes config : MASTER {C.MASTER_VOLUME} SFX {C.SFX_VOLUME} MUSIC {C.MUSIC_VOLUME}"
+                 f" AMBIENT {C.AMBIENT_VOLUME}"]
+        for k, (ok, info) in startup.STATE["probe"].items():
+            lines.append(f"test {k} avant fenêtre : {'OK' if ok else 'ÉCHEC'} ({info})")
+        if self.failed and self.ok:
+            lines.append("sons illisibles : " + ", ".join(sorted(self.failed)[:30]))
+        startup.write_report(lines)
+        if not self.ok:
+            print(f"[audio] ERREUR : aucun périphérique audio utilisable avec {self.backend_name()}"
+                  " (Panda3D utilise un gestionnaire NUL).")
             print("[audio]   -> vérifie qu'une sortie son est active dans Windows (icône haut-parleur),")
-            print("[audio]      débranche/rebranche le casque, puis relance le jeu.")
+            print("[audio]      débranche/rebranche le casque, ou appuie sur Maj+F8 pour essayer l'autre moteur.")
         else:
             vol = self.mgr.getVolume() if self.mgr is not None else 0
-            print(f"[audio] OK : OpenAL initialisé, {loaded} sons chargés sur {len(self.pool)}"
+            print(f"[audio] OK : {self.backend_name()} initialisé, {loaded} sons chargés sur {len(self.pool)}"
                   f" (volume général {self.master:.2f}, gestionnaire {vol:.2f}, dossier {SOUND_DIR})")
         if self.failed and self.ok:
             print(f"[audio] {len(self.failed)} son(s) illisible(s) : {', '.join(sorted(self.failed)[:12])}"

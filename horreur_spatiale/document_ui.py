@@ -834,10 +834,11 @@ CONTROL_ROWS = [
     ("DIVERS", None, None),
     ("Pause", "pause", "Options"),
     ("Commandes (cet écran)", "controls", "—"),
+    ("Plein écran / fenêtre (ou Alt+Entrée)", "fullscreen", "—"),
     ("Debug : manette / courant / screamer", "debug/debug_power/debug_screamer", "—"),
     ("Debug : tous les documents / révélation", "debug_docs/debug_reveal", "—"),
-    ("Debug : son de test", "debug_sound", "—"),
-    ("Debug : hangar / fin / vertige", "debug_hangar/debug_ending/debug_vertigo", "—"),
+    ("Son de test (Maj+F8 : autre moteur audio)", "debug_sound", "—"),
+    ("Debug : hangar / fin / vertige (Maj+F11)", "debug_hangar/debug_ending", "—"),
     ("Debug : fusil (F12) / alarme (Maj+F12)", "debug_rifle", "—"),
 ]
 
@@ -865,19 +866,24 @@ class ControlsOverlay:
                scale=(window.aspect_ratio * 1.05, 1.05), z=.5)
         Text(parent=self.root, text="COMMANDES", position=(0, .46), origin=(0, 0), scale=1.6,
              color=color.rgb(.85, .9, .95))
-        Text(parent=self.root, text="ACTION", position=(-.62, .4), scale=.8, color=color.rgb(.6, .6, .6))
-        Text(parent=self.root, text="CLAVIER / SOURIS", position=(-.05, .4), scale=.8, color=color.rgb(.6, .6, .6))
-        Text(parent=self.root, text="MANETTE PS5", position=(.37, .4), scale=.8, color=color.rgb(.6, .6, .6))
-        y = .36
-        for label, kb, pad in CONTROL_ROWS:
-            if kb is None:
-                Text(parent=self.root, text=label, position=(-.62, y), scale=.8, color=color.rgb(1, .8, .45))
-            else:
-                Text(parent=self.root, text=label, position=(-.62, y), scale=.72, color=color.rgb(.85, .85, .82))
-                lab = kb if kb[0].isupper() else key_label(kb)
-                Text(parent=self.root, text=lab, position=(-.05, y), scale=.72, color=color.rgb(.75, .85, .95))
-                Text(parent=self.root, text=pad, position=(.37, y), scale=.72, color=color.rgb(.75, .95, .8))
-            y -= .032
+        # deux blocs côte à côte (à pied | navette + divers) pour que tout tienne à l'écran
+        split = next((i for i, r in enumerate(CONTROL_ROWS) if r[0] == "NAVETTE"), len(CONTROL_ROWS))
+        hw = min(.88, window.aspect_ratio / 2 - .02)
+        for x0, rows in ((-hw, CONTROL_ROWS[:split]), (.03, CONTROL_ROWS[split:])):
+            cw = hw - .03                                  # largeur d'un bloc
+            xa, xk, xp = x0, x0 + cw * .44, x0 + cw * .70
+            for txt, xx in (("ACTION", xa), ("CLAVIER / SOURIS", xk), ("MANETTE PS5", xp)):
+                Text(parent=self.root, text=txt, position=(xx, .4), scale=.7, color=color.rgb(.6, .6, .6))
+            y = .36
+            for label, kb, pad in rows:
+                if kb is None:
+                    Text(parent=self.root, text=label, position=(xa, y), scale=.74, color=color.rgb(1, .8, .45))
+                else:
+                    Text(parent=self.root, text=label, position=(xa, y), scale=.62, color=color.rgb(.85, .85, .82))
+                    lab = kb if kb[0].isupper() else key_label(kb)
+                    Text(parent=self.root, text=lab, position=(xk, y), scale=.62, color=color.rgb(.75, .85, .95))
+                    Text(parent=self.root, text=pad, position=(xp, y), scale=.62, color=color.rgb(.75, .95, .8))
+                y -= .036
         lay = "AZERTY" if C.KEYBOARD_LAYOUT == "azerty" else "QWERTY"
         Text(parent=self.root, text=f"Clavier {lay} (config.KEYBOARD_LAYOUT).   I / Échap : fermer",
              position=(0, -.46), origin=(0, 0), scale=.72, color=color.rgba(1, 1, 1, .5))

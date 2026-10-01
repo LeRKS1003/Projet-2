@@ -20,19 +20,19 @@ import config as C  # noqa: E402
 
 from panda3d.core import loadPrcFileData  # noqa: E402
 
+import startup  # noqa: E402
+
 loadPrcFileData("", "sync-video %d" % (1 if C.VSYNC else 0))
 loadPrcFileData("", "texture-anisotropic-degree 4")
-# audio : OpenAL explicitement, et jamais désactivé (effets sonores et musique)
-loadPrcFileData("", "audio-library-name p3openal_audio")
-loadPrcFileData("", "audio-active #t")
-loadPrcFileData("", "audio-sfx-active #t")
-loadPrcFileData("", "audio-music-active #t")
+# audio : OpenAL testé AVANT d'ouvrir la fenêtre, repli automatique sur FMOD (voir startup.py)
+startup.choose_audio_backend()
+_WIN_SIZE, _BORDERLESS = startup.initial_window()     # plein écran fenêtré à la taille de l'écran
 
 from ursina import (Ursina, Entity, Text, camera, color, mouse, window, application, invoke,  # noqa: E402
                     destroy, time as utime, Vec3)
 
-app = Ursina(title=C.TITLE, development_mode=True, editor_ui_enabled=False, borderless=False,
-             fullscreen=C.FULLSCREEN, size=C.WINDOW_SIZE, vsync=C.VSYNC)
+app = Ursina(title=C.TITLE, development_mode=True, editor_ui_enabled=False, borderless=_BORDERLESS,
+             fullscreen=False, size=_WIN_SIZE, vsync=C.VSYNC)
 window.color = color.black
 # IMPORTANT : Ursina 8 donne par défaut à chaque entité un shader NON ÉCLAIRÉ
 # (unlit_with_fog_shader) qui affiche tout en pleine lumière, quel que soit
@@ -41,6 +41,14 @@ window.color = color.black
 Entity.default_shader = None
 if hasattr(window, "editor_ui"):
     window.editor_ui.enabled = False     # cache le bouton X et les compteurs d'Ursina
+# les raccourcis du mode développeur d'Ursina (F10 = rendu fil de fer, F11 = plein écran avec barre
+# de titre, F12 = éditeur) entrent en conflit avec les touches du jeu : on les désactive
+if hasattr(window, "input_entity"):
+    window.input_entity.input = None
+    window.input_entity.enabled = False
+DISPLAY = startup.DisplayMode(application.base)
+if _BORDERLESS:
+    DISPLAY.set(True)                    # collée en haut à gauche de l'écran, sans bordure
 application.base.render.setShaderAuto()     # éclairage par pixel (lampe torche, néons)
 camera.clip_plane_near = 0.05
 
@@ -170,8 +178,38 @@ class Game(Entity):
         camera.position = (0, 0, 0)
         camera.rotation = (0, 0, 0)
         camera.fov = C.FOV
-        self._set_screen(TitleScreen(story.GAME_TITLE, story.TITLE_SUBTITLE,
-                                     ["Nouvelle partie", "Commandes", "Quitter"], self._menu_select))
+        self._title_menu()
+
+    def _fullscreen_label(self):
+        return "Plein écran : " + ("Oui" if DISPLAY.full else "Non")
+
+    def _title_menu(self, sel=0):
+        scr = TitleScreen(story.GAME_TITLE, story.TITLE_SUBTITLE,
+                          ["Nouvelle partie", "Commandes", self._fullscreen_label(), "Quitter"], self._menu_select)
+        # état du son, bien visible (vert = OK, rouge = aucune sortie audio)
+        txt, ok = self.audio.status_line()
+        Text(parent=scr.root, text=txt, origin=(0, 0), y=-.33, scale=.9,
+             color=color.rgb(.45, .85, .5) if ok else color.rgb(1, .35, .3))
+        scr.sel = sel
+        scr._refresh()
+        self._set_screen(scr)
+
+    def toggle_fullscreen(self):
+        DISPLAY.toggle()
+        self.hud.message("Plein écran" if DISPLAY.full else "Fenêtre", color.rgb(.7, .75, .8))
+        if self.state == "menu" and isinstance(self.screen, TitleScreen):
+            self._title_menu(self.screen.sel)
+        elif self.paused:
+            self._pause_menu(self.screen.sel if self.screen else 0)
+
+    def switch_audio_backend(self):
+        """Maj+F8 : relance le jeu avec l'autre moteur audio (OpenAL <-> FMOD)."""
+        other = startup.switch_backend_and_restart()
+        if other is None:
+            self.hud.message("Impossible de relancer le jeu", color.red)
+            return
+        print(f"[audio] relance du jeu avec {startup.NAMES[other]}...")
+        application.quit()
 
     def _set_screen(self, s):
         if self.screen:
@@ -184,6 +222,8 @@ class Game(Entity):
             self.new_game()
         elif opt == "Commandes":
             self.controls.toggle()
+        elif opt.startswith("Plein écran"):
+            self.toggle_fullscreen()
         elif opt == "Quitter":
             application.quit()
 
@@ -548,7 +588,7 @@ class Game(Entity):
             if inp.pressed("debug_ending"):
                 self.debug_ending()
                 return
-            if inp.pressed("debug_vertigo"):
+            if inp.pressed("debug_vertigo") and inp._kb_held("shift"):
                 self.vertigo.start_crisis(forced=True)
                 self.hud.message("[debug] crise de vertige", color.yellow)
         if inp.debug_overlay:
@@ -819,8 +859,8 @@ class Game(Entity):
 
     def _pause_menu(self, sel=0):
         scr = MenuScreen("PAUSE", f"{story.GAME_TITLE} — seed {self.seed}",
-                         ["Reprendre", "Commandes", self._vertigo_label(), "Recommencer", "Menu principal",
-                          "Quitter"], self._pause_select, bg_alpha=.6)
+                         ["Reprendre", "Commandes", self._vertigo_label(), self._fullscreen_label(), "Recommencer",
+                          "Menu principal", "Quitter"], self._pause_select, bg_alpha=.6)
         scr.sel = sel
         scr._refresh()
         self._set_screen(scr)
@@ -836,6 +876,9 @@ class Game(Entity):
                 i = ORDER.index(self.vertigo_setting) if self.vertigo_setting in ORDER else 2
                 self.vertigo_setting = ORDER[(i + 1) % len(ORDER)]
             self._pause_menu(sel=2)
+            return
+        if opt.startswith("Plein écran"):
+            self.toggle_fullscreen()
             return
         if opt == "Reprendre":
             self.toggle_pause()
@@ -869,8 +912,17 @@ class Game(Entity):
                 closed_overlay = True
         elif self.inp.pressed("controls") and self.state in ("menu", "tps", "landing", "fps", "victory", "gameover"):
             self.controls.toggle()
-        # F8 : son de test (partout, même dans les menus)
-        if C.DEBUG_KEYS and self.inp.pressed("debug_sound"):
+        # F11 / Alt+Entrée : plein écran <-> fenêtre (partout)
+        inp = self.inp
+        alt = inp._kb_held("alt") or inp._kb_held("left alt") or inp._kb_held("right alt")
+        if (inp.pressed("fullscreen") and not inp._kb_held("shift")) or (alt and "enter" in inp._kb_pressed):
+            inp._kb_pressed.discard("enter")              # Alt+Entrée ne valide pas le menu
+            self.toggle_fullscreen()
+        # F8 : son de test (partout, même dans les menus) ; Maj+F8 : essayer l'autre moteur audio
+        if self.inp.pressed("debug_sound"):
+            if self.inp._kb_held("shift"):
+                self.switch_audio_backend()
+                return
             self.hud.message(self.audio.test_sound(), color.yellow)
         if playing and self.inp.pressed("pause") and not closed_overlay and not self.controls.open:
             if self.reader.is_open and not self.paused:

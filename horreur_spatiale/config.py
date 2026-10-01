@@ -12,7 +12,7 @@ le volume, la seed de génération, etc.
 TITLE = "DÉRIVE"
 SEED = None                 # None = seed aléatoire à chaque partie, sinon un entier
 WINDOW_SIZE = (1280, 720)
-FULLSCREEN = False
+FULLSCREEN = True           # plein écran fenêtré (sans bordure, taille de l'écran) ; F11 ou Alt+Entrée bascule
 VSYNC = True
 SHOW_FPS = True
 TARGET_FPS = 60
@@ -20,6 +20,7 @@ TARGET_FPS = 60
 # ----------------------------------------------------------------------------
 # AUDIO
 # ----------------------------------------------------------------------------
+AUDIO_BACKEND = "auto"      # "auto" (OpenAL, repli FMOD s'il ne marche pas), "openal" ou "fmod"
 MASTER_VOLUME = 0.85
 SFX_VOLUME = 1.0
 MUSIC_VOLUME = 0.55
@@ -60,7 +61,8 @@ KEYS_AZERTY = {
     "journal": "j", "controls": "i",
     "melee": "b",               # mise à mort au corps à corps (R3 à la manette)
     "guide": "g",               # traits lumineux au sol vers l'objectif (flèche bas à la manette)
-    "debug_hangar": "f9", "debug_ending": "f10", "debug_vertigo": "f11",
+    "debug_hangar": "f9", "debug_ending": "f10", "debug_vertigo": "f11",   # Maj+F11 : crise de vertige
+    "fullscreen": "f11",        # F11 (ou Alt+Entrée) : plein écran / fenêtre
     "debug_rifle": "f12",       # F12 : fusil + munitions ; Maj+F12 : déclencher l'alarme
     "weapon_pistol": "1", "weapon_rifle": "2", "weapon_knife": "3",
     # navette
