@@ -23,7 +23,7 @@ from ursina import Texture
 
 import config as C
 
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEX_DIR = os.path.join(BASE_DIR, "generated", "textures")
 
@@ -998,11 +998,11 @@ def _mat_suitcloth(rng):
     n = fractal_noise(s, s, rng, 5)
     folds = fractal_noise(s, s, rng, 3, base=2)
     h = weave * .25 + folds * .7
-    # coutures piquées (lignes de points) tous les 64 pixels
-    seam = (np.abs((xx % 64) - 32) < 1.2) & ((yy % 6) < 3)
-    h[seam] -= .35
-    alb = .78 + .12 * n - .08 * weave
-    alb[seam] *= .6
+    # une couture piquée (ligne de points) par motif : discrète, pas une grille
+    seam = (np.abs(xx - 128) < 1.2) & ((yy % 8) < 4)
+    h[seam] -= .3
+    alb = .78 + .12 * n - .025 * weave
+    alb[seam] *= .78
     grime = fractal_noise(s, s, rng, 4, base=2)
     alb *= .75 + .25 * grime
     rough = np.clip(.55 + .25 * grime - .1 * folds, .2, 1)
@@ -1043,8 +1043,30 @@ def _mat_grate(rng):
     return alb[..., None].repeat(3, 2), h, rough, (.6, 32, 2.0)
 
 
+def _mat_deadskin(rng):
+    """
+    Peau de cadavre (SINUS) : gris-bleu pâle, marbrures livides et réseau de
+    veines sombres qui affleurent. Mate, légèrement cireuse.
+    """
+    s = 256
+    n = fractal_noise(s, s, rng, 5)
+    blotch = fractal_noise(s, s, rng, 3, base=2)
+    # veines : lignes de crête d'un bruit (|bruit - 0,5| petit) -> réseau ramifié
+    v1 = np.abs(fractal_noise(s, s, rng, 4, base=3) - .5)
+    v2 = np.abs(fractal_noise(s, s, rng, 5, base=6) - .5)
+    veins = np.clip(1 - v1 / .035, 0, 1) * .8 + np.clip(1 - v2 / .02, 0, 1) * .45
+    veins = np.clip(veins, 0, 1)
+    alb = .78 + .08 * n - .12 * np.clip(blotch - .5, 0, 1)
+    r = alb * .86 - veins * .38
+    gr = alb * .9 - veins * .34
+    b = alb * .98 - veins * .2
+    h = n * .12 - veins * .25
+    rough = np.clip(.8 - .15 * blotch, .4, 1)
+    return np.clip(np.dstack([r, gr, b]), 0, 1), h, rough, (.12, 14, 1.4)
+
+
 MATERIALS = {
-    "suitcloth": _mat_suitcloth, "skin": _mat_skin, "grate": _mat_grate,
+    "suitcloth": _mat_suitcloth, "skin": _mat_skin, "deadskin": _mat_deadskin, "grate": _mat_grate,
     "panel": _mat_panel, "floor": _mat_floor, "brushed": _mat_brushed, "painted": _mat_painted,
     "hullplates": _mat_hullplates, "gunmetal": _mat_gunmetal, "polymer": _mat_polymer, "suit": _mat_suit,
 }

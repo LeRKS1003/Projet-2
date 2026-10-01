@@ -127,6 +127,9 @@ class HUD:
         self.battery_bar = _bar(self.fps, (-ar / 2 + .04, -.455), .22, color.rgb(.95, .85, .3), .008)
         self.wounds_text = Text(parent=self.fps, text='', position=(-ar / 2 + .36, -.387), scale=.65,
                                 color=color.rgb(1, .35, .3))
+        self.nv_label = Text(parent=self.fps, text='', position=(-ar / 2 + .04, -.47), scale=.65,
+                             color=color.rgb(.5, 1, .6))
+        self.nv_bar = _bar(self.fps, (-ar / 2 + .04, -.488), .22, color.rgb(.3, 1, .45), .006)
         self.battery_text = Text(parent=self.fps, text='', position=(-ar / 2 + .27, -.445), scale=.65,
                                  color=color.rgb(.8, .8, .5))
         self.ammo_text = Text(parent=self.fps, text='', position=(ar / 2 - .05, -.39), origin=(.5, 0), scale=1.6,
@@ -357,14 +360,21 @@ class HUD:
         self.stamina_bar[1].color = color.rgb(.8, .4, .2) if p.exhausted else color.rgb(.7, .7, .6)
         self._set_bar(self.battery_bar, .22, lt.battery / C.BATTERY_MAX)
         self.battery_bar[1].color = color.rgb(1, .3, .2) if lt.battery < 15 else color.rgb(.95, .85, .3)
-        mode = "VISION NOCT." if lt.nightvision else ("LAMPE" if lt.flashlight_on else "")
+        mode = "LAMPE" if lt.flashlight_on else ""
+        # jauge du casque de vision nocturne : visible seulement quand le casque est équipé
+        has_nv = inv.nv_equipped
+        self.nv_label.enabled = has_nv
+        for e in self.nv_bar:
+            e.enabled = has_nv
+        if has_nv:
+            self._set_bar(self.nv_bar, .22, lt.nv_battery / 100.0)
+            lowc = lt.nv_battery < C.NVG_LOW_PERCENT
+            self.nv_bar[1].color = color.rgb(1, .3, .2) if lowc else color.rgb(.3, 1, .45)
+            _tx(self.nv_label, f"VISION NOCT. {lt.nv_battery:.0f}%" + ("  [actif]" if lt.nightvision else ""))
         _tx(self.battery_text, f"{lt.battery:.0f}%  {mode}")
         hits = p.creature_hits
         _tx(self.wounds_text, f"Coups de la bête : {hits}/{C.CREATURE_HITS_TO_KILL}" if hits else "")
-        if w.has_pistol:
-            _tx(self.ammo_text, f"{w.mag} | {w.reserve}" + ("  RECHARGE..." if w.reloading > 0 else ""))
-        else:
-            _tx(self.ammo_text, "")
+        _tx(self.ammo_text, w.hud_ammo())
         kd = inv.knife_durability()
         _tx(self.knife_text, f"Couteau {kd}/{C.KNIFE_DURABILITY}" if inv.has("knife") else "Pas de couteau")
         from loot import ITEM_NAMES
@@ -415,8 +425,12 @@ class HUD:
         _tx(self.alert_text, ("ALERTE" if g.horror.active and (g.time * 2.5) % 1 < .55 else ""))
         # --- surimpressions ------------------------------------------------
         nv = lt.nightvision
-        self.nv_tint.color = color.rgba(.05, 1, .2, .22 if nv else 0)
-        self.nv_grain.color = color.rgba(.6, 1, .6, .5 if nv else 0)
+        ns = lt.nv_strength
+        low = nv and lt.nv_battery < C.NVG_LOW_PERCENT
+        # batterie faible : l'image grésille un peu (le grain clignote)
+        crackle = (.15 * random.random() if low else 0.0)
+        self.nv_tint.color = color.rgba(.05, 1, .2, (.22 * ns) if nv else 0)
+        self.nv_grain.color = color.rgba(.6, 1, .6, min(1.0, (.5 + crackle) * (.6 + .4 * ns)) if nv else 0)
         if nv:
             self.nv_grain.texture_offset = (random.random(), random.randint(0, 3) * .25)
             gl = lt.glare_amount(tuple(camera.world_position), tuple(camera.forward))

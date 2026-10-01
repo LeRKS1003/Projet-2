@@ -34,10 +34,12 @@ horreur_spatiale/
 ├── generator.py    génération procédurale de l'intérieur (grille, salles, couloirs A*, conduits, collisions)
 ├── rooms.py        construction et décoration de chaque type de salle, portes, grilles, fenêtres, meshes fusionnés
 ├── player.py       contrôleur FPS (marche, course/endurance, accroupi, santé, bruit, interactions, cachette)
-├── weapons.py      pistolet (hitscan, visée, recul, flash, chargeur) et couteau (durabilité)
+├── weapons.py      pistolet (hitscan, visée, recul, flash, chargeur, sons en couches), couteau, choix de l'arme
+├── rifle.py        fusil d'assaut silencieux : modèle détaillé, tir auto, viseur point rouge, rechargement
+├── alarm.py        alarme du vaisseau : sirène, bourdonnement, bips, voix d'annonce, synchro des gyrophares
 ├── inventory.py    inventaire limité, objet équipé, menu d'inventaire SANS pause
-├── loot.py         casiers, corps de l'équipage, sacs abandonnés, documents, disque dur, tables pondérées
-├── story.py        L'HISTOIRE : bible, équipage, textes des 15 documents + disque dur (modifiable librement)
+├── loot.py         casiers, caisse d'armes du hangar, sacs abandonnés, documents, disque dur, tables pondérées
+├── story.py        L'HISTOIRE : bible, équipage, textes des 16 documents + disque dur (modifiable librement)
 ├── document_ui.py  rendu des documents (papier, terminal, fiche, photo...), lecture, journal, écran des commandes
 ├── hallucinations.py  infection par SINUS, indices hallucinatoires, révélation finale
 ├── creature.py     IA de la grande créature (A*, états, perception) + directrice d'IA
@@ -50,7 +52,7 @@ horreur_spatiale/
 ├── guidance.py     guidage : flèche qui suit le chemin A*, marqueur en bord d'écran, traits lumineux au sol
 ├── vertigo.py      crises de vertige après le disque dur (image, son, contrôles, vibrations) + réglage d'intensité
 ├── ending.py       cinématique de fin (cockpit, décollage, portes du hangar, plans extérieurs, reflet, crédits)
-├── corpses.py      corps de l'équipage : silhouettes organiques articulées, combinaisons, badges, poses
+├── corpses.py      corps de l'équipage : squelette à angles limités, peau, givre, cheveux, objets, hallucination
 ├── interior.py     habillage : signalétique, portes détaillées, tuyaux, grilles, désordre, identité des salles
 ├── space.py        skybox : milliers d'étoiles, nébuleuse, planètes (dont une à anneaux), soleil
 ├── audio.py        synthèse numpy -> .wav au premier lancement, lecture 2D/3D/boucles
@@ -121,7 +123,8 @@ La seed est affichée dans le menu pause ; fixe `SEED` dans `config.py` pour rej
 | vision nocturne (casque requis) | N | L1 |
 | interagir / fouiller (maintenir) | E | Croix |
 | bandage (2 s, tu es vulnérable) | H | Flèche haut |
-| changer d'objet équipé / l'utiliser | C, V ou molette / F | Flèche gauche / Flèche droite |
+| changer d'objet équipé / l'utiliser | C, V ou molette / F | — / Flèche gauche |
+| choisir l'arme : pistolet / fusil / couteau | 1 / 2 / 3 | Flèche droite (cycle) |
 | traits lumineux vers l'objectif (quelques secondes) | G | Flèche bas |
 | inventaire (le jeu continue !) | Tab | Pavé tactile |
 | pause | Échap | Options |
@@ -134,6 +137,7 @@ La seed est affichée dans le menu pause ; fixe `SEED` dans `config.py` pour rej
 | test : basculer le courant / déclencher le screamer | F4 / F5 | — |
 | test : tous les documents / révélation finale | F6 / F7 | — |
 | test : son / hangar après atterrissage / cinématique de fin / crise de vertige | F8 / F9 / F10 / F11 | — |
+| test : obtenir le fusil + munitions / déclencher l'alarme | F12 / Maj+F12 | — |
 
 Dans l'inventaire : flèches/molette pour choisir, **E/Entrée** (Croix) pour utiliser, **Suppr** (Triangle) pour jeter.
 `KEYBOARD_LAYOUT = "qwerty"` dans `config.py` pour un clavier QWERTY (WASD).
@@ -157,7 +161,7 @@ Ursina lit les lettres par position physique : la configuration AZERTY est conve
 
 </details>
 
-* **15 documents** à trouver (au moins 12 présents par partie, dont 6 toujours garantis), chacun placé dans sa
+* **16 documents** à trouver (au moins 12 présents par partie, dont 7 toujours garantis), chacun placé dans sa
   salle : sur un bureau, une console, un lit, le frigo, une porte, ou sur le corps de son auteur.
 * Chaque document s'ouvre en grand avec un rendu adapté (papier jauni manuscrit, en-tête officiel Helios,
   fiche médicale, écran vert de terminal, transcription audio, post-it, image granuleuse : dessin, scanner
@@ -189,6 +193,18 @@ Ursina lit les lettres par position physique : la configuration AZERTY est conve
   dérivent, impossible de courir, parfois tu trébuches). Elles sont plus fréquentes quand la bête est proche.
   **Accessibilité** : menu pause > *Vertiges : Désactivé / Faible / Normal / Fort* (`VERTIGO_INTENSITY`).
 * **La fin** se passe en maintenant **Espace / Croix**.
+* **Fusil d'assaut silencieux** : dans une caisse d'armes verrouillée du hangar, près de la navette de Léa
+  Fontaine (maintenir E / Croix pour forcer la serrure), avec son bon de livraison Helios. Tir automatique
+  (maintenir clic gauche / R2, précis en courtes rafales), visée au point rouge (clic droit / L2). Il ne
+  déclenche pas l'alerte et la grande créature ne l'entend que tout près (`RIFLE_NOISE_RADIUS`, 3 m) ; les
+  petites créatures proches peuvent réagir. Ses chargeurs sont rares (salle des machines, commandement).
+  La grande créature reste impossible à tuer.
+* **Vision nocturne** : le casque a sa propre batterie (environ 7 min, `NVG_BATTERY_SECONDS`), jauge visible
+  quand il est équipé, bip et grésillement à 20 %, extinction progressive à 0 %. Une pile équipée sur le
+  casque le recharge en partie (`NVG_BATTERY_RECHARGE`).
+* **Alarme** : pendant une alerte, chaque gyrophare est un haut-parleur (fort dans ta salle, lointain et
+  étouffé ailleurs) et une voix synthétique annonce la contamination… quand elle ne déraille pas.
+  Réglages `ALARM_*` ; sons du pistolet `GUN_*`.
 
 * Marcher fait du bruit, courir beaucoup, accroupi presque rien ; l'indicateur **BRUIT** du HUD te le montre.
 * La lampe te fait repérer de plus loin. La vision nocturne voit dans le noir mais les néons éblouissent.

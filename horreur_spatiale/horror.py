@@ -18,6 +18,7 @@ import random
 from ursina import color
 
 import config as C
+from alarm import ShipAlarm
 
 
 class HorrorManager:
@@ -35,7 +36,8 @@ class HorrorManager:
         self.times_triggered = 0
         self.active_time = 0.0    # durée de l'alerte en cours (plafonnée à HORROR_MAX_TIME)
         a = game.audio
-        self.alarm = a.loop("alarm", "alarm", .5)
+        self.alarm = ShipAlarm(game)        # sirène + bourdonnement + bips, spatialisés, annonce vocale
+        self.after_silence = 0.0            # silence lourd après la fin de l'alerte
         self.music = a.loop("horror_music", "horror_music", .9, music=True)
         self.drone = a.loop("drone", "tension_drone", .8, music=True)
         self.amb = a.loop("ambience", "ambience", .9, ambient=True)
@@ -105,13 +107,20 @@ class HorrorManager:
             self.level = max(0.0, self.level - dt * rate)
             if self.level <= 0 and self.active:
                 self.active = False
+                self.after_silence = C.ALARM_AFTER_SILENCE
                 g.hud.message("Le silence retombe...", color.rgb(.6, .6, .7))
         self.scare = max(0.0, self.scare - dt * 1.2)
         L = self.level
         # sons
-        self.alarm.set(L ** .7, fade=3)
+        self.alarm.update(dt, L)
         self.music.set(L, fade=1.5 if self.timer > 0 else .6)
-        self.amb.set(1.0 - .5 * L)
+        # après l'alerte : silence lourd, il ne reste que le bourdonnement du vaisseau
+        if self.after_silence > 0:
+            self.after_silence -= dt
+            k = max(0.0, self.after_silence / C.ALARM_AFTER_SILENCE)
+            self.amb.set(1.0 - .8 * min(1.0, k * 1.5), fade=.8)
+        else:
+            self.amb.set(1.0 - .5 * L)
         # réacteur spatialisé
         # (silencieux tant que le courant n'est pas rétabli)
         if g.builder and g.builder.reactor_pos:

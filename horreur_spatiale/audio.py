@@ -614,6 +614,236 @@ def gen_late(rng):
     return out
 
 
+# ============================================================================
+# ARMES V3 (pistolet en couches, réverbérations par lieu, fusil silencieux),
+# ALARME EN TROIS COUCHES, ANNONCE DU VAISSEAU, VISION NOCTURNE
+# ============================================================================
+_VOWELS = {
+    "a": (730, 1090, 2440), "e": (530, 1840, 2480), "é": (400, 2000, 2550), "i": (270, 2290, 3010),
+    "o": (570, 840, 2410), "u": (300, 870, 2240), "on": (450, 900, 2300),
+}
+
+
+def _syllables(spec, rng, f0=118.0, rate=1.0):
+    """
+    Voix synthétique « métallique » syllabe par syllabe. spec : liste de
+    (consonne, voyelle, durée) ; consonne parmi '', 's', 't', 'k', 'd', 'm', 'n', 'l', 'ch', ' ' (pause).
+    """
+    parts = []
+    for cons, vow, dur in spec:
+        dur /= rate
+        if cons == " ":
+            parts.append(np.zeros(int(SR * dur)))
+            continue
+        t = _t(dur)
+        n = len(t)
+        # attaque consonantique
+        c = np.zeros(n)
+        k = int(SR * min(.06, dur * .35))
+        if cons in ("s", "ch"):
+            c[:k] = _band(_noise(k, rng), 3500 if cons == "s" else 2200, 8000) * .9
+        elif cons in ("t", "k", "d"):
+            kk = int(SR * .018)
+            c[:kk] = _band(_noise(kk, rng), 1500 if cons != "k" else 900, 6000) * np.exp(-np.arange(kk) / SR * 180) * 1.4
+        elif cons in ("m", "n", "l"):
+            c[:k] = np.sin(2 * np.pi * f0 * t[:k]) * .5
+        # voyelle : impulsions glottiques filtrées par les formants
+        f1, f2, f3 = _VOWELS[vow]
+        ph = 2 * np.pi * np.cumsum(np.full(n, f0) * (1 + .02 * np.sin(2 * np.pi * 5 * t))) / SR
+        glott = (np.mod(ph / (2 * np.pi), 1.0) < .1).astype(np.float64)
+        glott -= glott.mean()
+        v = _band(glott, f1 * .8, f1 * 1.2) + .7 * _band(glott, f2 * .85, f2 * 1.15) + .35 * _band(glott, f3 * .9, f3 * 1.1)
+        env = np.clip(t / .02, 0, 1) * np.clip((dur - t) / .04, 0, 1)
+        start = int(SR * (.03 if cons else 0))
+        v[:start] *= np.linspace(0, 1, start) if start else 1
+        parts.append(c + v * env * 2.2)
+    s = np.concatenate(parts) if parts else np.zeros(10)
+    return s
+
+
+def _radio(s, rng, crush=12):
+    """Haut-parleur métallique : bande passante étroite, modulation en anneau, quantification."""
+    t = np.arange(len(s)) / SR
+    s = _band(s, 320, 3300)
+    s = s * (.75 + .25 * np.sin(2 * np.pi * 62 * t))               # modulation en anneau (voix robotique)
+    s = np.round(_norm(s, .9) * crush) / crush                      # quantification (son « numérique »)
+    s += _band(_noise(len(s), rng), 2000, 6000) * .04               # souffle du haut-parleur
+    return _reverb(s, rng, .9, .3, 2600)
+
+
+def gen_arms_alarm(rng):
+    out = {}
+    # ------------------------------------------------------------------
+    # PISTOLET : quatre couches (claquement, corps grave, culasse, douille)
+    # ------------------------------------------------------------------
+    for v in range(3):
+        L = .7
+        t = _t(L)
+        n = len(t)
+        # 1. claquement initial : bruit blanc, attaque instantanée, décroissance en quelques ms
+        crack = _band(_noise(n, rng), 1500 + 300 * v, 11000) * np.exp(-t * (260 + 40 * v)) * 1.8
+        snap = np.exp(-t * 1800) * 2.2 * (1 if v != 1 else .8)
+        # 2. corps grave qui « frappe la poitrine » (glissando 140 -> 45 Hz)
+        f = 45 + (95 + 15 * v) * np.exp(-t * 14)
+        thump = np.sin(_sweep(f)) * np.exp(-t * (9 + v)) * 1.7
+        body = _lowpass(_noise(n, rng), 1600) * np.exp(-t * 30) * .9
+        # 3. culasse qui recule et revient (deux clics métalliques)
+        bolt = _clicks(t, ((.055 + .004 * v, .55), (.098 + .005 * v, .45)), 2500, 9000, 320, rng, 3400 + 200 * v)
+        # premières réflexions sur les parois métalliques
+        early = np.zeros(n)
+        for d, a in ((.009, .45), (.017, .32), (.029, .22), (.043, .14)):
+            k = int(d * SR)
+            early[k:] += crack[:n - k] * a
+        s = np.tanh((crack + snap + thump + body + early) * 1.7) + bolt
+        out[f"pistol_shot{v}"] = _norm(_fade(s, .0001, .08), .99)
+    # version étouffée (tir dans un conduit : on l'entend « à travers » la tôle)
+    out["pistol_shot_m"] = _norm(_lowpass(out["pistol_shot0"], 900) * 1.4, .8)
+    # 4. douille qui tinte en rebondissant (un instant après le tir) : 3 variantes
+    for k in range(3):
+        t = _t(.9)
+        s = np.zeros(len(t))
+        for t0, a in ((.0, 1), (.16 + .02 * k, .5), (.27 + .03 * k, .28), (.34 + .03 * k, .14)):
+            tt, on = _after(t, t0)
+            s += on * _metal_ring(tt, (4100 + 350 * k, 6100 + 300 * k, 8300), 34, rng) * a
+        out[f"brass{k}"] = _norm(s, .45)
+    # ------------------------------------------------------------------
+    # RÉVERBÉRATIONS SELON L'ENDROIT
+    # ------------------------------------------------------------------
+    # couloir étroit : court et sec, claquements rapprochés entre les parois
+    t = _t(1.0)
+    s = np.zeros(len(t))
+    for d, a in ((.006, .6), (.013, .45), (.021, .35), (.034, .25), (.051, .18), (.075, .1)):
+        k = int(d * SR)
+        s[k:] += _band(_noise(len(t) - k, rng), 600, 6000) * np.exp(-t[:len(t) - k] * 60) * a
+    s += _lowpass(_noise(len(t), rng), 2500) * np.exp(-t * 7) * .35
+    out["gun_tail_corridor"] = _norm(_fade(s, .002, .2), .5)
+    # conduit d'aération : boîte métallique étroite, étouffé et résonant
+    t = _t(1.3)
+    s = _lowpass(_noise(len(t), rng), 700) * np.exp(-t * 6) + _metal_ring(t, (220, 330, 495), 4, rng) * .5
+    out["gun_tail_vent"] = _norm(_fade(s, .003, .3), .5)
+    # très grande salle (hangar, machines) : long écho métallique qui roule
+    t = _t(5.5)
+    ir = _lowpass(_noise(len(t), rng), 3200) * np.exp(-t * 1.0)
+    ring = _metal_ring(t, (82, 123, 185, 277, 416, 624, 936), .8, rng) * .4
+    s = (ir + ring) * np.clip(t / .05, 0, 1)
+    for e, a in ((.31, .6), (.63, .45), (1.02, .3), (1.55, .2)):
+        k = int(e * SR)
+        s[k:] += _lowpass(_noise(len(t) - k, rng), 2000) * np.exp(-t[:len(t) - k] * 14) * a
+    out["gun_tail_hall"] = _norm(_fade(s, .01, .9), .6)
+    # écho qui se propage dans le vaisseau (lointain, filtré, qui « voyage »)
+    t = _t(3.2)
+    s = np.zeros(len(t))
+    for e, a, lp in ((.0, 1, 1400), (.38, .6, 1000), (.81, .4, 750), (1.3, .25, 520), (1.9, .14, 400)):
+        k = int(e * SR)
+        bl = _lowpass(_noise(len(t) - k, rng), lp) * np.exp(-t[:len(t) - k] * 9) * a
+        s[k:] += bl
+    s += _metal_ring(t, (61, 92, 138), 1.2, rng) * .25
+    out["gun_echo_far"] = _norm(_fade(_reverb(s, rng, 2.5, .5, 900), .03, 1.0), .45)
+    # ------------------------------------------------------------------
+    # FUSIL D'ASSAUT SILENCIEUX : « pfft » sourd + cliquetis de culasse
+    # ------------------------------------------------------------------
+    for v in range(3):
+        t = _t(.32)
+        n = len(t)
+        puff = _band(_noise(n, rng), 300 + 60 * v, 2600) * np.exp(-t * 45) * 1.4
+        thud = np.sin(_sweep(70 + 90 * np.exp(-t * 30))) * np.exp(-t * 28) * .9
+        clack = _clicks(t, ((.012, .7), (.05 + .004 * v, .55)), 3000, 9500, 420, rng, 4600 + 300 * v)
+        out[f"rifle_shot{v}"] = _norm(_fade(puff + thud + clack, .0005, .05), .55)
+    t = _t(.6)
+    out["rifle_tail"] = _norm(_lowpass(_noise(len(t), rng), 900) * np.exp(-t * 9), .2)
+    t = _t(.25)
+    out["rifle_dry"] = _norm(np.exp(-t * 800) * 1.2 + _clicks(t, ((0, 1), (.03, .5)), 3000, 9000, 500, rng), .45)
+    # rechargement du fusil : chargeur qui sort, tombe, nouveau chargeur, culasse armée
+    t = _t(2.3)
+    s = _clicks(t, ((.1, .7),), 2500, 8000, 250, rng, 2400)                         # bouton
+    s += (t > .22) * (t < .5) * _band(_noise(len(t), rng), 800, 3500) * .3          # glissement
+    s += _clicks(t, ((1.05, 1.2),), 400, 3000, 70, rng, 650)                        # insertion
+    s += _clicks(t, ((1.55, .9), (1.72, 1.1)), 1800, 9000, 160, rng, 1700)          # levier d'armement
+    out["rifle_reload"] = _norm(s, .6)
+    # changement d'arme : frottement de sangle + clic de sûreté
+    t = _t(.45)
+    s = _band(_noise(len(t), rng), 500, 3000) * np.sin(np.pi * t / .45) ** 2 * .5
+    s += _clicks(t, ((.3, 1),), 2500, 8000, 300, rng, 3000)
+    out["weapon_switch"] = _norm(s, .45)
+    # ------------------------------------------------------------------
+    # ALARME : sirène à deux tons dissonants, bourdonnement électrique, bips irréguliers
+    # (cycle de la sirène = C.ALARM_CYCLE secondes : les gyrophares suivent ce cycle)
+    # ------------------------------------------------------------------
+    cyc = C.ALARM_CYCLE
+    d = cyc * 4
+    t = _t(d)
+    ph = (t % cyc) / cyc
+    # montée lente sur 70 % du cycle, retombée sur 30 %
+    sweep = np.where(ph < .7, ph / .7, 1 - (ph - .7) / .3)
+    sweep = sweep * sweep * (3 - 2 * sweep)
+    f1 = 410 + 330 * sweep
+    f2 = f1 * 1.41 + 7                                                # triton : dissonant
+
+    def _loopable(f):
+        # ajuste la fréquence pour un nombre entier de périodes : la boucle ne claque pas
+        cycles = f.sum() / SR
+        return f * (round(cycles) / cycles)
+    f1, f2 = _loopable(f1), _loopable(f2)
+    s = (np.sin(_sweep(f1)) + .45 * np.sign(np.sin(_sweep(f1))) * .4 + .7 * np.sin(_sweep(f2)))
+    s *= .55 + .45 * sweep
+    s = _lowpass(np.tanh(s * 1.4), 3800)
+    out["alarm_siren"] = _norm(s, .7)
+    # la même, lointaine : étouffée par les cloisons et réverbérée par tout le vaisseau
+    far = _lowpass(out["alarm_siren"], 650)
+    rv = _reverb(far, rng, 2.2, .55, 700)
+    n0 = len(far)
+    loop = rv[:n0].copy()
+    tail = rv[n0:]
+    loop[:len(tail)] += tail[:n0]                                     # réverbération « enroulée » : boucle parfaite
+    out["alarm_siren_far"] = _norm(loop, .6)
+    # bourdonnement électrique grave en continu (50 Hz + harmoniques + grésillement)
+    d = 4.0
+    t = _t(d)
+    s = sum(np.sin(2 * np.pi * _loop_freq(50 * h, d) * t) / h ** 1.2 for h in range(1, 9))
+    s += _periodic_noise_band(len(t), 2000, 6000, rng) / 40 * (np.sin(2 * np.pi * _loop_freq(3, d) * t) > .6)
+    out["alarm_hum"] = _norm(np.tanh(s * 1.5), .5)
+    # bips d'alerte courts et irréguliers
+    d = 7.0
+    t = _t(d)
+    s = np.zeros(len(t))
+    x = .2
+    while x < d - .3:
+        f = rng.choice([1320, 1480, 1760, 2093])
+        ln = rng.uniform(.05, .12)
+        on = (t >= x) & (t < x + ln)
+        s += on * np.sign(np.sin(2 * np.pi * f * t)) * .5
+        x += rng.choice([.14, .18, .35, .6, 1.1, 1.6])
+    out["alarm_beeps"] = _norm(_lowpass(s, 5000), .4)
+    # ------------------------------------------------------------------
+    # ANNONCE DU VAISSEAU (voix synthétique métallique, déformée)
+    # « Alerte. Contamination détectée. Section... »
+    # ------------------------------------------------------------------
+    a1 = _syllables([("", "a", .17), ("l", "e", .16), ("t", "e", .22), (" ", "a", .35),
+                     ("k", "on", .17), ("t", "a", .14), ("m", "i", .14), ("n", "a", .15), ("s", "on", .24),
+                     (" ", "a", .12), ("d", "é", .15), ("t", "e", .14), ("t", "é", .28)], rng)
+    out["voice_alert0"] = _norm(_fade(_radio(a1, rng), .01, .2), .8)
+    a2 = _syllables([("s", "e", .17), ("k", "on", .26), (" ", "a", .25), ("", "o", .1)], rng, f0=112)
+    s2 = _radio(a2, rng)
+    # le haut-parleur grésille et coupe
+    t = _t(1.2)
+    crackle = (rng.random(len(t)) > .97) * rng.uniform(-1, 1, len(t)) * 2 + _band(_noise(len(t), rng), 1500, 7000) * .5
+    out["voice_alert1"] = _norm(_fade(np.concatenate([s2, crackle * np.exp(-t * 2)]), .01, .2), .8)
+    # la voix déraille : syllabe bégayée, ralentie, qui descend
+    a3 = _syllables([("s", "e", .12), ("s", "e", .12), ("s", "e", .12), ("k", "on", .5)], rng, f0=125)
+    tt = np.arange(len(a3)) / SR
+    a3 = a3 * (1 - .4 * tt / tt[-1])
+    out["voice_glitch"] = _norm(_fade(_radio(a3, rng, crush=6), .01, .2), .75)
+    # ------------------------------------------------------------------
+    # VISION NOCTURNE : bip d'avertissement et extinction progressive
+    # ------------------------------------------------------------------
+    t = _t(.35)
+    out["nvg_warn"] = _norm((t < .07) * np.sin(2 * np.pi * 2400 * t) + ((t > .14) & (t < .21)) * np.sin(2 * np.pi * 2400 * t), .3)
+    t = _t(1.6)
+    f = 3200 * np.exp(-t * 2.2) + 60
+    out["nvg_off"] = _norm(np.sin(_sweep(f)) * np.exp(-t * 1.5) * .6 + _band(_noise(len(t), rng), 2000, 7000) * np.exp(-t * 4) * .3, .4)
+    return out
+
+
 def _missing(name):
     """
     Vrai si le .wav n'existe pas OU est vide / tronqué (génération interrompue,
@@ -1001,6 +1231,15 @@ def gen_all(force=False):
     for name, sig in st.items():
         _write(name, sig)
     ps.update(st)
+    # armes v3, alarme, annonce, vision nocturne
+    aa_names = ("pistol_shot0", "brass2", "gun_tail_hall", "gun_echo_far", "rifle_shot2", "rifle_reload",
+                "alarm_siren", "alarm_siren_far", "alarm_hum", "alarm_beeps", "voice_alert0", "voice_glitch",
+                "nvg_off", "weapon_switch")
+    need_aa = force or any(_missing(n) for n in aa_names)
+    aa = gen_arms_alarm(np.random.default_rng(4547)) if need_aa else {}
+    for name, sig in aa.items():
+        _write(name, sig)
+    ps.update(aa)
     # vertiges et cinématique de fin
     lt_names = ("vertigo_ring", "vertigo_muffle", "vertigo_breath", "cockpit_start", "screens_on",
                 "hangar_doors", "ending_music", "credits_music")

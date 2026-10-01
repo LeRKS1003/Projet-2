@@ -41,7 +41,7 @@ JUNK_ITEMS = [
 ]
 
 ITEM_NAMES = {
-    "ammo": "munitions", "battery": "pile", "bandage": "bandage", "knife": "couteau",
+    "ammo": "munitions", "rifle_ammo": "munitions de fusil", "battery": "pile", "bandage": "bandage", "knife": "couteau",
     "nv_helmet": "casque de vision nocturne", "hdd": "disque dur", "fuse": "fusible", "doc": "document",
 }
 
@@ -118,7 +118,7 @@ def give_contents(game, contents, source):
             continue
         added = game.inventory.add(kind, n)
         if added > 0:
-            got.append(f"{added} {ITEM_NAMES[kind]}" + ("s" if added > 1 and kind not in ("ammo",) else ""))
+            got.append(f"{added} {ITEM_NAMES[kind]}" + ("s" if added > 1 and kind not in ("ammo", "rifle_ammo") else ""))
         if added < n:
             left.append((kind, n - added))
     if got:
@@ -293,100 +293,6 @@ class Locker(Interactable):
             self.anim_list.remove(self)
 
 
-class Corpse(Interactable):
-    """
-    Corps d'un membre d'équipage (story.CREW), fouillable (fouille = vulnérable).
-    Silhouette organique articulée, combinaison détaillée et pose crédible :
-    voir corpses.py. y0 : hauteur du support (0 = sol, ~0,9 = table d'opération).
-    """
-    hold_time = C.SEARCH_TIME
-
-    def __init__(self, level, builders, x, z, yaw, rng, uniform_col=None, crew=None, y0=0.0, parent=None,
-                 pose=None, helmet=None):
-        import corpses
-        self.level = level
-        self.searched = False
-        self.crew = crew
-        self.infested = rng.random() < C.INFESTED_CORPSE_CHANCE and y0 == 0.0
-        self.contents = roll_contents("corpse", rng, 1, 2)
-        dec = builders["decal"]
-        uni = uniform_col or rng.choice([(.35, .3, .2), (.2, .25, .32), (.4, .38, .35), (.45, .2, .12)])
-        pose = pose or rng.choice(["slumped", "curled", "facedown"])
-        if helmet is None:
-            helmet = rng.random() < .3
-        self.pose = pose
-        self.body, info = corpses.build_body(parent, x, y0, z, yaw, pose, uni, rng, who=crew, helmet=helmet)
-        tx, ty, tz = info["torso"]
-        self.pos = (float(tx), float(ty) + .25, float(tz))
-        self.entity = self.body
-        a = math.radians(yaw)
-        ca, sa = math.cos(a), math.sin(a)
-
-        def Lw(lx, lz):  # local -> monde
-            return (x + lx * ca + lz * sa, z - lx * sa + lz * ca)
-
-        # --- décalques : sang séché sombre, traînées, traces de mains -----------------
-        dried = (.42, .16, .13, .95)
-        if y0 == 0.0:
-            px, pz = float(tx), float(tz)
-            dec.decal((px, .012, pz), rng.uniform(1.3, 2.0), rng.uniform(0, 360), dried)
-            dec.decal((px + rng.uniform(-.5, .5), .013, pz + rng.uniform(-.5, .5)), rng.uniform(.5, .9),
-                      rng.uniform(0, 360), (.3, .1, .08, .9))
-        else:
-            # sous la table d'opération : une flaque sèche au sol
-            dec.decal((x, .012, z), rng.uniform(1.0, 1.5), rng.uniform(0, 360), dried)
-        if pose == "crawl" and "smear" in builders:
-            # longue traînée derrière le corps : il s'est traîné jusqu'ici
-            for k in range(1, 5):
-                sx, sz = Lw(rng.uniform(-.1, .1), -.35 - k * .55)
-                builders["smear"].decal((sx, .014, sz), rng.uniform(.7, .9), yaw + rng.uniform(-15, 15),
-                                        (.5, .2, .17, .85))
-        if "hand" in builders:
-            # traces de mains au sol autour du corps
-            for _ in range(rng.randint(1, 3)):
-                hx, hz = Lw(rng.uniform(-.8, .8), rng.uniform(-.3, 1.2))
-                builders["hand"].decal((hx, .015, hz), rng.uniform(.22, .3), rng.uniform(0, 360), (.45, .15, .12, .9))
-        if self.infested:
-            # bosses suspectes sous la combinaison
-            mb = builders["struct"]
-            for _ in range(3):
-                bx = float(tx) + rng.uniform(-.12, .12)
-                bz = float(tz) + rng.uniform(-.15, .15)
-                mb.box_rot((bx, float(ty) + .16, bz), (.09, .07, .09), rng.uniform(0, 90), (.12, .05, .08))
-        level.add_interactable(self, self.pos[0], self.pos[2])
-
-    def prompt(self, game):
-        if self.searched:
-            return None
-        if self.crew is not None:
-            import story
-            name = story.CREW[self.crew]["name"].split(",")[0]
-            return f"Fouiller le corps (badge : {name}) — maintenir"
-        return "Fouiller le cadavre (maintenir)"
-
-    def on_hold(self, game, dt):
-        """Pendant la fouille (maintenir) : bruits de tissu réguliers, petite vibration."""
-        self._rustle_t = getattr(self, "_rustle_t", 0.0) - dt
-        if self._rustle_t <= 0:
-            self._rustle_t = random.uniform(.35, .6)
-            game.audio.play_at("rustle", self.pos, .55, random.uniform(.85, 1.15))
-            game.inp.rumble(.12, .05, 90)
-
-    def interact(self, game):
-        if self.searched:
-            return
-        self.searched = True
-        game.audio.play_at("rustle", self.pos, .8)
-        if self.infested:
-            game.hud.message("Quelque chose bouge sous les vêtements !", color.red)
-            game.aliens.burst_from_corpse(self.pos, 1 + (1 if random.random() < .4 else 0))
-            game.horror.scripted_scare(.5)
-        left = give_contents(game, self.contents, "Cadavre fouillé")
-        self.contents = left
-        if left:
-            self.searched = False
-
-
 def item_model(parent, kind):
     """Petit modèle d'un objet (posé dans le décor ou luisant dans un casier ouvert)."""
     if kind == "knife":
@@ -404,12 +310,114 @@ def item_model(parent, kind):
     elif kind == "ammo":
         Entity(parent=parent, model='cube', color=color.rgb(.25, .3, .2), scale=(.16, .08, .1), y=.04)
         Entity(parent=parent, model='cube', color=color.rgb(.75, .62, .25), scale=(.12, .012, .06), y=.082)
+    elif kind == "rifle_ammo":
+        # chargeur courbe de fusil (polymère sombre, bande rouge « subsonique »)
+        Entity(parent=parent, model='cube', color=color.rgb(.13, .13, .14), scale=(.04, .16, .06), y=.08,
+               rotation_x=12)
+        Entity(parent=parent, model='cube', color=color.rgb(.6, .1, .08), scale=(.042, .02, .062), y=.13,
+               rotation_x=12)
     elif kind == "nv_helmet":
         Entity(parent=parent, model='sphere', color=color.rgb(.2, .22, .2), scale=(.28, .24, .3), y=.12)
         mark_emissive(Entity(parent=parent, model='cube', color=color.rgb(.1, .6, .1), scale=(.18, .06, .08),
                              y=.14, z=.15))       # voyant du casque (sur pile)
     else:
         Entity(parent=parent, model='cube', color=color.rgb(.5, .5, .5), scale=.08, y=.04)
+
+
+class WeaponCrate(Interactable):
+    """
+    Caisse d'armes de sécurité verrouillée (hangar) : on la force en maintenant
+    le bouton d'interaction, puis on y prend le fusil d'assaut silencieux et
+    des munitions. Rangée parmi les caisses du hangar, pas en évidence.
+    """
+    radius = 1.8
+
+    def __init__(self, level, builders, parent, placer):
+        self.level = level
+        self.opened = False
+        self.taken = False
+        self.parent = parent
+        pl = placer
+        mb = builders["struct"]
+        body = (.18, .2, .17)
+        # caisse longue, renforts, poignées, bandes « SÉCURITÉ »
+        pl.box(mb, (0, .25, 0), (1.25, .46, .5), body)
+        for x in (-.5, 0, .5):
+            pl.box(mb, (x, .25, 0), (.06, .48, .52), (.12, .13, .12))
+        for sx in (-.66, .66):
+            pl.box(mb, (sx, .32, 0), (.04, .05, .2), (.08, .08, .08))
+        builders["hazard"].box(pl.pt(0, .2, .252), pl.size((1.0, .06, .005)), (1, 1, 1))
+        self.pos = pl.pt(0, .6, .45)
+        self.placer = pl
+        # couvercle (entité animée) + boîtier de verrouillage avec voyant
+        self.lid_pivot = Entity(parent=parent, position=pl.pt(0, .48, -.25), rotation_y=pl.yaw)
+        self.lid = Entity(parent=self.lid_pivot, model='cube', texture=textures.get('panel'),
+                          color=color.rgb(.2, .22, .19), position=(0, .02, .25), scale=(1.27, .05, .52))
+        lock = Entity(parent=self.lid_pivot, model='cube', color=color.rgb(.1, .1, .11), position=(0, -.03, .51),
+                      scale=(.14, .1, .03))
+        self.led = Entity(parent=lock, model='cube', color=color.rgb(1, .05, .03), position=(.25, .2, -.6),
+                          scale=(.2, .2, .3))
+        mark_emissive(self.led)
+        self.angle = 0.0
+        # le fusil et ses chargeurs, à l'intérieur (visibles une fois ouvert)
+        self.content = Entity(parent=parent, position=pl.pt(0, .32, 0), rotation_y=pl.yaw + 90)
+        Entity(parent=self.content, model='cube', color=color.rgb(.1, .1, .11), scale=(.05, .06, .62))       # carcasse
+        Entity(parent=self.content, model='cube', color=color.rgb(.08, .08, .09), scale=(.045, .045, .26),
+               z=.43)                                                                                      # silencieux
+        Entity(parent=self.content, model='cube', color=color.rgb(.17, .17, .18), scale=(.04, .1, .05),
+               position=(0, -.06, -.05))                                                                   # poignée
+        Entity(parent=self.content, model='cube', color=color.rgb(.17, .17, .18), scale=(.04, .11, .03),
+               position=(0, -.02, -.36))                                                                   # crosse
+        mark_emissive(Entity(parent=self.content, model='cube', color=color.rgb(1, .1, .05), scale=(.006, .006, .006),
+                             position=(0, .06, .05)))                                                      # point rouge
+        for k in range(2):
+            item_model(Entity(parent=self.content, position=(.16, -.03, -.15 + k * .12), rotation_z=90), "rifle_ammo")
+        self.content.enabled = False
+        level.add_interactable(self, self.pos[0], self.pos[2])
+
+    @property
+    def hold_time(self):
+        return C.RIFLE_CRATE_HOLD if not self.opened else 0.0
+
+    def prompt(self, game):
+        if not self.opened:
+            return "Forcer la caisse d'armes verrouillée (maintenir)"
+        if not self.taken:
+            return "Prendre le fusil d'assaut silencieux"
+        return None
+
+    def on_hold(self, game, dt):
+        """Pied-de-biche sur la serrure : grincements métalliques pendant l'effort."""
+        self._snd_t = getattr(self, "_snd_t", 0.0) - dt
+        if self._snd_t <= 0:
+            self._snd_t = random.uniform(.5, .8)
+            game.audio.play_at("door_force", self.pos, .45, random.uniform(1.1, 1.3))
+            game.inp.rumble(.25, .1, 120)
+
+    def interact(self, game):
+        if not self.opened:
+            self.opened = True
+            self.led.color = color.rgb(.1, 1, .3)
+            self.content.enabled = True
+            game.audio.play_at("locker_open", self.pos, .8, .8)
+            game.noise(self.pos, 4.0, "locker")
+            game.hud.message("La serrure cède. Un fusil d'assaut, sous film plastique.", color.rgb(.8, .85, .8))
+            if self not in game.builder.animated:
+                game.builder.animated.append(self)
+            return
+        if not self.taken:
+            self.taken = True
+            self.content.enabled = False
+            game.weapons.give_rifle(C.RIFLE_START_AMMO)
+            game.audio.play("pickup", .8)
+            game.hud.message(f"Fusil d'assaut silencieux récupéré (+{C.RIFLE_START_AMMO} munitions). "
+                             "Touche 2 / flèche droite pour le prendre en main.", color.lime)
+            self.level.remove_interactable(self)
+
+    def update(self, dt):
+        target = -100.0 if self.opened else 0.0
+        self.angle += (target - self.angle) * min(1, dt * 4)
+        self.lid_pivot.rotation_x = self.angle
 
 
 class Pickup(Interactable):

@@ -204,6 +204,19 @@ DOCUMENTS = [
                 "ce qu'il y a à bord.",
         "variants": [],
     },
+    {
+        "id": "D17", "type": "officiel", "style": "helios",
+        "title": "Bon de livraison — sécurité", "author": "Helios Biotech, logistique", "day": 0,
+        "room": "hangar", "place": "rifle_crate", "guaranteed": True, "image": None,
+        "text": "HELIOS BIOTECH — BON DE LIVRAISON N° HB-77310\n\n"
+                "Équipement de sécurité — usage réservé au personnel autorisé.\n\n"
+                "1 x fusil d'assaut compact HB-SR7, silencieux intégré, visée point rouge.\n"
+                "2 x chargeurs transparents, munitions subsoniques.\n\n"
+                "Destinataire : L. Fontaine (pilote, référente sécurité).\n"
+                "Caisse scellée. Ouverture uniquement sur ordre de la Dr Keating.\n\n"
+                "Mention manuscrite : « Pourquoi une arme, pour une mission minéralogique ? — L. »",
+        "variants": [],
+    },
 ]
 
 # nombre minimal de documents (D01 à D15) présents dans chaque partie

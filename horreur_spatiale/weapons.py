@@ -117,6 +117,9 @@ class Weapons:
         self.run_k = 0.0
         self._last_mag = -1
         self._pending_release = False
+        self.shot_times = []                   # instants des derniers tirs (acouphène)
+        self.last_aftermath = -99.0
+        self.pending = []                      # sons différés : (instant, fonction)
         pf = game.postfx
         self.vm_root = pf.vm_root
         self.rig = self.vm_root.attachNewNode("weapon_rig")
@@ -125,6 +128,13 @@ class Weapons:
         self.gun.hide()
         self.knife.hide()
         self._build_world_templates()
+        # fusil d'assaut silencieux (trouvé dans le hangar) et sélection de l'arme
+        from rifle import Rifle
+        self.rifle = Rifle(self)
+        self.has_rifle = False
+        self.current = "pistol"          # "pistol", "rifle" ou "knife"
+        self.switch_t = 0.0              # animation de changement d'arme (s restantes)
+        self.switch_to = None
 
     # ==================================================================
     # CONSTRUCTION DES MODÈLES
@@ -280,11 +290,74 @@ class Weapons:
         self.has_pistol = True
         self.mag = C.PISTOL_START_MAG
         self.game.inventory.add("ammo", C.PISTOL_START_RESERVE)
-        self.gun.show()
+        self.current = "pistol"
+        self._apply_current()
 
     @property
     def reserve(self):
         return self.game.inventory.count("ammo")
+
+    # ------------------------------------------------------------------
+    # CHOIX DE L'ARME (1 / 2 / 3, flèche droite de la manette)
+    # ------------------------------------------------------------------
+    def available(self):
+        out = []
+        if self.has_pistol:
+            out.append("pistol")
+        if self.has_rifle:
+            out.append("rifle")
+        if self.game.inventory is not None and self.game.inventory.has("knife"):
+            out.append("knife")
+        return out
+
+    def select(self, weapon):
+        """Change d'arme avec une animation (l'arme descend, l'autre remonte)."""
+        if weapon == self.current or weapon not in self.available() or self.switch_t > 0:
+            return
+        if self.reloading > 0 or self.rifle.reloading > 0:
+            return
+        self.switch_to = weapon
+        self.switch_t = C.WEAPON_SWITCH_TIME
+        self.game.audio.play("weapon_switch", .55, random.uniform(.95, 1.05))
+        names = {"pistol": "Pistolet", "rifle": "Fusil d'assaut silencieux", "knife": "Couteau"}
+        self.game.hud.message(names[weapon], color.rgb(.8, .85, .8))
+
+    def cycle(self):
+        av = self.available()
+        i = av.index(self.current) if self.current in av else 0
+        self.select(av[(i + 1) % len(av)])
+
+    def _apply_current(self):
+        """Affiche le modèle de l'arme active."""
+        if self.current == "pistol":
+            self.gun.show()
+        else:
+            self.gun.hide()
+        if self.current == "rifle":
+            self.rifle.root.show()
+        else:
+            self.rifle.root.hide()
+
+    def give_rifle(self, ammo=0):
+        self.has_rifle = True
+        self.rifle.mag = C.RIFLE_MAG
+        if ammo:
+            self.game.inventory.add("rifle_ammo", ammo)
+        self.select("rifle")
+
+    def debug_give_rifle(self):
+        """F12 : fusil + munitions (test)."""
+        self.give_rifle(C.RIFLE_DEBUG_AMMO)
+        self.game.hud.message("[debug] fusil d'assaut + munitions", color.yellow)
+
+    def hud_ammo(self):
+        if self.current == "rifle":
+            return self.rifle.hud_text()
+        if self.current == "knife":
+            return "COUTEAU"
+        if self.has_pistol:
+            return f"{self.mag} | {self.reserve}" + ("  RECHARGE..." if self.reloading > 0 else "")
+        return ""
 
     def show(self, on):
         self.game.postfx.show_viewmodel(on)
@@ -299,23 +372,50 @@ class Weapons:
         busy = p.hidden or p.search_target is not None or g.inventory_ui.reading
         self.cooldown = max(0.0, self.cooldown - dt)
         self.knife_cd = max(0.0, self.knife_cd - dt)
+        # changement d'arme (1 / 2 / 3 au clavier, flèche droite à la manette)
+        if not busy:
+            for act, wpn in (("weapon_pistol", "pistol"), ("weapon_rifle", "rifle"), ("weapon_knife", "knife")):
+                if inp.pressed(act):
+                    self.select(wpn)
+            if inp.pad.pressed("dpad_right") and not g.ui_consumed:
+                self.cycle()
+        if self.switch_t > 0:
+            half = C.WEAPON_SWITCH_TIME / 2
+            before = self.switch_t
+            self.switch_t = max(0.0, self.switch_t - dt)
+            if before > half >= self.switch_t and self.switch_to is not None:
+                self.current = self.switch_to          # à mi-course : l'autre arme remonte
+                self.switch_to = None
+                self._apply_current()
+        switching = self.switch_t > 0
+        gun_ready = (self.current == "pistol" and self.has_pistol) or (self.current == "rifle" and self.has_rifle)
         # visée
-        self.aiming = (self.has_pistol and inp.held("aim") and not busy and self.reloading <= 0
-                       and self.knife_anim <= 0)
+        self.aiming = (gun_ready and inp.held("aim") and not busy and self.reloading <= 0
+                       and self.rifle.reloading <= 0 and self.knife_anim <= 0 and not switching)
         self.aim_k += ((1.0 if self.aiming else 0.0) - self.aim_k) * min(1, dt * 12)
-        p.fov_target = C.FOV + (C.ADS_FOV - C.FOV) * self.aim_k
-        # rechargement
+        ads_fov = C.RIFLE_ADS_FOV if self.current == "rifle" else C.ADS_FOV
+        p.fov_target = C.FOV + (ads_fov - C.FOV) * self.aim_k
+        # rechargement du pistolet
         if self.reloading > 0:
             self.reloading -= dt
             if self.reloading <= 0:
                 need = C.PISTOL_MAG - self.mag
                 got = g.inventory.remove("ammo", need)
                 self.mag += got
-        elif not busy:
-            if inp.pressed("reload"):
+        elif self.current == "rifle":
+            self.rifle.update_input(dt, inp, busy or switching)
+            if not busy and not switching:
+                if inp.pressed("knife"):
+                    self.knife_attack()
+                elif inp.pressed("melee"):
+                    self.melee_kill()
+        elif not busy and not switching:
+            if inp.pressed("reload") and self.current == "pistol":
                 self.start_reload()
-            elif inp.pressed("fire") and self.has_pistol:
+            elif inp.pressed("fire") and self.current == "pistol" and self.has_pistol:
                 self.fire()
+            elif inp.pressed("fire") and self.current == "knife":
+                self.knife_attack()
             elif inp.pressed("knife"):
                 self.knife_attack()
             elif inp.pressed("melee"):
@@ -325,6 +425,7 @@ class Weapons:
         self.spread_bonus = max(0.0, self.spread_bonus - dt * 2)
         self._animate(dt)
         self._update_effects(dt)
+        self._update_pending()
 
     # ------------------------------------------------------------------
     def _animate(self, dt):
@@ -355,9 +456,14 @@ class Weapons:
         bob_x = math.cos(ph * .5) * amp * 1.2
         bob_y = -abs(math.sin(ph * .5)) * amp * 1.4
         breath = math.sin(self.t * 1.7) * .0018 * (1 - min(1, speed)) * (1 - a * .6)
-        # poses
-        hip = PVec3(.125, -.1, .38)
-        ads = PVec3(0, -.0405, .33)           # organes de visée alignés sur le centre de l'écran
+        # poses (le fusil se tient plus bas : son point rouge est plus haut que les organes du pistolet)
+        if self.current == "rifle":
+            from rifle import SIGHT_Y
+            hip = PVec3(.13, -.13, .3)
+            ads = PVec3(0, -SIGHT_Y, .2)
+        else:
+            hip = PVec3(.125, -.1, .38)
+            ads = PVec3(0, -.0405, .33)       # organes de visée alignés sur le centre de l'écran
         pos = hip + (ads - hip) * a
         pos += PVec3(self.sway_x + bob_x, self.sway_y + bob_y + breath, self.rec_z)
         pitch = -self.rec_p * (.55 if self.aiming else 1.0) + ly * .004 * (1 - a) + breath * 150
@@ -369,6 +475,24 @@ class Weapons:
         pitch += 22 * rk
         yaw += -28 * rk
         roll += 12 * rk
+        # changement d'arme : l'arme descend hors de l'écran puis la nouvelle remonte
+        if self.switch_t > 0:
+            half = C.WEAPON_SWITCH_TIME / 2
+            k = (C.WEAPON_SWITCH_TIME - self.switch_t) / half if self.switch_t > half else self.switch_t / half
+            k = _ease(max(0.0, min(1.0, k)))
+            pos += PVec3(.02 * k, -.22 * k, -.04 * k)
+            pitch += 38 * k
+            roll += 10 * k
+        if self.current == "rifle":
+            self.knife_rest(False)
+            self.rifle.animate(dt, pos, pitch, yaw, roll)
+            self._knife_swing_only(dt)
+            self._update_flash_hide()
+            return
+        if self.current == "knife":
+            self._animate_knife_mode(dt, pos, pitch, yaw, roll)
+            self._update_flash_hide()
+            return
         # rechargement procédural
         mag_off = 0.0
         self.mag_np.show()
@@ -448,6 +572,45 @@ class Weapons:
             self.flash_side.hide()
 
     # ------------------------------------------------------------------
+    # COUTEAU EN MAIN (arme 3) / COUP DE COUTEAU PENDANT QUE L'ON TIENT LE FUSIL
+    # ------------------------------------------------------------------
+    def knife_rest(self, on):
+        if not on and self.knife_anim <= 0:
+            self.knife.hide()
+
+    def _knife_swing_only(self, dt):
+        """Avec le fusil en main : la main gauche lâche le garde-main pour frapper."""
+        if self.knife_anim > 0:
+            self.knife_anim -= dt
+            t = 1 - max(0, self.knife_anim) / .35
+            self.knife.show()
+            sw = _ease(t)
+            self.knife.setPos(-.13 + .25 * sw, -.09 + .06 * math.sin(t * math.pi), .24 + .12 * math.sin(t * math.pi))
+            _rotate(self.knife, pitch=10 - 25 * math.sin(t * math.pi), yaw=-55 + 115 * sw, roll=-35 + 70 * sw)
+        else:
+            self.knife.hide()
+
+    def _animate_knife_mode(self, dt, pos, pitch, yaw, roll):
+        """Couteau seul en main droite : position de garde, coup de taille au tir."""
+        self.rig.setPos(pos)
+        self.knife.show()
+        if self.knife_anim > 0:
+            self.knife_anim -= dt
+            t = 1 - max(0, self.knife_anim) / .35
+            sw = _ease(t)
+            self.knife.setPos(.14 - .24 * sw, -.08 + .07 * math.sin(t * math.pi), .25 + .13 * math.sin(t * math.pi))
+            _rotate(self.knife, pitch=5 - 30 * math.sin(t * math.pi), yaw=50 - 110 * sw, roll=30 - 65 * sw)
+        else:
+            # garde : lame inclinée vers l'intérieur, tranchant visible
+            br = math.sin(self.t * 1.6) * .004
+            self.knife.setPos(.15, -.12 + br, .3)
+            _rotate(self.knife, pitch=pitch * .3 - 15, yaw=-38 + yaw * .3, roll=roll * .3 - 55)
+
+    def _update_flash_hide(self):
+        self.flash.hide()
+        self.flash_side.hide()
+
+    # ------------------------------------------------------------------
     def vm_to_world(self, node, local):
         """Point de la couche de l'arme -> position approximative dans le monde."""
         p = self.vm_root.getRelativePoint(node, PVec3(*local))
@@ -484,7 +647,7 @@ class Weapons:
                             o["spin"] *= .5
                             if o["kind"] == "casing":
                                 # la douille tinte et rebondit sur le métal
-                                g.audio.play_var("casing", 3, .35 * min(1, abs(o["v"].y) / 2 + .3),
+                                g.audio.play_var("brass", 3, .45 * min(1, abs(o["v"].y) / 2 + .3),
                                                  pos=(o["p"].x, o["p"].y, o["p"].z), pitch_range=(.9, 1.2),
                                                  max_dist=14)
                             else:
@@ -572,12 +735,7 @@ class Weapons:
         g.player.trauma = min(1, g.player.trauma + .25)
         # détonation sèche + longue réverbération métallique (plus longue dans les grandes
         # salles) + acouphène qui s'estompe : chaque tir se regrette
-        g.audio.play("gunshot", 1.0, random.uniform(.95, 1.05))
-        room = g.level.room_at(g.player.x, g.player.z)
-        big = room is not None and room.type in ("hangar", "engine", "command", "mess")
-        g.audio.play("gun_tail_large" if big else "gun_tail_small", .9 if big else .75, random.uniform(.94, 1.04))
-        g.audio.play("tinnitus", .8, random.uniform(.97, 1.03))
-        g.audio.play("slide_click", .35, random.uniform(.95, 1.1))
+        self._pistol_sound()
         g.inp.rumble(1.0, .8, 140)
         cp = camera.world_position
         mw = self.vm_to_world(self.slide, (0, .02, .16))
@@ -591,6 +749,74 @@ class Weapons:
         self.spread_bonus = min(3, self.spread_bonus + 1.2)
         d = self._spread_dir(spread)
         self._hitscan(cp, d, C.PISTOL_DAMAGE, C.PISTOL_RANGE, gun=True)
+
+    # ------------------------------------------------------------------
+    # SON DU PISTOLET : couches + réverbération du lieu + conséquences
+    # ------------------------------------------------------------------
+    def acoustic_env(self):
+        """Acoustique de l'endroit où se trouve le joueur : 'vent', 'corridor', 'hall' ou 'room'."""
+        g = self.game
+        p = g.player
+        if p.in_vent():
+            return "vent"
+        room = g.level.room_at(p.x, p.z)
+        if room is None:
+            return "corridor"
+        return "hall" if room.type in C.GUN_HALL_ROOMS else "room"
+
+    def _pistol_sound(self):
+        g = self.game
+        a = g.audio
+        env = self.acoustic_env()
+        vol = random.uniform(*C.GUN_VOLUME_RANGE)
+        pitch = random.uniform(*C.GUN_PITCH_RANGE)
+        # détonation (claquement + corps grave + culasse), étouffée si l'on est dans un conduit
+        if env == "vent":
+            a.play("pistol_shot_m", vol, pitch)
+        else:
+            a.play(f"pistol_shot{random.randint(0, 2)}", vol, pitch)
+        # réverbération qui dépend du lieu
+        tail, tv = {"hall": ("gun_tail_hall", C.GUN_REVERB_HALL), "room": ("gun_tail_small", C.GUN_REVERB_ROOM),
+                    "corridor": ("gun_tail_corridor", C.GUN_REVERB_CORRIDOR),
+                    "vent": ("gun_tail_vent", C.GUN_REVERB_VENT)}[env]
+        a.play(tail, tv, random.uniform(.95, 1.05))
+        # acouphène : seulement si l'on tire plusieurs fois de suite dans un endroit exigu
+        now = self.t
+        self.shot_times = [x for x in self.shot_times if now - x < C.GUN_TINNITUS_WINDOW] + [now]
+        n = len(self.shot_times)
+        if n >= 2 and env in ("room", "corridor", "vent"):
+            a.play("tinnitus", min(1.0, C.GUN_TINNITUS_VOLUME * (.5 + .25 * (n - 1))), random.uniform(.97, 1.03))
+        # conséquences : l'écho court dans le vaisseau, silence pesant... puis quelque chose bouge au loin
+        if now - self.last_aftermath > C.GUN_AFTERMATH_COOLDOWN:
+            self.last_aftermath = now
+            self.pending.append((now + .45, lambda: a.play("gun_echo_far", C.GUN_ECHO_VOLUME, random.uniform(.9, 1.05))))
+            self.pending.append((now + random.uniform(*C.GUN_AFTERMATH_DELAY), self._distant_reaction))
+
+    def _distant_reaction(self):
+        """Grincement lointain ou métal dans les conduits : « quelque chose a entendu »."""
+        g = self.game
+        p = g.player
+        if p is None or g.state != "fps":
+            return
+        ang = random.uniform(0, 2 * math.pi)
+        d = random.uniform(12, 22)
+        pos = (p.x + math.cos(ang) * d, 2.0, p.z + math.sin(ang) * d)
+        r = random.random()
+        if r < .4:
+            g.audio.play_at(f"creak{random.randint(0, 2)}", pos, 1.0, random.uniform(.6, .8), max_dist=40)
+        elif r < .75:
+            g.audio.play_at("vent_bang", pos, 1.0, random.uniform(.55, .75), max_dist=40, occluded=True)
+        else:
+            g.audio.play_var("alien_skitter", 4, .7, pos=pos, occluded=True, max_dist=40)
+
+    def _update_pending(self):
+        for item in list(self.pending):
+            if self.t >= item[0]:
+                self.pending.remove(item)
+                try:
+                    item[1]()
+                except Exception as exc:            # un son raté ne doit jamais casser la partie
+                    print("[armes]", exc)
 
     def _spread_dir(self, deg):
         f = camera.forward
@@ -692,6 +918,36 @@ class Weapons:
                              "rest": False, "age": 0.0, "floor": .005, "bounce": .38, "kind": "casing"})
         while len(self.casings) > 24:
             self.casings.pop(0)["np"].removeNode()
+
+    def eject_casing_from(self, node, local):
+        """Douille éjectée depuis un point de n'importe quelle arme (fusil)."""
+        start = self.vm_to_world(node, local)
+        cam = camera
+        p = self.game.player
+        v = (cam.right * random.uniform(1.8, 2.6) + cam.up * random.uniform(1.2, 1.8)
+             + cam.forward * random.uniform(-.3, .2) + Vec3(p.vx, 0, p.vz))
+        np_ = self._world_parent().attachNewNode("casing")
+        self.casing_tpl.instanceTo(np_)
+        np_.setPos(start.x, start.y, start.z)
+        self.casings.append({"np": np_, "p": Vec3(start), "v": v, "rot": Vec3(0, random.uniform(0, 360), 0),
+                             "spin": Vec3(random.uniform(600, 1100), random.uniform(-400, 400),
+                                          random.uniform(-300, 300)),
+                             "rest": False, "age": 0.0, "floor": .005, "bounce": .38, "kind": "casing"})
+        while len(self.casings) > 30:
+            self.casings.pop(0)["np"].removeNode()
+
+    def drop_object(self, node, local, tpl, floor=.012):
+        """Un objet (chargeur vide) quitte l'arme, tombe et rebondit au sol."""
+        start = self.vm_to_world(node, local)
+        p = self.game.player
+        np_ = self._world_parent().attachNewNode("dropped")
+        tpl.instanceTo(np_)
+        self.dropped.append({"np": np_, "p": Vec3(start), "v": Vec3(p.vx * .8, -1.0, p.vz * .8),
+                             "rot": Vec3(0, p.yaw, 0), "spin": Vec3(random.uniform(-200, 200), 0,
+                                                                     random.uniform(-150, 150)),
+                             "rest": False, "age": 0.0, "floor": floor, "bounce": .25, "kind": "mag"})
+        while len(self.dropped) > 6:
+            self.dropped.pop(0)["np"].removeNode()
 
     def _drop_magazine(self):
         """Le chargeur vide tombe au sol et y reste quelques secondes."""

@@ -18,6 +18,7 @@ from ursina import Entity, color, Vec3
 import config as C
 import textures
 import loot
+import corpses
 import story
 from geometry import MeshBuilder, jitter_color
 from generator import SOLID, ROOM, CORR, VENT, DIRS, Blocker
@@ -257,6 +258,7 @@ class LevelBuilder:
         self.dock_placer = None
         self.hdd = None
         self.pad_center = None
+        self.rifle_crate = None    # caisse d'armes verrouillée du hangar (fusil d'assaut silencieux)
         self.landing = None        # source unique : aire d'atterrissage, cap de la navette, point d'apparition
         self.reactor_pos = None
         self.command_center = None
@@ -1060,6 +1062,21 @@ class LevelBuilder:
         # un casier de maintenance
         if slots:
             self.prop_locker(room, slots.pop(), "hangar")
+        # caisse d'armes de sécurité verrouillée (fusil d'assaut silencieux), rangée parmi les caisses,
+        # du côté de la navette de Léa Fontaine ; le bon de livraison traîne à côté
+        if slots:
+            pad = self.pad_center
+            s = min(slots, key=lambda q: math.hypot(L.cell_center(q[0], q[1])[0] - pad[0],
+                                                     L.cell_center(q[0], q[1])[1] - pad[1]) + rng.uniform(0, 4))
+            slots.remove(s)
+            gg = self.group_for(s[0], s[1])
+            pl = self.slot_placer(s, .55)
+            self.rifle_crate = loot.WeaponCrate(L, gg.b, gg.root, pl)
+            self.block_placer(pl, (0, 0), (1.3, .55), .55)
+            # une caisse ordinaire posée devant à moitié : on ne la voit pas en entrant
+            cx_, _, cz_ = pl.pt(.95, 0, .5)
+            self.prop_crate(gg, cx_, cz_, .8)
+            self._spot(room, "rifle_crate", pl.pt(-.45, .52, .05), pl.yaw + 12)
 
     def _room_engine(self, room):
         L = self.level
@@ -1235,8 +1252,8 @@ class LevelBuilder:
         pl.cyl(mb_, (0, .22, .95), .04, .44, (.3, .3, .32))
         self.block_placer(pl, (0, 1.0), (.55, .6), .6)
         cxp, _, czp = pl.pt(0, 0, .82)
-        c = loot.Corpse(L, gg.b, cxp, czp, pl.yaw + 180, rng, story.CREW["vasseur"]["uniform"], crew="vasseur",
-                        parent=gg.root, pose="desk", helmet=False)
+        c = corpses.Corpse(L, gg.b, cxp, czp, pl.yaw + 180, rng, story.CREW["vasseur"]["uniform"], crew="vasseur",
+                          parent=gg.root, pose="desk", helmet=False)
         c.infested = False
         self.crew_corpses["vasseur"] = c
         self.loot_dir.corpses.append(c)
@@ -1436,8 +1453,8 @@ class LevelBuilder:
     def _crew_corpse(self, who, room, x, z, yaw, rng, y0=0.0, pose=None, helmet=None):
         L = self.level
         g = self.group_for(*L.cell_at(x, z))
-        c = loot.Corpse(L, g.b, x, z, yaw, rng, story.CREW[who]["uniform"], crew=who, y0=y0, parent=g.root,
-                        pose=pose, helmet=helmet)
+        c = corpses.Corpse(L, g.b, x, z, yaw, rng, story.CREW[who]["uniform"], crew=who, y0=y0, parent=g.root,
+                           pose=pose, helmet=helmet)
         self.crew_corpses[who] = c
         self.loot_dir.corpses.append(c)
         return c

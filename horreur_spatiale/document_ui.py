@@ -822,8 +822,9 @@ CONTROL_ROWS = [
     ("Journal des documents", "journal", "Create"),
     ("Inventaire (le jeu continue)", "inventory", "Pavé tactile"),
     ("Bandage (2 s, vulnérable)", "heal", "Haut (croix directionnelle)"),
-    ("Utiliser l'objet équipé", "use_item", "Droite (croix directionnelle)"),
-    ("Changer d'objet", "prev_item/next_item", "Gauche"),
+    ("Utiliser l'objet équipé", "use_item", "Gauche (croix directionnelle)"),
+    ("Changer d'objet", "prev_item/next_item", "Inventaire (pavé tactile)"),
+    ("Arme : pistolet / fusil / couteau", "weapon_pistol/weapon_rifle/weapon_knife", "Droite (croix directionnelle)"),
     ("Traits lumineux vers l'objectif", "guide", "Bas (croix directionnelle)"),
     ("NAVETTE", None, None),
     ("Poussée / strafe", "forward/left/back/right", "Stick gauche"),
@@ -837,6 +838,7 @@ CONTROL_ROWS = [
     ("Debug : tous les documents / révélation", "debug_docs/debug_reveal", "—"),
     ("Debug : son de test", "debug_sound", "—"),
     ("Debug : hangar / fin / vertige", "debug_hangar/debug_ending/debug_vertigo", "—"),
+    ("Debug : fusil (F12) / alarme (Maj+F12)", "debug_rifle", "—"),
 ]
 
 

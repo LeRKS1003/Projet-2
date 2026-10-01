@@ -464,12 +464,13 @@ class Game(Entity):
                 self.toggle_nightvision()
             if inp.pressed("heal"):
                 self.inventory.use("bandage")
-            if inp.pressed("prev_item"):
-                self.inventory.cycle_equipped(-1)
-            # manette : Droite utilise l'objet équipé (Gauche change d'objet) ; clavier : F utilise, V change
+            # clavier : F utilise l'objet équipé, C / V en changent ; manette : Gauche utilise l'objet
+            # équipé (Droite change d'arme : voir weapons.py)
             if inp.pressed("use_item"):
                 self.inventory.use(self.inventory.equipped)
-            elif inp.pressed("next_item"):
+            elif inp.pressed("prev_item"):
+                self.inventory.cycle_equipped(-1)
+            elif inp.pressed("next_item") and not inp.pad.pressed("dpad_right"):
                 self.inventory.cycle_equipped(1)
         # --- joueur et armes ---------------------------------------------
         self.spawn_guard.update(dt)        # apparition sûre puis filet de sécurité continu
@@ -491,16 +492,13 @@ class Game(Entity):
         before = lt.battery
         if lt.flashlight_on:
             lt.battery -= C.FLASHLIGHT_DRAIN * dt
-        if lt.nightvision:
-            lt.battery -= C.NIGHTVISION_DRAIN * dt
-        if lt.battery <= 0 and (lt.flashlight_on or lt.nightvision):
+        if lt.battery <= 0 and lt.flashlight_on:
             lt.battery = 0
             lt.flashlight_on = False
-            if lt.nightvision:
-                lt.set_nightvision(False)
             self.audio.play("flashlight_click", 1.0, .7)
             self.audio.play("spark", .5)
             self.hud.message("Batterie vide !", color.orange)
+        self._update_nvg(dt)
         if before >= 15 > lt.battery:
             self.audio.play("beep", .8)
             self.hud.message("Batterie faible", color.orange)
@@ -541,6 +539,12 @@ class Game(Entity):
                 self.revelation.debug_start()
             if inp.pressed("debug_hangar"):
                 self.debug_skip_to_hangar()
+            if inp.pressed("debug_rifle"):
+                if inp._kb_held("shift"):
+                    self.horror.trigger(None, scripted=True)          # Maj+F12 : alarme générale
+                    self.hud.message("[debug] alarme déclenchée", color.yellow)
+                else:
+                    self.weapons.debug_give_rifle()                     # F12 : fusil + munitions
             if inp.pressed("debug_ending"):
                 self.debug_ending()
                 return
@@ -565,7 +569,17 @@ class Game(Entity):
         p = self.player
         room = self.level.room_at(p.x, p.z)
         if room is not self.current_room:
+            left = self.current_room
             self.current_room = room
+            # hallucination (infection avancée) : un corps de la salle quittée aura « bougé »
+            # et tournera la tête vers la porte par laquelle on reviendra
+            if (left is not None and self.hallu is not None
+                    and self.hallu.infection >= C.CORPSE_HALLU_INFECTION
+                    and random.random() < C.CORPSE_HALLU_CHANCE):
+                cands = [c for c in self.builder.loot_dir.corpses
+                         if getattr(c, "room", None) is left and not getattr(c, "hallucinated", True)]
+                if cands:
+                    random.choice(cands).hallucinate((p.x, p.z))
             if room is not None and not room.visited:
                 room.visited = True
                 self.screamer.on_room_visited(room)
@@ -667,11 +681,35 @@ class Game(Entity):
         if not self.inventory.nv_equipped:
             self.hud.message("Il te faut un casque de vision nocturne")
             return
-        if lt.battery <= 0 and not lt.nightvision:
-            self.hud.message("Batterie vide")
+        if lt.nv_battery <= 0 and not lt.nightvision:
+            self.hud.message("Batterie du casque vide — une pile peut la recharger en partie")
             return
         lt.set_nightvision(not lt.nightvision)
+        lt.nv_strength = 1.0
         self.audio.play("nv_on" if lt.nightvision else "flashlight_click", .7)
+
+    def _update_nvg(self, dt):
+        """
+        Batterie propre au casque de vision nocturne (séparée de la lampe) :
+        NVG_BATTERY_SECONDS d'autonomie, avertissement à NVG_LOW_PERCENT %,
+        puis extinction progressive (l'image s'assombrit et grésille) à 0 %.
+        """
+        lt = self.lights
+        if not lt.nightvision:
+            lt.nv_strength = 1.0
+            return
+        before = lt.nv_battery
+        lt.nv_battery = max(0.0, lt.nv_battery - dt * 100.0 / C.NVG_BATTERY_SECONDS)
+        if before > C.NVG_LOW_PERCENT >= lt.nv_battery:
+            self.audio.play("nvg_warn", .5)
+            self.hud.message(f"Casque de vision nocturne : batterie faible ({C.NVG_LOW_PERCENT} %)", color.orange)
+        # en dessous du seuil d'extinction, l'image faiblit progressivement
+        lt.nv_strength = min(1.0, lt.nv_battery / C.NVG_FADE_PERCENT) if C.NVG_FADE_PERCENT > 0 else 1.0
+        if lt.nv_battery <= 0:
+            lt.set_nightvision(False)
+            lt.nv_strength = 1.0
+            self.audio.play("nvg_off", .6)
+            self.hud.message("Le casque s'éteint : batterie épuisée.", color.orange)
 
     def on_hdd_taken(self):
         """Le disque dur est branché sur la console : la vérité, puis l'hallucination revient en pire."""

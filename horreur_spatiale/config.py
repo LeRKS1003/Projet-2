@@ -25,6 +25,17 @@ SFX_VOLUME = 1.0
 MUSIC_VOLUME = 0.55
 AMBIENT_VOLUME = 0.7
 SAMPLE_RATE = 22050         # fréquence des sons générés
+ALARM_CYCLE = 2.4           # durée d'un « hurlement » de la sirène (s) : les gyrophares suivent ce rythme
+ALARM_NEAR_RADIUS = 16.0    # au-delà, le haut-parleur de la salle n'est plus entendu « en direct »
+ALARM_NEAR_VOLUME = 0.75    # sirène du haut-parleur le plus proche
+ALARM_FAR_VOLUME = 0.45     # sirène lointaine (tout le vaisseau qui hurle, étouffée et réverbérée)
+ALARM_HUM_VOLUME = 0.35     # bourdonnement électrique grave
+ALARM_BEEP_VOLUME = 0.3     # bips d'alerte irréguliers
+ALARM_VOICE_VOLUME = 0.85   # annonce automatique du vaisseau
+ALARM_ANNOUNCE_FIRST = 2.5  # première annonce N s après le début de l'alerte
+ALARM_ANNOUNCE_INTERVAL = (11.0, 18.0)
+ALARM_FADE_OUT = 1.2        # vitesse d'extinction de l'alarme
+ALARM_AFTER_SILENCE = 9.0   # durée du silence lourd après l'alerte (s)
 SOUND_CACHE_DIR = "generated/sounds"
 REGENERATE_SOUNDS = False   # True = regénère les .wav à chaque lancement
 SOUND_MAX_DISTANCE = 40.0   # distance au-delà de laquelle un son 3D est muet
@@ -50,6 +61,8 @@ KEYS_AZERTY = {
     "melee": "b",               # mise à mort au corps à corps (R3 à la manette)
     "guide": "g",               # traits lumineux au sol vers l'objectif (flèche bas à la manette)
     "debug_hangar": "f9", "debug_ending": "f10", "debug_vertigo": "f11",
+    "debug_rifle": "f12",       # F12 : fusil + munitions ; Maj+F12 : déclencher l'alarme
+    "weapon_pistol": "1", "weapon_rifle": "2", "weapon_knife": "3",
     # navette
     "ship_up": "space", "ship_down": "control", "ship_boost": "shift",
     "ship_roll_left": "a", "ship_roll_right": "e",
@@ -203,7 +216,11 @@ SAFETY_MIN_Y = -0.6                   # sous cette hauteur, on considère que le
 # ----------------------------------------------------------------------------
 BATTERY_MAX = 100.0
 FLASHLIGHT_DRAIN = 0.55     # % par seconde
-NIGHTVISION_DRAIN = 1.2
+NIGHTVISION_DRAIN = 1.2     # (ancien réglage, inutilisé : le casque a sa propre batterie)
+NVG_BATTERY_SECONDS = 420.0 # autonomie du casque de vision nocturne en usage continu (7 min)
+NVG_LOW_PERCENT = 20        # avertissement (bip, image qui grésille)
+NVG_FADE_PERCENT = 6.0      # sous ce seuil, l'image faiblit progressivement jusqu'à l'extinction
+NVG_BATTERY_RECHARGE = 40.0 # une pile recharge le casque de N % (recharge partielle)
 BATTERY_PICKUP = 45.0
 FLASHLIGHT_FOV = 46                 # ouverture du cône (degrés)
 FLASHLIGHT_TEMPERATURE = 7200       # température de couleur (K) : 6500 neutre, >7000 bleuté
@@ -382,6 +399,39 @@ ENDING_CREDITS_SPEED = 0.055        # vitesse de défilement des crédits (haute
 # ARMES
 # ----------------------------------------------------------------------------
 PISTOL_MAG = 8
+# fusil d'assaut silencieux (trouvé dans une caisse verrouillée du hangar)
+RIFLE_MAG = 24
+RIFLE_FIRE_RATE = 9.0           # coups par seconde en automatique
+RIFLE_DAMAGE = 55
+RIFLE_RANGE = 70.0
+RIFLE_SPREAD_HIP = 2.2
+RIFLE_SPREAD_ADS = .35          # très précis au point rouge, en courtes rafales
+RIFLE_SPREAD_BURST = .18        # dispersion ajoutée à chaque tir d'une rafale
+RIFLE_RECOIL = .55              # relèvement par tir (degrés)...
+RIFLE_RECOIL_CLIMB = .12        # ... qui augmente pendant la rafale
+RIFLE_RELOAD_TIME = 2.3
+RIFLE_ADS_FOV = 50
+RIFLE_VOLUME = .55
+RIFLE_MUZZLE_LIGHT = .25        # flash presque invisible au bout du silencieux
+RIFLE_NOISE_RADIUS = 3.0        # la grande créature ne l'entend que dans ce rayon (pas d'alerte générale)
+RIFLE_ALIEN_HEAR_RADIUS = 7.0   # les petites créatures proches peuvent réagir
+RIFLE_START_AMMO = 30           # munitions trouvées avec le fusil
+RIFLE_DEBUG_AMMO = 72           # F12
+RIFLE_CRATE_HOLD = 2.5          # forcer la caisse verrouillée (maintenir)
+WEAPON_SWITCH_TIME = .55        # durée de l'animation de changement d'arme
+# son du pistolet (volumes 0..1)
+GUN_VOLUME_RANGE = (0.88, 1.0)        # variation de volume à chaque tir
+GUN_PITCH_RANGE = (0.93, 1.07)        # variation de hauteur à chaque tir
+GUN_HALL_ROOMS = ("hangar", "engine") # grandes salles : écho long et métallique
+GUN_REVERB_HALL = 0.95
+GUN_REVERB_ROOM = 0.75
+GUN_REVERB_CORRIDOR = 0.7             # couloirs : court et sec
+GUN_REVERB_VENT = 0.8                 # conduits : étouffé
+GUN_TINNITUS_WINDOW = 2.5             # deux tirs (ou plus) en moins de N s dans un endroit exigu -> acouphène
+GUN_TINNITUS_VOLUME = 0.8
+GUN_ECHO_VOLUME = 0.5                 # écho qui se propage dans le vaisseau
+GUN_AFTERMATH_DELAY = (2.6, 4.2)      # silence pesant avant un bruit lointain (secondes)
+GUN_AFTERMATH_COOLDOWN = 5.0
 PISTOL_START_MAG = 6
 PISTOL_START_RESERVE = 6
 PISTOL_DAMAGE = 2
@@ -400,14 +450,14 @@ LOCKER_FILL_CHANCE = 0.70   # proportion de casiers qui contiennent de l'équipe
 LOCKER_EMPTY_JUNK = 0.55    # parmi les autres : chance d'y trouver un objet sans utilité (sinon vide)
 LOCKER_EXTRA_ITEM = 0.30    # chance d'un 2e objet utile dans un casier rempli
 LOCKER_AMOUNTS = {          # quantité (min, max) par type d'objet trouvé dans un casier
-    "ammo": (6, 12), "bandage": (1, 2), "battery": (1, 1),
+    "ammo": (6, 12), "bandage": (1, 2), "battery": (1, 1), "rifle_ammo": (8, 14),
 }
 # poids par type de salle : plus de bandages à l'infirmerie, de piles à la salle des machines,
 # de munitions près de la salle de commandement
 LOCKER_TABLES = {
     "medbay":  {"bandage": 60, "battery": 20, "ammo": 20},
-    "engine":  {"battery": 55, "ammo": 25, "bandage": 20},
-    "command": {"ammo": 60, "battery": 20, "bandage": 20},
+    "engine":  {"battery": 50, "ammo": 22, "bandage": 18, "rifle_ammo": 10},
+    "command": {"ammo": 50, "battery": 18, "bandage": 18, "rifle_ammo": 14},
     "crew":    {"ammo": 34, "battery": 33, "bandage": 33},
     "mess":    {"bandage": 35, "battery": 35, "ammo": 30},
     "storage": {"battery": 40, "ammo": 35, "bandage": 25},
@@ -427,7 +477,7 @@ KNIFE_DURABILITY = 10
 # INVENTAIRE
 # ----------------------------------------------------------------------------
 INVENTORY_SLOTS = 8
-STACK_SIZES = {"bandage": 4, "battery": 4, "ammo": 24, "knife": 1, "nv_helmet": 1, "hdd": 1}
+STACK_SIZES = {"rifle_ammo": 45, "bandage": 4, "battery": 4, "ammo": 24, "knife": 1, "nv_helmet": 1, "hdd": 1}
 
 # ----------------------------------------------------------------------------
 # BRUIT (rayon en mètres)
@@ -495,6 +545,12 @@ ALIEN_HDD_AGGRO = 1.25      # avec le disque dur : plus rapides et bondissent de
 ALIEN_CEILING_CHANCE = 0.5  # probabilité qu'une araignée tombée du plafond y rampe d'abord
 ALIEN_CORPSE_TIME = 7.0     # durée pendant laquelle le cadavre reste au sol
 INFESTED_CORPSE_CHANCE = 0.22
+# --- cadavres de l'équipage (corpses.py) ---
+CORPSE_FROST = 0.55              # givre sur les combinaisons, cheveux, visières (0 = aucun, 1 = maximum)
+CORPSE_HAIR_STRANDS = 14         # mèches de cheveux simplifiées par tête nue
+CORPSE_HELMET_BESIDE = 0.5       # probabilité qu'un casque soit posé à côté d'un corps tête nue
+CORPSE_HALLU_INFECTION = 0.6     # infection minimale pour l'hallucination « le corps a bougé »
+CORPSE_HALLU_CHANCE = 0.12       # chance, en quittant une salle avec un corps, qu'il ait bougé au retour
 
 # ----------------------------------------------------------------------------
 # NAVETTE (TPS)

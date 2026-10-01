@@ -48,6 +48,20 @@ SHADOW_MASK = BitMask32.bit(3)
 COUPE, REDEMARRAGE, ALLUME, CASSE, CLIGNOTANT = "COUPÉ", "REDÉMARRAGE", "ALLUMÉ", "CASSÉ", "CLIGNOTANT"
 
 
+# phase de la sirène d'alarme (0..1), fournie par alarm.py à partir de la position de lecture
+# du son : les gyrophares s'allument exactement au rythme du hurlement. None = pas d'alarme.
+ALARM_STATE = {"phase": None}
+
+
+def siren_sweep():
+    """Montée de la sirène (0 = grave, 1 = aigu) ou None si l'alarme ne sonne pas."""
+    ph = ALARM_STATE["phase"]
+    if ph is None:
+        return None
+    sw = ph / .7 if ph < .7 else 1 - (ph - .7) / .3
+    return sw * sw * (3 - 2 * sw)
+
+
 def additive(np_, bin_sort=5):
     """Mélange additif (lueurs, flammes, halos) sans écriture de profondeur."""
     np_.setAttrib(ColorBlendAttrib.make(ColorBlendAttrib.MAdd, ColorBlendAttrib.OIncomingAlpha,
@@ -187,12 +201,19 @@ class Fixture:
         else:
             b = 1.0
         if horror > 0.01 and self.powered:
+            sw = siren_sweep()
             if m == "alarm":
-                # gyrophare : pulsation rouge rapide
-                b = horror * (0.5 + 0.5 * math.sin(t * 9.0 + self.phase)) ** 2 * 1.6
+                # gyrophare synchronisé sur la sirène : il s'embrase quand le hurlement monte
+                if sw is None:
+                    b = horror * (0.5 + 0.5 * math.sin(t * 9.0 + self.phase)) ** 2 * 1.6
+                else:
+                    b = horror * (0.12 + 0.88 * sw * sw) * 1.6
             elif self.kind != "reactor":
-                # toutes les lumières clignotent fortement
-                strobe = 1.0 if math.sin(t * 17.0 + self.phase * 3) > -0.2 else 0.15
+                # toutes les lumières clignotent fortement (au rythme de la sirène quand elle hurle)
+                if sw is None:
+                    strobe = 1.0 if math.sin(t * 17.0 + self.phase * 3) > -0.2 else 0.15
+                else:
+                    strobe = 1.0 if sw > .35 else 0.18
                 b *= (1 - horror) + horror * strobe * 0.8
         b *= power
         self.brightness = b
@@ -702,6 +723,8 @@ class LightManager:
         self.time = 0.0
         self.horror = 0.0
         self.nightvision = False
+        self.nv_battery = 100.0          # batterie du casque (%), séparée de celle de la lampe
+        self.nv_strength = 1.0           # 1 = image normale ; diminue quand la batterie s'épuise
         self.flashlight_on = False
         self.battery = C.BATTERY_MAX
         self.mode = "tps"
@@ -799,7 +822,12 @@ class LightManager:
     def _apply_ambient(self):
         k = self.power.global_level
         if self.nightvision:
+            # extinction progressive : on glisse vers l'éclairage normal quand la batterie meurt
             a = C.AMBIENT_NIGHTVISION
+            s_ = max(0.0, min(1.0, self.nv_strength))
+            a0, a1 = C.AMBIENT_POWER_OFF, C.AMBIENT_POWER_ON
+            base = [a0[i] + (a1[i] - a0[i]) * k for i in range(3)]
+            a = [base[i] + (a[i] - base[i]) * s_ for i in range(3)]
             self.amb_node.setColor(Vec4(a[0], a[1], a[2], 1))
             dens = (C.FOG_DENSITY_POWER_OFF + (C.FOG_DENSITY_POWER_ON - C.FOG_DENSITY_POWER_OFF) * k) * .45
             self._set_fog((.02, .06, .02), dens)
