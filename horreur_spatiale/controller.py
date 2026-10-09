@@ -232,7 +232,8 @@ class InputManager:
         "journal": C.KEYS["journal"], "controls": C.KEYS["controls"], "melee": C.KEYS["melee"],
         "guide": C.KEYS["guide"], "debug_hangar": C.KEYS["debug_hangar"],
         "debug_ending": C.KEYS["debug_ending"], "debug_vertigo": C.KEYS["debug_vertigo"],
-        "debug_rifle": C.KEYS["debug_rifle"], "weapon_pistol": C.KEYS["weapon_pistol"],
+        "debug_rifle": C.KEYS["debug_rifle"], "debug_creature": C.KEYS["debug_creature"],
+        "weapon_pistol": C.KEYS["weapon_pistol"],
         "weapon_rifle": C.KEYS["weapon_rifle"], "weapon_knife": C.KEYS["weapon_knife"],
     }
     # alternatives clavier

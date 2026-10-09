@@ -17,7 +17,7 @@ découvre à travers les documents laissés par les sept membres d'équipage.
 2. **Phase 2 – Exploration (FPS)** : le vaisseau est **plongé dans le noir total** (plus de courant). Retrouve
    2 ou 3 fusibles, rétablis le courant dans la salle des machines, puis atteins la salle de commandement
    (verrouillée tant qu'il n'y a pas de courant), récupère le disque dur, reviens au hangar et repars. Une grande créature invulnérable rôde ; de petites créatures attaquent. **Chaque tir déclenche le
-   mode horreur** (alarmes, lumières rouges, musique stridente, la créature fonce vers le bruit, de petites créatures
+   mode horreur** (alarmes, lumières rouges, musique stridente, la grande créature est attirée par le bruit, de petites créatures
    sortent des conduits). Couteau et discrétion sont souvent de meilleures options.
 
 ---
@@ -42,7 +42,7 @@ horreur_spatiale/
 ├── story.py        L'HISTOIRE : bible, équipage, textes des 16 documents + disque dur (modifiable librement)
 ├── document_ui.py  rendu des documents (papier, terminal, fiche, photo...), lecture, journal, écran des commandes
 ├── hallucinations.py  infection par SINUS, indices hallucinatoires, révélation finale
-├── creature.py     IA de la grande créature (A*, états, perception) + directrice d'IA
+├── creature.py     la grande créature (présence, apparitions, fuite à la lumière, attaque) + directrice d'IA
 ├── aliens.py       IA des petites créatures (mouvement saccadé, bonds, apparitions)
 ├── horror.py       mode horreur, propagation du bruit, tension, battements de cœur, événements d'ambiance
 ├── lighting.py     lumière ambiante, lampe torche, pool de lumières, néons, vision nocturne, PowerManager (courant)
@@ -144,6 +144,7 @@ La seed est affichée dans le menu pause ; fixe `SEED` dans `config.py` pour rej
 | son de test / **essayer l'autre moteur audio** (OpenAL ↔ FMOD, relance le jeu) | F8 / **Maj+F8** | — |
 | test : hangar après atterrissage / cinématique de fin / crise de vertige | F9 / F10 / Maj+F11 | — |
 | test : obtenir le fusil + munitions / déclencher l'alarme | F12 / Maj+F12 | — |
+| test : infos de la grande créature / apparition « derrière toi » | F2 / Maj+F2 | — |
 
 Dans l'inventaire : flèches/molette pour choisir, **E/Entrée** (Croix) pour utiliser, **Suppr** (Triangle) pour jeter.
 `KEYBOARD_LAYOUT = "qwerty"` dans `config.py` pour un clavier QWERTY (WASD).
@@ -181,11 +182,8 @@ Ursina lit les lettres par position physique : la configuration AZERTY est conve
 
 ## Conseils de survie
 
-* **Tant que le courant n'est pas rétabli**, la grande créature erre sans t'attaquer si tu restes discret :
-  seul un gros bruit (un coup de feu) la réveille et déclenche l'alerte (`CREATURE_CALM_UNTIL_POWER`).
-* **Si la bête arrive dans ton dos**, elle hurle et te fait une peur bleue... puis repart dans les conduits.
-  **De face**, elle frappe : le HUD compte ses coups, et c'est **le 5e qui tue** (`CREATURE_HITS_TO_KILL`).
-  Chaque coup te projette en arrière : profites-en pour fuir.
+* **La grande créature** se fait surtout entendre (voir « La grande créature » plus bas). Un coup de feu
+  l'attire : elle se montrera bientôt.
 * **Une alerte ne dure jamais plus d'une minute** (`HORROR_MAX_TIME`), même si tu continues à tirer.
 * **R3 / B** achève une araignée au corps à corps en un seul coup, sans user ton couteau.
 * **Perdu ?** La flèche du haut suit le vrai chemin (couloirs, portes) vers l'objectif en cours et vise le
@@ -214,12 +212,48 @@ Ursina lit les lettres par position physique : la configuration AZERTY est conve
 
 * Marcher fait du bruit, courir beaucoup, accroupi presque rien ; l'indicateur **BRUIT** du HUD te le montre.
 * La lampe te fait repérer de plus loin. La vision nocturne voit dans le noir mais les néons éblouissent.
-* Tirer sur la grande créature la ralentit ; trois balles la font fuir dans les conduits… un moment.
+* Tirer sur la grande créature, ou l'éclairer, la fait fuir aussitôt.
 * Un casier vide sert de cachette — mais jamais sous ses yeux.
 * Les araignées sont rares (3 au maximum, en groupes de 1 à 3). Au couteau, une araignée qui ne t'a
   pas repéré meurt instantanément et en silence (« Mise à mort silencieuse »). Un coup de couteau reste
   discret : la bête ne l'entend que tout près, et rarement ; en revanche une araignée blessée crie.
 * Écoute : les grattements étouffés viennent de derrière les cloisons ou des conduits.
+
+## La grande créature
+
+On ne la voit **jamais longtemps ni en entier**. On l'entend bien plus souvent qu'on ne la voit.
+
+* **Elle rôde, invisible** : pas lourds et irréguliers au-dessus de toi (dans les conduits) ou dans la pièce
+  voisine, grattements de métal, respiration humide, claquements. Quand elle est tout près sans que tu la
+  voies, **tout se tait d'un coup**... puis un seul bruit, juste derrière toi. Quand l'infection est avancée,
+  elle chuchote des mots des documents.
+* **Elle apparaît** (la directrice d'IA choisit le moment et la mise en scène, jamais deux fois la même à la
+  suite, plusieurs dizaines de secondes entre deux apparitions) :
+  * une silhouette immobile au bout d'un couloir : si tu avances, si tu l'éclaires ou si tu détournes les
+    yeux une seconde, elle n'est plus là ;
+  * **« elle est derrière toi »** : retourne-toi à temps et tu l'aperçois une fraction de seconde ;
+    sinon, tu n'entends qu'une respiration ;
+  * un passage furtif au loin, à travers une porte ou un croisement ;
+  * collée à un hublot, **à l'extérieur** du vaisseau ;
+  * deux yeux blancs derrière une grille d'aération, qui se retirent en grattant le métal ;
+  * au plafond d'une grande salle (rare) : invisible tant que tu ne lèves pas la lampe ;
+  * pendant que tu lis un document ou fouilles un corps : au fond de l'image, au bord de l'écran.
+* **Règle d'or** : elle ne reste jamais plus de 2,5 s à l'écran (`CREATURE_MAX_VISIBLE`).
+* **La lumière la fait fuir** : le faisceau de la lampe, le flash d'un tir de pistolet, les néons
+  alimentés. Elle sursaute, crie et file vers l'obscurité ou un conduit.
+  **La vision nocturne ne la fait pas fuir** : tu peux l'observer dans le noir... mais elle te fixe,
+  immobile, puis se cache quand même. Tu dois choisir : la voir, ou la faire fuir.
+  Avec une lampe faible, éteinte ou qui clignote, elle ose s'approcher davantage.
+* **Proche** : les lumières grésillent, la lampe clignote, l'image se brouille, le bourdonnement à 7 Hz monte,
+  la manette vibre lentement.
+* **Attaque** rare, quand tu restes longtemps dans le noir : elle surgit, frappe une fois (13 % de santé,
+  `CREATURE_ATTACK_DAMAGE`), ta lampe tombe, tu es sonné... et elle a déjà disparu. Elle ne peut tuer que si tu
+  es déjà très affaibli (`CREATURE_ATTACK_LETHAL_BELOW`) : les petites créatures restent la vraie menace.
+  **L'éclairer ou lui tirer dessus pendant qu'elle approche annule l'attaque.**
+* Après le disque dur, elle apparaît plus souvent, et dans des endroits impossibles : là où tu viens de
+  fouiller, ou à deux endroits presque en même temps.
+* Réglages : `CREATURE_*` dans `config.py`. **F2** affiche son état, son temps à l'écran et la prochaine
+  apparition prévue ; **Maj+F2** déclenche tout de suite une apparition « derrière toi ».
 
 ## Le courant du vaisseau
 

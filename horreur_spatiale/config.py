@@ -64,6 +64,7 @@ KEYS_AZERTY = {
     "debug_hangar": "f9", "debug_ending": "f10", "debug_vertigo": "f11",   # Maj+F11 : crise de vertige
     "fullscreen": "f11",        # F11 (ou Alt+Entrée) : plein écran / fenêtre
     "debug_rifle": "f12",       # F12 : fusil + munitions ; Maj+F12 : déclencher l'alarme
+    "debug_creature": "f2",     # F2 : infos créature / directrice ; Maj+F2 : apparition « derrière toi »
     "weapon_pistol": "1", "weapon_rifle": "2", "weapon_knife": "3",
     # navette
     "ship_up": "space", "ship_down": "control", "ship_boost": "shift",
@@ -506,28 +507,57 @@ HORROR_MAX_TIME = 60.0      # une alerte ne dure jamais plus d'une minute (même
 CAMERA_SHAKE = 0.35
 
 # ----------------------------------------------------------------------------
-# GRANDE CRÉATURE
+# GRANDE CRÉATURE (« l'Ombre ») : on la devine plus qu'on ne la voit (creature.py)
 # ----------------------------------------------------------------------------
-CREATURE_SPEED_WANDER = 1.9
-CREATURE_SPEED_INVESTIGATE = 3.4
-CREATURE_SPEED_CHASE = 5.5
-CREATURE_VENT_SPEED_MULT = 0.55
-CREATURE_VIEW_DIST = 15.0
-CREATURE_VIEW_ANGLE = 110.0
-CREATURE_KILL_DIST = 1.35      # distance de contact
-CREATURE_HITS_TO_KILL = 5       # de face, elle frappe : le 5e coup est mortel
-CREATURE_HIT_DAMAGE = 16        # dégâts d'un coup (sans jamais tuer avant le 5e)
-CREATURE_ATTACK_COOLDOWN = 1.6  # secondes entre deux coups
-CREATURE_BEHIND_SCARE = True    # si elle arrive dans ton dos : elle hurle, te fait peur... et repart
-CREATURE_HITS_DECAY = 25.0      # un coup encaissé est « oublié » après N secondes sans être touché
-CREATURE_LOSE_TIME = 4.0
-CREATURE_SEARCH_TIME = 14.0
-CREATURE_STUN_TIME = 2.2
-CREATURE_HITS_TO_FLEE = 3
-CREATURE_HIDE_TIME = (20.0, 40.0)
-DIRECTOR_CALM_TIME = 85.0   # secondes de calme avant que la directrice ne rapproche la créature
-CREATURE_CALM_UNTIL_POWER = True   # courant coupé : la créature n'attaque pas si l'on reste discret
-CREATURE_PROVOKE_NOISE = 20.0      # ... sauf un bruit au moins aussi fort (coup de feu) qui déclenche l'alerte
+# visibilité : jamais longtemps, jamais en entier
+CREATURE_MAX_VISIBLE = 2.5        # secondes max à l'écran par apparition ; au-delà, elle disparaît
+CREATURE_UNSEEN_VANISH = 0.9      # après l'avoir vue, si l'on détourne les yeux N s : elle n'est plus là
+CREATURE_APPARITION_MAX = 9.0     # durée max d'une mise en scène, même si on ne la regarde jamais
+CREATURE_GLIMPSE = 0.3            # « derrière toi » : on ne l'aperçoit qu'une fraction de seconde
+CREATURE_NV_STARE = 4.0           # vision nocturne : elle te fixe N s, immobile... puis se cache
+CREATURE_TOO_CLOSE = 2.4          # jamais plus près (hors attaque) : elle s'évanouit avant
+# directrice d'IA : rythme et mise en scène des apparitions
+CREATURE_FIRST_DELAY = 65.0       # première apparition au plus tôt après N s à bord
+CREATURE_COOLDOWN = (40.0, 75.0)  # récupération entre deux apparitions (s)
+CREATURE_ALERT_COOLDOWN = (8.0, 15.0)   # un coup de feu l'attire : prochaine apparition bien plus tôt
+CREATURE_MIN_DIST = 7.0           # distance minimale d'une apparition devant le joueur
+CREATURE_FAR_DIST = (11.0, 24.0)  # silhouette lointaine
+CREATURE_BEHIND_DIST = (3.0, 5.5) # « elle est derrière toi »
+CREATURE_BEHIND_WINDOW = 3.5      # temps laissé au joueur pour se retourner
+CREATURE_PASS_DIST = (9.0, 20.0)  # passage furtif au loin
+CREATURE_VENT_EYES_DIST = (3.0, 11.0)   # yeux derrière une grille d'aération
+CREATURE_EYES_RETREAT = 3.0       # les yeux se retirent quand on s'approche à moins de N m
+CREATURE_CEILING_CHANCE = 0.35    # au plafond : rare (poids relatif)
+CREATURE_BOLD_DIST_MULT = 0.65    # lampe faible / éteinte / qui clignote : elle ose s'approcher
+CREATURE_BOLD_COOLDOWN_MULT = 0.75
+CREATURE_HDD_COOLDOWN_MULT = 0.55 # après la révélation du disque dur : plus fréquente, plus étrange
+CREATURE_DOUBLE_CHANCE = 0.4      # après le disque dur : « à deux endroits presque en même temps »
+# lumière : elle la fuit (la vision nocturne ne la fait pas fuir)
+CREATURE_REACT_TIME = 0.3         # délai de réaction au faisceau (< 0,5 s)
+CREATURE_LIGHT_RANGE = 17.0       # portée du faisceau qui la fait fuir
+CREATURE_MUZZLE_SCARE_DIST = 14.0 # le flash d'un tir de pistolet à moins de N m la fait fuir
+CREATURE_FLEE_SPEED = 13.0        # fuite (le joueur court à ~5 m/s)
+CREATURE_FLEE_MAX = 0.9           # au-delà, si on la voit encore, elle s'évanouit dans le noir
+CREATURE_DASH_SPEED = 9.0         # déplacements visibles : saccadés et trop rapides
+# présence invisible (on l'entend plus qu'on ne la voit)
+CREATURE_ROAM_SPEED = 1.6
+CREATURE_ROAM_SPEED_ALERT = 3.8
+CREATURE_SOUND_DIST = 22.0        # pas, grattements, respiration audibles jusqu'à N m
+CREATURE_SILENCE_DIST = 6.0       # proche mais hors de vue : silence soudain, puis un seul bruit
+CREATURE_SILENCE_GAP = 90.0       # au moins N s entre deux silences soudains
+CREATURE_WHISPER_INFECTION = 0.5  # chuchotements à partir de cette infection
+CREATURE_WHISPER_GAP = (30.0, 60.0)
+CREATURE_DREAD_DIST = 9.0         # en deçà : lumières qui grésillent, lampe qui clignote, image brouillée
+CREATURE_HIDE_TIME = (20.0, 40.0) # retraite silencieuse au fond des conduits
+# attaque : rare, courte, peu de dégâts (les petites créatures restent la vraie menace)
+CREATURE_ATTACK_DAMAGE = 13       # dégâts d'un coup (% de la santé max)
+CREATURE_ATTACK_LETHAL_BELOW = 15 # elle ne peut tuer que si la santé est déjà sous ce seuil
+CREATURE_ATTACK_DARK_TIME = 14.0  # le joueur doit être dans le noir depuis N s
+CREATURE_ATTACK_MIN_GAP = 150.0   # au moins N s entre deux attaques
+CREATURE_ATTACK_CHANCE = 0.18     # chance à chaque vérification (toutes les 5 s, une fois dans le noir)
+CREATURE_ATTACK_SPEED = 12.0      # elle surgit de l'obscurité
+CREATURE_ATTACK_LAMP_OFF = 3.0    # après le coup, la lampe tombe / s'éteint N s
+CREATURE_ATTACK_DAZE = 1.2        # le joueur est sonné N s
 
 # ----------------------------------------------------------------------------
 # PETITES CRÉATURES

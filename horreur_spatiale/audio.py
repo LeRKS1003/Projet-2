@@ -844,6 +844,116 @@ def gen_arms_alarm(rng):
     return out
 
 
+# ============================================================================
+# LA GRANDE CRÉATURE (« l'Ombre ») : on l'entend plus qu'on ne la voit
+# ============================================================================
+# chuchotements : mots repris des documents (sous-titrés en jeu, voir creature.WHISPERS)
+WHISPER_SPECS = [
+    [("s", "i", .26), ("n", "u", .3), ("s", "u", .14)],                                        # « Sinus »
+    [("s", "a", .2), (" ", "a", .05), ("t", "a", .16), ("s", "a", .22), (" ", "a", .06),
+     ("t", "a", .16), ("l", "é", .34)],                                                         # « ça passe par l'air »
+    [("", "i", .14), ("n", "i", .14), ("", "a", .14), ("l", "i", .12), ("", "on", .34)],        # « il n'y a rien »
+    [("t", "u", .16), ("l", "a", .16), ("l", "é", .14), ("s", "i", .16), ("t", "é", .3)],       # « tu l'as respiré »
+]
+
+
+def _whisper(spec, rng, rate=1.0):
+    """Chuchotement : formants excités par du souffle (aucune voix), consonnes sifflées."""
+    parts = []
+    for cons, vow, dur in spec:
+        dur /= rate
+        n = int(SR * dur)
+        t = np.arange(n) / SR
+        if cons == " ":
+            parts.append(np.zeros(n))
+            continue
+        c = np.zeros(n)
+        k = int(SR * min(.07, dur * .4))
+        if cons in ("s", "ch"):
+            c[:k] = _band(_noise(k, rng), 3800 if cons == "s" else 2400, 9000) * np.linspace(1, .2, k) * 1.2
+        elif cons in ("t", "k", "d"):
+            kk = int(SR * .02)
+            c[:kk] = _band(_noise(kk, rng), 1800, 7000) * np.exp(-np.arange(kk) / SR * 160) * 1.3
+        elif cons in ("m", "n", "l"):
+            c[:k] = _band(_noise(k, rng), 200, 900) * .5
+        f1, f2, f3 = _VOWELS[vow]
+        src = _noise(n, rng)
+        v = _band(src, f1 * .85, f1 * 1.15) + .8 * _band(src, f2 * .9, f2 * 1.1) + .4 * _band(src, f3 * .92, f3 * 1.08)
+        env = np.clip(t / .04, 0, 1) * np.clip((dur - t) / .06, 0, 1)
+        parts.append(c + v * env * 1.6)
+    return np.concatenate(parts)
+
+
+def gen_shadow(rng):
+    out = {}
+    # respiration lente et humide (inspiration rauque, longue expiration, gargouillis)
+    L = 3.2
+    t = _t(L)
+    n = len(t)
+    inh = np.clip(t / 1.1, 0, 1) * np.clip((1.3 - t) / .25, 0, 1)
+    exh = np.clip((t - 1.45) / .2, 0, 1) * np.clip((3.0 - t) / 1.2, 0, 1)
+    air = _band(_noise(n, rng), 250, 1900) * (inh * .8 + exh)
+    rasp = np.sin(2 * np.pi * 52 * t + 3 * np.sin(2 * np.pi * 7 * t)) * exh * .35        # râle à 7 Hz
+    wet = _clicks(t, [(rng.uniform(1.5, 2.9), rng.uniform(.3, .7)) for _ in range(9)], 300, 1600, 90, rng)
+    out["creature_breath"] = _norm(_reverb(_fade(air + rasp + wet * .5, .05, .3), rng, .9, .25, 2200), .7)
+    # cri bref et aigu (la lumière la touche) : glissando dissonant + souffle, saturé
+    L = .75
+    t = _t(L)
+    f = 1500 + 1900 * np.sin(np.pi * np.clip(t / .55, 0, 1)) ** .6
+    sh = np.sin(_sweep(f)) + .6 * np.sin(_sweep(f * 1.41)) + .4 * np.sin(_sweep(f * 2.07))
+    sh += _band(_noise(len(t), rng), 2500, 9000) * .9
+    env = np.clip(t / .015, 0, 1) * np.exp(-np.clip(t - .1, 0, None) * 5)
+    out["creature_shriek"] = _norm(_reverb(np.tanh(sh * env * 2.2), rng, .8, .3, 5000), .9)
+    # grattements de métal (griffes sur une tôle, dans un conduit)
+    for v in range(2):
+        L = 1.4 + .3 * v
+        t = _t(L)
+        n = len(t)
+        rate = 1 + .6 * np.sin(2 * np.pi * (2.3 + v) * t + rng.uniform(0, 6))
+        ph = np.cumsum(rate) / SR
+        sc = _band(_noise(n, rng), 1600, 7000) * (.5 + .5 * np.sin(2 * np.pi * 31 * ph) ** 2)
+        ring = _metal_ring(t, [610 + 90 * v, 1475, 2310, 3120], 1.2, rng) * .5
+        env = np.clip(t / .08, 0, 1) * np.clip((L - t) / .3, 0, 1) * (.6 + .4 * np.sin(2 * np.pi * 1.7 * t))
+        out[f"creature_scrape{v}"] = _norm(_reverb((sc + ring * .4) * env, rng, 1.1, .35, 4000), .7)
+    # pas lourds et irréguliers (corps trop grand sur une tôle)
+    for v in range(2):
+        L = .9
+        t = _t(L)
+        thump = np.sin(_sweep(38 + 70 * np.exp(-t * 18))) * np.exp(-t * (11 + 3 * v)) * 1.6
+        clank = _metal_ring(t, [180 + 40 * v, 420, 760], 5, rng) * np.exp(-t * 6) * .4
+        crunch = _band(_noise(len(t), rng), 900, 3500) * np.exp(-t * 40) * .5
+        out[f"creature_heavy{v}"] = _norm(_reverb(_fade(thump + clank + crunch, .002, .2), rng, .8, .3, 1800), .9)
+    # petits claquements (mandibules, articulations)
+    t = _t(.5)
+    out["creature_click"] = _norm(_clicks(t, [(.0, 1), (.07, .7), (.12, .9), (.26, .6)], 1500, 6000, 260, rng,
+                                          ring=2400), .6)
+    # coup sourd tout proche (un seul bruit, après le silence soudain)
+    t = _t(1.3)
+    knock = np.sin(_sweep(45 + 90 * np.exp(-t * 25))) * np.exp(-t * 7) * 1.5
+    knock += _metal_ring(t, [96, 233, 391, 612], 2.4, rng) * .5
+    out["creature_knock"] = _norm(_reverb(_fade(knock, .001, .3), rng, 1.3, .35, 1500), .95)
+    # choc « elle est derrière toi » : impact grave + grappe dissonante + souffle
+    L = 2.2
+    t = _t(L)
+    boom = np.sin(_sweep(30 + 80 * np.exp(-t * 9))) * np.exp(-t * 2.5) * 1.4
+    cluster = sum(np.sin(2 * np.pi * f * t + rng.uniform(0, 6)) for f in (311, 329.6, 349.2, 370, 622, 659))
+    cluster *= np.exp(-t * 1.6) * (1 + .5 * np.sin(2 * np.pi * 11 * t)) * .25
+    hiss = _band(_noise(len(t), rng), 3000, 10000) * np.exp(-t * 6) * .6
+    out["creature_sting"] = _norm(_reverb(np.tanh((boom + cluster + hiss) * 1.4), rng, 1.6, .4, 4500), .95)
+    # attaque : hurlement strident + déchirure
+    L = 1.0
+    t = _t(L)
+    f = 900 + 2600 * np.exp(-t * 4)
+    scr = np.sin(_sweep(f)) + .7 * np.sin(_sweep(f * 1.5 + 40)) + _band(_noise(len(t), rng), 1800, 9000)
+    out["creature_strike"] = _norm(np.tanh(scr * np.exp(-t * 3.2) * 2.5), .95)
+    # chuchotements (mots des documents)
+    for i, spec in enumerate(WHISPER_SPECS):
+        w = _whisper(spec, rng, rate=.85)
+        w = _band(w, 300, 8000)
+        out[f"shadow_whisper{i}"] = _norm(_reverb(_fade(w, .02, .15), rng, 1.5, .45, 5000), .5)
+    return out
+
+
 def _missing(name):
     """
     Vrai si le .wav n'existe pas OU est vide / tronqué (génération interrompue,
@@ -1240,6 +1350,14 @@ def gen_all(force=False):
     for name, sig in aa.items():
         _write(name, sig)
     ps.update(aa)
+    # la grande créature (respiration, cri, grattements, pas, chuchotements...)
+    sh_names = ("creature_breath", "creature_shriek", "creature_scrape1", "creature_heavy1", "creature_click",
+                "creature_knock", "creature_sting", "creature_strike", "shadow_whisper3")
+    need_sh = force or any(_missing(n) for n in sh_names)
+    shd = gen_shadow(np.random.default_rng(7777)) if need_sh else {}
+    for name, sig in shd.items():
+        _write(name, sig)
+    ps.update(shd)
     # vertiges et cinématique de fin
     lt_names = ("vertigo_ring", "vertigo_muffle", "vertigo_breath", "cockpit_start", "screens_on",
                 "hangar_doors", "ending_music", "credits_music")
@@ -1318,7 +1436,9 @@ class AudioSystem:
             "knife_hit": 2, "alien_skitter": 2, "creature_step": 3, "pickup": 2, "beep": 2, "ui_select": 2,
             "spark": 2, "casing0": 2, "casing1": 2, "casing2": 2, "alien_skitter0": 2, "alien_skitter1": 2,
             "alien_skitter2": 2, "alien_skitter3": 2, "alien_click0": 2, "alien_click1": 2, "relay0": 2,
-            "relay1": 2, "relay2": 2, "heartbeat": 2, "door_force": 2, "fuse_insert": 2}
+            "relay1": 2, "relay2": 2, "heartbeat": 2, "door_force": 2, "fuse_insert": 2,
+            "creature_heavy0": 2, "creature_heavy1": 2, "creature_scrape0": 2, "creature_scrape1": 2,
+            "creature_click": 2, "creature_breath": 2}
 
     def __init__(self):
         from ursina import application

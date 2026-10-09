@@ -43,6 +43,7 @@ class Player:
         self.search_progress = 0.0
         self.focus = None            # objet interactif visé
         self.hurt_flash = 0.0
+        self.daze = 0.0              # sonné par la grande créature (quelques instants)
         self._heart_timer = 0.0
         self.fov_target = C.FOV
         self.frozen = False
@@ -168,6 +169,9 @@ class Player:
             speed *= .6
         if self.health < C.LOW_HEALTH:
             speed *= .88
+        if self.daze > 0:
+            speed *= .35                     # sonné : on titube
+            self.running = False
         if self.bandaging > 0:
             speed *= C.BANDAGE_SLOW          # on se soigne : lent et arme baissée (vulnérable)
             self.running = False
@@ -244,6 +248,7 @@ class Player:
         # --- effets de santé ----------------------------------------------
         self.hurt_flash = max(0.0, self.hurt_flash - dt * 1.8)
         self.trauma = max(0.0, self.trauma - dt * 1.5)
+        self.daze = max(0.0, self.daze - dt)
         if self.health < C.LOW_HEALTH:
             self._heart_timer -= dt
             if self._heart_timer <= 0:

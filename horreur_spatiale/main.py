@@ -148,6 +148,10 @@ class Game(Entity):
         self.vertigo_setting = C.VERTIGO_INTENSITY      # réglage d'accessibilité (menu pause)
         self.stats = {"kills": 0, "start": 0.0, "docs": 0}
         self.current_room = None
+        # F2 : informations de la grande créature et de la directrice d'IA (debug)
+        self.creature_debug = False
+        self.creature_debug_text = Text(parent=camera.ui, text='', position=(-window.aspect_ratio / 2 + .02, .43),
+                                        scale=.72, color=color.rgb(1, .85, .45), z=-30)
         # interfaces persistantes : lecture des documents, journal, commandes (I)
         self.reader = DocumentReader(self)
         self.journal = JournalUI(self)
@@ -300,6 +304,7 @@ class Game(Entity):
             e.ignore = True
 
     def _cleanup_world(self):
+        self.creature_debug_text.text = ''
         if self.world_root is None:
             return
         if self.screamer is not None:
@@ -591,6 +596,18 @@ class Game(Entity):
             if inp.pressed("debug_vertigo") and inp._kb_held("shift"):
                 self.vertigo.start_crisis(forced=True)
                 self.hud.message("[debug] crise de vertige", color.yellow)
+            if inp.pressed("debug_creature"):
+                if inp._kb_held("shift"):
+                    # Maj+F2 : apparition « elle est derrière toi » immédiate
+                    ok = self.director.force("behind")
+                    self.hud.message("[debug] elle est derrière toi..." if ok else
+                                     "[debug] pas d'endroit possible derrière toi ici", color.yellow)
+                else:
+                    self.creature_debug = not self.creature_debug
+        if self.creature_debug and self.creature is not None:
+            self.creature_debug_text.text = self.creature.debug_text()
+        elif self.creature_debug_text.text:
+            self.creature_debug_text.text = ''
         if inp.debug_overlay:
             cr = self.creature
             pm = lt.power

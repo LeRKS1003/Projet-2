@@ -840,6 +840,7 @@ CONTROL_ROWS = [
     ("Son de test (Maj+F8 : autre moteur audio)", "debug_sound", "—"),
     ("Debug : hangar / fin / vertige (Maj+F11)", "debug_hangar/debug_ending", "—"),
     ("Debug : fusil (F12) / alarme (Maj+F12)", "debug_rifle", "—"),
+    ("Debug : créature (Maj+F2 : « derrière toi »)", "debug_creature", "—"),
 ]
 
 

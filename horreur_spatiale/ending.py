@@ -498,7 +498,11 @@ class EndingCinematic:
                 camera.position = cam_p
                 camera.lookAt(ahead)
                 refl = min(.24, (t - T_COCKPIT2) * .1)
-                eyes = 1.0 if T_EYES <= t < T_EYES + .2 else 0.0
+                # ses yeux, dans le reflet : un instant, puis un second éclat plus faible
+                eyes = 1.0 if T_EYES <= t < T_EYES + .3 else (.45 if T_EYES + .55 <= t < T_EYES + .65 else 0.0)
+                if t >= T_EYES and "sting" not in f:
+                    f.add("sting")
+                    g.audio.play("creature_sting", .7, .9, ignore_duck=True)
                 g.hud.set_reflection(refl, eyes)
                 if t > T_EYES - .6 and "swell" not in f:
                     f.add("swell")

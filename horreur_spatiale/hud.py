@@ -45,6 +45,11 @@ class HUD:
         self.nv_tint = _overlay(None, color.rgba(.1, 1, .25, .0), z=5)
         self.nv_grain = _overlay(textures.get('grain'), color.rgba(1, 1, 1, 0), z=4.9)
         self.nv_grain.texture_scale = (1, .25)
+        # la grande créature est proche : grain sale et image qui se brouille
+        self.dread_grain = _overlay(textures.get('grain'), color.rgba(1, 1, 1, 0), z=4.85)
+        self.dread_grain.texture_scale = (1, .25)
+        self.dread = 0.0             # 0..1, réglé par creature.py
+        self.dread_spike = 0.0       # choc bref (coup, « derrière toi »)
         self.glare = _overlay(textures.get('glow'), color.rgba(1, 1, 1, 0), z=4.8)
         self.glare.scale = 2.5
         self.horror_tint = _overlay(textures.get('red_vignette'), color.rgba(1, 0, 0, 0), z=4.7)
@@ -60,6 +65,11 @@ class HUD:
         self.truth = _overlay(None, color.rgba(.55, .58, .6, 0), z=4.2)
         self.reflection = _overlay(None, color.rgba(1, 1, 1, 0), z=-17)
         self.eyes = []
+        # fin : la tête allongée de la créature, à peine devinée derrière le reflet, penchée
+        self.refl_head = Entity(parent=camera.ui, model='quad', texture=textures.get('glow'),
+                                color=color.rgba(0, 0, 0, 0), scale=(.1, .24), position=(-.19, .035), z=-17.4,
+                                rotation_z=-18)
+        self.refl_head.setTransparency(TransparencyAttrib.MAlpha)
         for k in range(2):
             e = Entity(parent=camera.ui, model='quad', texture=textures.get('glow'), color=color.rgba(1, 1, 1, 0),
                        scale=.03, position=(-.215 + k * .05, .06), z=-17.5)
@@ -168,8 +178,10 @@ class HUD:
         self.tps.enabled = mode == "tps"
         self.fps.enabled = mode == "fps"
         if mode != "fps":
-            for o in (self.nv_tint, self.nv_grain, self.glare, self.horror_tint, self.blood, self.locker):
+            for o in (self.nv_tint, self.nv_grain, self.glare, self.horror_tint, self.blood, self.locker,
+                      self.dread_grain):
                 o.color = color.rgba(o.color.r, o.color.g, o.color.b, 0)
+            self.dread = self.dread_spike = 0.0
         self.vignette.enabled = mode in ("fps", "tps")
 
     def message(self, text, col=None):
@@ -198,6 +210,7 @@ class HUD:
         self.reflection.color = color.rgba(1, 1, 1, alpha)
         for e in self.eyes:
             e.color = color.rgba(1, 1, 1, eyes)
+        self.refl_head.color = color.rgba(0, 0, 0, .75 * min(1.0, eyes * 1.5))
 
     def flash_frame(self):
         """Flash blanc plein écran pendant une image."""
@@ -216,7 +229,18 @@ class HUD:
         elif self.white.color.a > 0:
             self.white.color = color.rgba(1, 1, 1, 0)
         # glitch : bandes de signal perdu qui sautent d'une image à l'autre
+        self.dread_spike = max(0.0, self.dread_spike - dt * 1.4)
+        dk = max(self.dread, self.dread_spike)
+        if dk > .02:
+            self.dread_grain.color = color.rgba(.75, .78, .8, min(.5, .3 * dk + .3 * self.dread_spike))
+            self.dread_grain.texture_offset = (random.random(), random.randint(0, 3) * .25)
+        elif self.dread_grain.color.a > 0:
+            self.dread_grain.color = color.rgba(1, 1, 1, 0)
         gl = self.glitch_level
+        if self.dread_spike > .05:
+            gl = max(gl, self.dread_spike * .9)
+        elif dk > .15 and random.random() < dk * .25:
+            gl = max(gl, dk * .3)                       # bandes de signal perdu, par à-coups
         if gl > .01:
             self.glitch.color = color.rgba(1, 1, 1, min(.85, gl * (.4 + .6 * random.random())))
             self.glitch.texture_offset = (random.random(), random.random())
@@ -372,8 +396,7 @@ class HUD:
             self.nv_bar[1].color = color.rgb(1, .3, .2) if lowc else color.rgb(.3, 1, .45)
             _tx(self.nv_label, f"VISION NOCT. {lt.nv_battery:.0f}%" + ("  [actif]" if lt.nightvision else ""))
         _tx(self.battery_text, f"{lt.battery:.0f}%  {mode}")
-        hits = p.creature_hits
-        _tx(self.wounds_text, f"Coups de la bête : {hits}/{C.CREATURE_HITS_TO_KILL}" if hits else "")
+        _tx(self.wounds_text, "")
         _tx(self.ammo_text, w.hud_ammo())
         kd = inv.knife_durability()
         _tx(self.knife_text, f"Couteau {kd}/{C.KNIFE_DURABILITY}" if inv.has("knife") else "Pas de couteau")

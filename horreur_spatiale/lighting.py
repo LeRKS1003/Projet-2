@@ -596,10 +596,13 @@ class Flashlight:
             self._dust_tick = 0
         self.cur_quat = None
         self.level = 0.0            # intensité effective 0..1 (lissée)
+        self.effective = 0.0        # intensité réellement projetée (après screamer / créature)
         self.flick = 1.0
         self.flick_timer = 0.0
         self.tap_timer = 0.0
         self.scare_mult = 1.0       # imposé par le screamer (clignote puis s'éteint)
+        self.creature_mult = 1.0    # imposé par la grande créature (clignote quand elle est proche)
+        self.knocked = 0.0          # > 0 : la lampe a été arrachée / est tombée (coup de la créature)
 
     # ------------------------------------------------------------------
     def tap(self):
@@ -634,6 +637,7 @@ class Flashlight:
 
     def update(self, dt, on, battery, nightvision, fog_density):
         self.tap_timer = max(0.0, self.tap_timer - dt)
+        self.knocked = max(0.0, self.knocked - dt)
         # position : sous et à droite de l'œil (lampe fixée sur l'arme)
         cam = camera
         ox, oy, oz = C.FLASHLIGHT_OFFSET
@@ -657,7 +661,8 @@ class Flashlight:
         target_level = self.battery_factor(battery, dt) if lit else 0.0
         # montée / descente douce (sauf coupures du scintillement)
         self.level += (target_level - self.level) * min(1, dt * 25)
-        lv = self.level * self.scare_mult
+        lv = self.level * self.scare_mult * self.creature_mult * (0.0 if self.knocked > 0 else 1.0)
+        self.effective = lv
         # lampe éteinte : le cookie ne doit plus rien modifier dans le décor
         if self.cookie_root is not None and (lv > .02) != self._cookie_on:
             self._cookie_on = lv > .02
@@ -739,6 +744,9 @@ class LightManager:
         self.fog_density = 0.0
         self._fog_applied = None
         self.glitch = 0.0           # révélation : les lumières sautent au rythme du glitch
+        self.disturb = None         # (x, y, z, rayon, force) : la grande créature fait grésiller les lumières
+        self._lit = set()           # cases éclairées par un luminaire stable (cache, voir lit_at)
+        self._lit_t = -1.0
         self.power = PowerManager(self)
 
         # lumière ambiante (quasi nulle en FPS)
@@ -863,6 +871,65 @@ class LightManager:
     def tap_flashlight(self):
         self.flashlight.tap()
 
+    # ------------------------------------------------------------------
+    # requêtes utilisées par la grande créature (creature.py)
+    # ------------------------------------------------------------------
+    def flashlight_hits(self, pt, max_range, cam_pos, cam_fwd, margin=4.0):
+        """
+        Le faisceau de la lampe touche-t-il ce point ? (dans le cône, à portée ;
+        la ligne de vue est testée à part). cam_fwd : direction de la vue
+        (la lampe la suit avec un léger retard).
+        """
+        if self.mode != "fps":
+            return False
+        lv = self.flashlight.effective
+        if lv < .2:
+            return False
+        o = self.flashlight.rig.getPos(render_np())
+        dx, dy, dz = pt[0] - o[0], pt[1] - o[1], pt[2] - o[2]
+        d = math.sqrt(dx * dx + dy * dy + dz * dz)
+        if d < 1e-3:
+            return True
+        if d > max_range * min(1.0, .45 + .6 * lv):
+            return False
+        cos = (dx * cam_fwd[0] + dy * cam_fwd[1] + dz * cam_fwd[2]) / d
+        return cos > math.cos(math.radians(C.FLASHLIGHT_FOV / 2 + margin))
+
+    def flashlight_origin(self):
+        o = self.flashlight.rig.getPos(render_np())
+        return (o[0], o[1], o[2])
+
+    def muzzle_recent(self):
+        """Position du flash du pistolet s'il vient d'éclater (sinon None)."""
+        if self.flash_is_muzzle and self.extra_flash > .35:
+            p = self.flash_np.getPos(render_np())
+            return (p[0], p[1], p[2])
+        return None
+
+    def lit_at(self, x, z):
+        """Ce point est-il éclairé par un luminaire stable et alimenté ? (néons cassés = obscurité)"""
+        if self.time - self._lit_t > .5:
+            self._lit_t = self.time
+            lit = set()
+            pm = self.power
+            t = self.time
+            cs = C.CELL
+            for fx in self.fixtures:
+                if fx.mode not in ("steady", "pulse", "reactor"):
+                    continue
+                if pm.factor(fx, t) < .5:
+                    continue
+                r = fx.radius * .5 * min(1.5, fx.intensity + .2)
+                ci, cj = int(fx.pos[0] // cs), int(fx.pos[2] // cs)
+                n = int(r // cs) + 1
+                for i in range(ci - n, ci + n + 1):
+                    for j in range(cj - n, cj + n + 1):
+                        cx, cz = (i + .5) * cs, (j + .5) * cs
+                        if (cx - fx.pos[0]) ** 2 + (cz - fx.pos[2]) ** 2 <= r * r:
+                            lit.add((i, j))
+            self._lit = lit
+        return (int(x // C.CELL), int(z // C.CELL)) in self._lit
+
     @property
     def flashlight_level(self):
         return self.flashlight.level
@@ -952,6 +1019,12 @@ class LightManager:
             b = fx.brightness * fx.intensity * nv_boost * (C.LIGHT_INTENSITY if fx.powered else 1.0)
             if self.glitch > 0 and random.random() < self.glitch * .5:
                 b *= random.uniform(0, .25)
+            dist_ = self.disturb
+            if dist_ is not None:
+                # la créature est proche : les lumières voisines grésillent ou s'éteignent
+                ddx, ddz = fx.pos[0] - dist_[0], fx.pos[2] - dist_[2]
+                if ddx * ddx + ddz * ddz < dist_[3] * dist_[3] and random.random() < dist_[4] * .55:
+                    b *= random.uniform(0, .3)
             r, g, bb = fx.current_color(horror)
             slot[1].setColor(Vec4(r * b, g * b, bb * b, 1))
         if self.postfx is not None:

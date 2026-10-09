@@ -157,11 +157,11 @@ class HorrorManager:
             if self.presence_heart <= 0:
                 self.presence_heart = 1.3 - self.presence * .5
                 g.audio.play("heartbeat", .18 + .25 * self.presence)
-        # tension : proximité de la grande créature
+        # tension : proximité de la grande créature (même invisible : on la sent)
         cr = g.creature
         self.tension = 0.0
-        if cr is not None and cr.visible and p is not None:
-            d = math.hypot(cr.x - p.x, cr.z - p.z)
+        if cr is not None and p is not None:
+            d = cr.presence_distance()
             if d < 16:
                 self.tension = 1 - d / 16
                 self.heart_timer -= dt
@@ -189,8 +189,8 @@ class HorrorManager:
             g.audio.play_at("vent_bang", pos, .8, random.uniform(.7, 1.0))
         elif r < .85:
             g.audio.play_var("alien_skitter", 4, .55, pos=pos, occluded=True)   # derrière une cloison
-        elif g.creature is not None and g.creature.visible:
-            # rugissement lointain
-            g.audio.play("creature_roar", .15, .8)
+        elif g.creature is not None and g.creature.state != "CACHEE":
+            # elle, quelque part : un grattement, un pas, un claquement
+            g.creature.distant_call()
         else:
             self.scripted_scare(.35)
