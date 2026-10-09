@@ -29,13 +29,18 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 GEN_DIR = os.path.join(HERE, "generated")
 BACKEND_FILE = os.path.join(GEN_DIR, "audio_moteur.txt")    # (ancien fichier audio_backend.txt ignoré)
 REPORT_FILE = os.path.join(GEN_DIR, "rapport_son.txt")
+DEVICE_FILE = os.path.join(GEN_DIR, "audio_sortie.txt")      # sortie son choisie dans le menu
+# une manette PS5 branchée en USB est aussi une « carte son » (petit haut-parleur + prise casque) :
+# Windows la choisit souvent comme sortie par défaut... et on n'entend plus rien dans les enceintes
+CONTROLLER_WORDS = ("wireless controller", "dualsense", "dualshock", "manette", "controller", "gamepad")
 LIBS = {"openal": "p3openal_audio", "fmod": "p3fmod_audio"}
 NAMES = {"pygame": "SDL / pygame", "openal": "OpenAL", "fmod": "FMOD"}
 ORDER = ("pygame", "openal", "fmod")
 ENV_KEY = "DERIVE_AUDIO_BACKEND"          # posé par la relance automatique (évite toute boucle)
 
 # état lu par audio.py / main.py
-STATE = {"backend": "openal", "auto_switched": False, "probe": {}, "sdl_driver": None}
+STATE = {"backend": "openal", "auto_switched": False, "probe": {}, "sdl_driver": None,
+         "devices": [], "device": None, "device_why": ""}
 
 
 def _saved_choice():
@@ -108,6 +113,47 @@ def _relaunch(backend):
     sys.exit(code)
 
 
+def _is_controller(name):
+    n = (name or "").lower()
+    return any(w in n for w in CONTROLLER_WORDS)
+
+
+def _saved_device():
+    try:
+        with open(DEVICE_FILE, "r", encoding="utf-8") as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
+def _list_devices():
+    try:
+        from pygame._sdl2 import audio as sdl2_audio
+        return [str(d) for d in sdl2_audio.get_audio_device_names(False)]
+    except Exception:
+        return []
+
+
+def _pick_device(devices):
+    """Choix de la sortie son : choix du menu, sinon config, sinon on évite la manette."""
+    saved = _saved_device()
+    if saved and saved in devices:
+        return saved, "choisie dans le menu"
+    want = (C.AUDIO_DEVICE or "").lower()
+    if want:
+        for d in devices:
+            if want in d.lower():
+                return d, "config.AUDIO_DEVICE"
+    if any(_is_controller(d) for d in devices):
+        others = [d for d in devices if not _is_controller(d)]
+        if others:
+            # enceintes / casque de l'ordinateur plutôt que le haut-parleur de la manette
+            pref = ("haut-parleur", "speaker", "casque", "headphone", "headset", "realtek", "écouteurs")
+            others.sort(key=lambda d: 0 if any(w in d.lower() for w in pref) else 1)
+            return others[0], "manette évitée"
+    return None, "sortie par défaut de Windows"
+
+
 def init_pygame_mixer():
     """
     Ouvre la sortie son avec SDL (pygame.mixer). Essaie le pilote par défaut,
@@ -133,6 +179,22 @@ def init_pygame_mixer():
             pygame.mixer.pre_init(44100, -16, 2, 1024)
             pygame.mixer.init(44100, -16, 2, 1024)
             if pygame.mixer.get_init():
+                # sortie son : liste des périphériques, et on évite la manette PS5
+                devices = _list_devices()
+                STATE["devices"] = devices
+                dev, why = _pick_device(devices)
+                if dev is not None:
+                    try:
+                        pygame.mixer.quit()
+                        pygame.mixer.init(44100, -16, 2, 1024, devicename=dev)
+                    except Exception as exc:
+                        print(f"[audio] sortie « {dev} » impossible ({exc}) : sortie par défaut")
+                        dev, why = None, "sortie par défaut (l'autre a échoué)"
+                        pygame.mixer.init(44100, -16, 2, 1024)
+                STATE["device"] = dev
+                STATE["device_why"] = why
+                print(f"[audio] sorties son trouvées : {devices or '(liste indisponible)'}")
+                print(f"[audio] sortie utilisée : {dev or 'par défaut'} ({why})")
                 pygame.mixer.set_num_channels(C.AUDIO_CHANNELS)
                 pygame.mixer.set_reserved(C.AUDIO_LOOP_CHANNELS)
                 try:
@@ -186,6 +248,39 @@ def choose_audio_backend():
     loadPrcFileData("", "audio-sfx-active #t")
     loadPrcFileData("", "audio-music-active #t")
     return backend
+
+
+def device_label():
+    d = STATE.get("device")
+    if not d:
+        return "par défaut"
+    return d if len(d) <= 34 else d[:32] + "…"
+
+
+def cycle_output_device():
+    """Menu « Sortie son » : passe à la sortie suivante (Auto, puis chaque périphérique) et relance le jeu."""
+    opts = [None] + list(STATE.get("devices") or [])
+    cur = STATE.get("device") if _saved_device() else None
+    i = opts.index(cur) if cur in opts else 0
+    nxt = opts[(i + 1) % len(opts)]
+    try:
+        os.makedirs(GEN_DIR, exist_ok=True)
+        with open(DEVICE_FILE, "w", encoding="utf-8") as f:
+            f.write(nxt or "")
+    except OSError as exc:
+        print("[audio] impossible d'enregistrer la sortie son :", exc)
+    return restart_game()
+
+
+def restart_game():
+    env = dict(os.environ)
+    env.pop(ENV_KEY, None)
+    try:
+        subprocess.Popen(_command(), env=env, cwd=HERE)
+        return True
+    except Exception as exc:
+        print("[audio] relance impossible :", exc)
+        return False
 
 
 def switch_backend_and_restart():

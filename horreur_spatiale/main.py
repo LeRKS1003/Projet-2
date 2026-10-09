@@ -179,6 +179,11 @@ class Game(Entity):
         # le « chant » de SINUS : bourdonnement grave pulsé à 7 Hz
         self.menu_drone = self.audio.loop("menu", "sinus_chant", 1.0, ambient=True)
         self.menu_drone.set(.8, fade=.5)
+        if not getattr(self, "_menu_chime", False):
+            # un son clair à l'arrivée sur l'écran titre : on sait tout de suite si le son fonctionne
+            self._menu_chime = True
+            invoke(lambda: self.audio.play("ui_select", 1.0, ignore_duck=True), delay=.6)
+            invoke(lambda: self.audio.play("beep", .8, ignore_duck=True), delay=.9)
         camera.position = (0, 0, 0)
         camera.rotation = (0, 0, 0)
         camera.fov = C.FOV
@@ -189,7 +194,8 @@ class Game(Entity):
 
     def _title_menu(self, sel=0):
         scr = TitleScreen(story.GAME_TITLE, story.TITLE_SUBTITLE,
-                          ["Nouvelle partie", "Commandes", self._fullscreen_label(), "Quitter"], self._menu_select)
+                          ["Nouvelle partie", "Commandes", self._fullscreen_label(), self._sound_out_label(),
+                           "Quitter"], self._menu_select)
         # état du son, bien visible (vert = OK, rouge = aucune sortie audio)
         txt, ok = self.audio.status_line()
         Text(parent=scr.root, text=txt, origin=(0, 0), y=-.33, scale=.9,
@@ -197,6 +203,21 @@ class Game(Entity):
         scr.sel = sel
         scr._refresh()
         self._set_screen(scr)
+
+    def _sound_out_label(self):
+        return "Sortie son : " + startup.device_label()
+
+    def cycle_sound_output(self):
+        """Menu « Sortie son » : sortie suivante (par défaut, enceintes, casque, manette...), le jeu redémarre."""
+        if startup.STATE.get("backend") != "pygame":
+            self.hud.message("Choix de la sortie : seulement avec le moteur SDL / pygame (Maj+F8)", color.orange)
+            return
+        if not startup.STATE.get("devices"):
+            self.hud.message("Windows ne donne pas la liste des sorties son", color.orange)
+            return
+        if startup.cycle_output_device():
+            print("[audio] relance du jeu avec une autre sortie son...")
+            application.quit()
 
     def toggle_fullscreen(self):
         DISPLAY.toggle()
@@ -228,6 +249,8 @@ class Game(Entity):
             self.controls.toggle()
         elif opt.startswith("Plein écran"):
             self.toggle_fullscreen()
+        elif opt.startswith("Sortie son"):
+            self.cycle_sound_output()
         elif opt == "Quitter":
             application.quit()
 
@@ -892,8 +915,9 @@ class Game(Entity):
 
     def _pause_menu(self, sel=0):
         scr = MenuScreen("PAUSE", f"{story.GAME_TITLE} — seed {self.seed}",
-                         ["Reprendre", "Commandes", self._vertigo_label(), self._fullscreen_label(), "Recommencer",
-                          "Menu principal", "Quitter"], self._pause_select, bg_alpha=.6)
+                         ["Reprendre", "Commandes", self._vertigo_label(), self._fullscreen_label(),
+                          self._sound_out_label(), "Recommencer", "Menu principal", "Quitter"],
+                         self._pause_select, bg_alpha=.6)
         scr.sel = sel
         scr._refresh()
         self._set_screen(scr)
@@ -912,6 +936,9 @@ class Game(Entity):
             return
         if opt.startswith("Plein écran"):
             self.toggle_fullscreen()
+            return
+        if opt.startswith("Sortie son"):
+            self.cycle_sound_output()
             return
         if opt == "Reprendre":
             self.toggle_pause()

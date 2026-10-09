@@ -107,7 +107,7 @@ La seed est affichée dans le menu pause ; fixe `SEED` dans `config.py` pour rej
 
 ## Contrôles
 
-| Action | Clavier / souris (AZERTY) | Manette PS5 |
+| Action | Clavier / souris (AZERTY) | Manette PS5 (vibrations désactivées : `GAMEPAD_RUMBLE`) |
 |---|---|---|
 | **Navette** : poussée / strafe | Z Q S D | stick gauche |
 | orientation (tangage / lacet) | souris | stick droit |
@@ -352,6 +352,14 @@ puis `WINDOW_SIZE`. `CULL_DISTANCE` (salles actives autour du joueur) aide aussi
 Le jeu joue ses sons avec **pygame (SDL2)**, déjà installé pour la manette : il utilise la sortie son
 par défaut de Windows. Si elle ne s'ouvre pas, il passe tout seul sur OpenAL, puis sur FMOD (Panda3D).
 L'écran titre affiche l'état du son en bas : **vert** = OK, **rouge** = aucune sortie audio.
+
+À l'arrivée sur l'écran titre, deux petits bips doivent sonner.
+
+**Manette PS5 branchée en USB ?** Windows la prend souvent comme **sortie son par défaut** (elle a un
+petit haut-parleur et une prise casque) : le son part dans la manette, pas dans tes enceintes. Le jeu
+l'évite automatiquement ; sinon, choisis la sortie dans le menu (titre ou pause) : **« Sortie son : ... »**
+(chaque appui passe à la sortie suivante et relance le jeu), ou mets un morceau de son nom dans
+`AUDIO_DEVICE` (`config.py`).
 
 1. Appuie sur **F8** : un bip et un coup de feu doivent sonner.
 2. Pas de son ? **Maj+F8** relance le jeu avec le moteur suivant (pygame → OpenAL → FMOD). Le choix est

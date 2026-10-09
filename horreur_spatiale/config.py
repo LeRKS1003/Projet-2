@@ -21,6 +21,7 @@ TARGET_FPS = 60
 # AUDIO
 # ----------------------------------------------------------------------------
 AUDIO_BACKEND = "auto"      # "auto" (pygame/SDL, sinon OpenAL, sinon FMOD), "pygame", "openal" ou "fmod"
+AUDIO_DEVICE = ""           # sortie son à utiliser (morceau du nom, ex. "Realtek") ; vide = automatique
 AUDIO_CHANNELS = 96         # voies de mixage (pygame)
 AUDIO_LOOP_CHANNELS = 40    # dont voies réservées aux boucles (ambiance, alarme, musique...)
 MASTER_VOLUME = 1.0
@@ -99,7 +100,7 @@ GAMEPAD_TRIGGER_THRESHOLD = 0.45  # seuil d'appui des gâchettes L2/R2
 GAMEPAD_LOOK_SPEED = 200.0      # degrés / seconde à fond de stick
 GAMEPAD_LOOK_CURVE = 2.0        # 1 = linéaire, 2 = quadratique (plus précis)
 GAMEPAD_INVERT_Y = False
-GAMEPAD_RUMBLE = True
+GAMEPAD_RUMBLE = False        # vibrations de la manette (désactivées ; True pour les remettre)
 GAMEPAD_PROFILE = "auto"        # "auto", "sdl" (HIDAPI, cas le plus courant), "directinput", "evdev"
 GAMEPAD_SDL_DUMMY_VIDEO = True  # pygame sans fenêtre (pilote vidéo SDL "dummy"). Mettre False si la
                                 # manette n'est pas détectée sur ta machine (voir README, Dépannage)

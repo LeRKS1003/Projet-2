@@ -1636,8 +1636,10 @@ class AudioSystem:
                     " F8 : test", False)
         if loaded == 0:
             return "SON : aucun son chargé  —  mets REGENERATE_SOUNDS = True dans config.py", False
-        return (f"Son : OK ({self.backend_name()}, {loaded} sons)  —  F8 : test  —  "
-                "pas de son ? Maj+F8 : autre moteur audio", True)
+        import startup
+        out = f", sortie : {startup.device_label()}" if self.pg else ""
+        return (f"Son : OK ({self.backend_name()}{out}, {loaded} sons)  —  F8 : test  —  "
+                "pas de son ? change « Sortie son » ou Maj+F8", True)
 
     def report(self):
         """Message clair dans le terminal (et generated/rapport_son.txt) : l'audio est-il prêt ?"""
@@ -1650,6 +1652,10 @@ class AudioSystem:
                  f"sons chargés : {loaded} / {len(self.pool)}  (dossier {SOUND_DIR})",
                  f"volumes config : MASTER {C.MASTER_VOLUME} SFX {C.SFX_VOLUME} MUSIC {C.MUSIC_VOLUME}"
                  f" AMBIENT {C.AMBIENT_VOLUME}"]
+        if self.pg:
+            lines.append(f"sorties son : {startup.STATE.get('devices') or '(liste indisponible)'}")
+            lines.append(f"sortie utilisée : {startup.STATE.get('device') or 'par défaut'}"
+                         f" ({startup.STATE.get('device_why')})")
         for k, (ok, info) in startup.STATE["probe"].items():
             lines.append(f"test {k} avant fenêtre : {'OK' if ok else 'ÉCHEC'} ({info})")
         if self.failed and self.ok:
