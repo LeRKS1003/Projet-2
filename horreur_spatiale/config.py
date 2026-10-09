@@ -20,8 +20,10 @@ TARGET_FPS = 60
 # ----------------------------------------------------------------------------
 # AUDIO
 # ----------------------------------------------------------------------------
-AUDIO_BACKEND = "auto"      # "auto" (OpenAL, repli FMOD s'il ne marche pas), "openal" ou "fmod"
-MASTER_VOLUME = 0.85
+AUDIO_BACKEND = "auto"      # "auto" (pygame/SDL, sinon OpenAL, sinon FMOD), "pygame", "openal" ou "fmod"
+AUDIO_CHANNELS = 96         # voies de mixage (pygame)
+AUDIO_LOOP_CHANNELS = 40    # dont voies réservées aux boucles (ambiance, alarme, musique...)
+MASTER_VOLUME = 1.0
 SFX_VOLUME = 1.0
 MUSIC_VOLUME = 0.55
 AMBIENT_VOLUME = 0.7
@@ -218,23 +220,24 @@ SAFETY_MIN_Y = -0.6                   # sous cette hauteur, on considère que le
 # LAMPE / BATTERIE / VISION NOCTURNE
 # ----------------------------------------------------------------------------
 BATTERY_MAX = 100.0
-FLASHLIGHT_DRAIN = 0.55     # % par seconde
+FLASHLIGHT_DRAIN = 0.33     # % par seconde (une pile pleine dure environ 5 minutes)
 NIGHTVISION_DRAIN = 1.2     # (ancien réglage, inutilisé : le casque a sa propre batterie)
 NVG_BATTERY_SECONDS = 420.0 # autonomie du casque de vision nocturne en usage continu (7 min)
 NVG_LOW_PERCENT = 20        # avertissement (bip, image qui grésille)
 NVG_FADE_PERCENT = 6.0      # sous ce seuil, l'image faiblit progressivement jusqu'à l'extinction
 NVG_BATTERY_RECHARGE = 40.0 # une pile recharge le casque de N % (recharge partielle)
-BATTERY_PICKUP = 45.0
+BATTERY_PICKUP = 100.0      # une pile neuve remplit la lampe
 FLASHLIGHT_FOV = 46                 # ouverture du cône (degrés)
 FLASHLIGHT_TEMPERATURE = 7200       # température de couleur (K) : 6500 neutre, >7000 bleuté
-FLASHLIGHT_INTENSITY = 2.4
-FLASHLIGHT_ATTENUATION = (1.0, 0.07, 0.011)   # constante, linéaire, quadratique (portée utile ~18 m)
+FLASHLIGHT_INTENSITY = 3.2
+FLASHLIGHT_ATTENUATION = (1.0, 0.045, 0.006)  # constante, linéaire, quadratique (portée utile ~24 m)
 FLASHLIGHT_EXPONENT = 14            # concentration du point chaud central
 FLASHLIGHT_OFFSET = (0.22, -0.2, 0.05)        # lampe fixée sur l'arme : à droite et en dessous de l'œil
 FLASHLIGHT_LAG = 11.0               # lissage de l'orientation (plus petit = plus de retard)
 FLASHLIGHT_RANGE = 22.0             # distance de la caméra d'ombre / du cône volumétrique
-FLASHLIGHT_LOW = 25.0               # sous ce % l'intensité baisse
-FLASHLIGHT_FLICKER = 10.0           # sous ce % la lampe scintille (Recharger = taper dessus)
+FLASHLIGHT_LOW = 15.0               # sous ce % : avertissement « batterie faible » (la lumière reste pleine)
+FLASHLIGHT_FLICKER = 4.0            # sous ce % la lampe scintille avant de mourir (Recharger = taper dessus)
+FLASHLIGHT_AUTO_BATTERY = True      # lampe vide : une pile du sac est insérée automatiquement
 FLASHLIGHT_TAP_TIME = 3.0           # durée du répit après une tape sur la lampe
 
 # ----------------------------------------------------------------------------

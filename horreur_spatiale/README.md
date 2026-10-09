@@ -211,6 +211,8 @@ Ursina lit les lettres par position physique : la configuration AZERTY est conve
   Réglages `ALARM_*` ; sons du pistolet `GUN_*`.
 
 * Marcher fait du bruit, courir beaucoup, accroupi presque rien ; l'indicateur **BRUIT** du HUD te le montre.
+* **Lampe** : pleine lumière tant qu'il reste de la batterie (une pile pleine dure environ 5 minutes).
+  Une pile neuve la remplit ; quand elle se vide, une pile de ton sac est **insérée automatiquement**.
 * La lampe te fait repérer de plus loin. La vision nocturne voit dans le noir mais les néons éblouissent.
 * Tirer sur la grande créature, ou l'éclairer, la fait fuir aussitôt.
 * Un casier vide sert de cachette — mais jamais sous ses yeux.
@@ -347,18 +349,17 @@ puis `WINDOW_SIZE`. `CULL_DISTANCE` (salles actives autour du joueur) aide aussi
 
 ## Dépannage son
 
+Le jeu joue ses sons avec **pygame (SDL2)**, déjà installé pour la manette : il utilise la sortie son
+par défaut de Windows. Si elle ne s'ouvre pas, il passe tout seul sur OpenAL, puis sur FMOD (Panda3D).
 L'écran titre affiche l'état du son en bas : **vert** = OK, **rouge** = aucune sortie audio.
 
 1. Appuie sur **F8** : un bip et un coup de feu doivent sonner.
-2. Pas de son ? Appuie sur **Maj+F8** : le jeu se relance avec l'autre moteur audio (OpenAL ↔ FMOD,
-   les deux sont fournis avec Panda3D sous Windows). Le choix est mémorisé
-   (`generated/audio_backend.txt` ; supprime ce fichier pour revenir au choix automatique).
-   Si OpenAL n'ouvre aucune sortie son, le jeu passe tout seul à FMOD au lancement (`AUDIO_BACKEND = "auto"`).
+2. Pas de son ? **Maj+F8** relance le jeu avec le moteur suivant (pygame → OpenAL → FMOD). Le choix est
+   mémorisé dans `generated/audio_moteur.txt` (supprime ce fichier pour revenir au choix automatique).
 3. Windows : clic droit sur l'icône haut-parleur > **Mélangeur de volume** : vérifie que **Python** n'est
    pas coupé ni à 0 (Windows mémorise le volume de chaque application), et que la bonne sortie
    (casque / haut-parleurs) est celle **par défaut**. Branche le casque **avant** de lancer le jeu.
-4. Le rapport `generated/rapport_son.txt` résume l'état du son (moteur, périphérique, sons chargés) :
-   envoie-le si le problème persiste.
+4. Le rapport `generated/rapport_son.txt` résume l'état du son (moteur, pilote, sons chargés).
 
 ## Dépannage manette
 

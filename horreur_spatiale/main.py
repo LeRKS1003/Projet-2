@@ -500,9 +500,9 @@ class Game(Entity):
         self.ui_consumed = ui.open or rd.is_open or jr.open or self.controls.open
         if not self.ui_consumed:
             if inp.pressed("flashlight"):
-                if lt.battery <= 0:
+                if lt.battery <= 0 and not self._auto_battery():
                     self.hud.message("Batterie vide — trouve des piles")
-                else:
+                elif lt.battery > 0:
                     lt.flashlight_on = not lt.flashlight_on
                 self.audio.play("flashlight_click", .7)
             if inp.pressed("nightvision"):
@@ -537,14 +537,16 @@ class Game(Entity):
         before = lt.battery
         if lt.flashlight_on:
             lt.battery -= C.FLASHLIGHT_DRAIN * dt
-        if lt.battery <= 0 and lt.flashlight_on:
+        if lt.battery <= 0 and lt.flashlight_on and self._auto_battery():
+            pass                                   # une pile du sac a pris le relais
+        elif lt.battery <= 0 and lt.flashlight_on:
             lt.battery = 0
             lt.flashlight_on = False
             self.audio.play("flashlight_click", 1.0, .7)
             self.audio.play("spark", .5)
             self.hud.message("Batterie vide !", color.orange)
         self._update_nvg(dt)
-        if before >= 15 > lt.battery:
+        if before >= C.FLASHLIGHT_LOW > lt.battery:
             self.audio.play("beep", .8)
             self.hud.message("Batterie faible", color.orange)
         lt.battery = max(0.0, lt.battery)
@@ -621,6 +623,20 @@ class Game(Entity):
                                        f"Courant : {self.power.state} / {pm.state}  "
                                        + "  ".join(f"{k} {v}" for k, v in sorted(states.items()))
                                        + f"\nInfection : {self.hallu.infection:.2f}  documents {len(self.docs.found)}")
+
+    def _auto_battery(self):
+        """Lampe vide : on insère tout de suite une pile du sac (s'il en reste)."""
+        lt = self.lights
+        inv = self.inventory
+        if not C.FLASHLIGHT_AUTO_BATTERY or inv is None or not inv.has("battery"):
+            return False
+        inv.remove("battery")
+        lt.battery = min(C.BATTERY_MAX, max(0.0, lt.battery) + C.BATTERY_PICKUP)
+        lt.flashlight_on = True
+        self.audio.play("flashlight_click", .9)
+        self.audio.play("pickup", .5)
+        self.hud.message(f"Pile changée ({lt.battery:.0f} %)", color.lime)
+        return True
 
     def _room_events(self):
         p = self.player

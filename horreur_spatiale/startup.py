@@ -3,15 +3,16 @@
 startup.py — Préparation AVANT l'ouverture de la fenêtre : moteur audio et plein écran.
 
 SON
-  Panda3D choisit son moteur audio une seule fois, au démarrage. Sous Windows,
-  la roue pip de Panda3D fournit DEUX moteurs : OpenAL (par défaut) et FMOD.
-  * AUDIO_BACKEND = "auto" (config.py) : on teste OpenAL avant d'ouvrir la
-    fenêtre. S'il n'ouvre aucun périphérique, le jeu se relance tout seul
-    avec FMOD (une seule fois, sans boucle).
-  * Maj+F8 en jeu bascule OpenAL <-> FMOD (choix mémorisé dans
-    generated/audio_backend.txt) et relance le jeu.
-  * Un rapport est écrit dans generated/rapport_son.txt (à m'envoyer si le
-    son ne marche toujours pas).
+  Trois moteurs audio possibles :
+  * « pygame » (SDL2) : PAR DÉFAUT. pygame est déjà installé pour la manette ;
+    SDL ouvre la sortie son par défaut de Windows (WASAPI, sinon DirectSound,
+    sinon WinMM). C'est le plus fiable.
+  * « openal » et « fmod » : les moteurs de Panda3D (secours).
+  * AUDIO_BACKEND = "auto" (config.py) : pygame si la sortie son s'ouvre, sinon
+    OpenAL testé avant d'ouvrir la fenêtre, sinon relance automatique avec FMOD.
+  * Maj+F8 en jeu passe au moteur suivant (pygame -> OpenAL -> FMOD), le
+    mémorise (generated/audio_moteur.txt) et relance le jeu.
+  * Un rapport est écrit dans generated/rapport_son.txt.
 
 PLEIN ÉCRAN
   « Plein écran fenêtré » : fenêtre sans bordure à la taille exacte de
@@ -26,21 +27,22 @@ import config as C
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 GEN_DIR = os.path.join(HERE, "generated")
-BACKEND_FILE = os.path.join(GEN_DIR, "audio_backend.txt")
+BACKEND_FILE = os.path.join(GEN_DIR, "audio_moteur.txt")    # (ancien fichier audio_backend.txt ignoré)
 REPORT_FILE = os.path.join(GEN_DIR, "rapport_son.txt")
 LIBS = {"openal": "p3openal_audio", "fmod": "p3fmod_audio"}
-NAMES = {"openal": "OpenAL", "fmod": "FMOD"}
+NAMES = {"pygame": "SDL / pygame", "openal": "OpenAL", "fmod": "FMOD"}
+ORDER = ("pygame", "openal", "fmod")
 ENV_KEY = "DERIVE_AUDIO_BACKEND"          # posé par la relance automatique (évite toute boucle)
 
 # état lu par audio.py / main.py
-STATE = {"backend": "openal", "auto_switched": False, "probe": {}}
+STATE = {"backend": "openal", "auto_switched": False, "probe": {}, "sdl_driver": None}
 
 
 def _saved_choice():
     try:
         with open(BACKEND_FILE, "r", encoding="utf-8") as f:
             v = f.read().strip().lower()
-        return v if v in LIBS else None
+        return v if v in NAMES else None
     except OSError:
         return None
 
@@ -106,25 +108,73 @@ def _relaunch(backend):
     sys.exit(code)
 
 
+def init_pygame_mixer():
+    """
+    Ouvre la sortie son avec SDL (pygame.mixer). Essaie le pilote par défaut,
+    puis les autres pilotes Windows. Renvoie (ok, info).
+    """
+    try:
+        os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+        import pygame
+    except Exception as exc:
+        return False, f"pygame absent : {exc}"
+    drivers = [None]
+    if sys.platform.startswith("win"):
+        drivers += ["wasapi", "directsound", "winmm"]
+    last = ""
+    for drv in drivers:
+        try:
+            if pygame.mixer.get_init():
+                pygame.mixer.quit()
+            if drv is None:
+                os.environ.pop("SDL_AUDIODRIVER", None)
+            else:
+                os.environ["SDL_AUDIODRIVER"] = drv
+            pygame.mixer.pre_init(44100, -16, 2, 1024)
+            pygame.mixer.init(44100, -16, 2, 1024)
+            if pygame.mixer.get_init():
+                pygame.mixer.set_num_channels(C.AUDIO_CHANNELS)
+                pygame.mixer.set_reserved(C.AUDIO_LOOP_CHANNELS)
+                try:
+                    name = pygame.mixer.get_driver() if hasattr(pygame.mixer, "get_driver") else (drv or "défaut")
+                except Exception:
+                    name = drv or "défaut"
+                STATE["sdl_driver"] = name
+                return True, f"pilote {name}, {pygame.mixer.get_init()}"
+        except Exception as exc:
+            last = str(exc)
+    return False, f"aucune sortie son SDL ({last})"
+
+
 def choose_audio_backend():
     """
-    À appeler AVANT Ursina() : choisit le moteur audio, le configure (prc) et,
-    en mode auto, se relance avec FMOD si OpenAL ne fonctionne pas.
+    À appeler AVANT Ursina() : choisit le moteur audio et le configure.
+    pygame (SDL) d'abord ; sinon OpenAL (testé), sinon relance avec FMOD.
     """
     from panda3d.core import loadPrcFileData
     forced = os.environ.get(ENV_KEY)
     pref = (C.AUDIO_BACKEND or "auto").lower()
     saved = _saved_choice()
-    if forced in LIBS:
+    if forced in NAMES:
         backend = forced                              # processus relancé automatiquement
         STATE["auto_switched"] = True
-    elif pref in LIBS:
+    elif pref in NAMES:
         backend = pref                                # choix imposé dans config.py
     elif saved:
         backend = saved                               # choix mémorisé (Maj+F8)
     else:
-        backend = "openal"
-    if pref == "auto" and forced is None and backend == "openal":
+        backend = "pygame"
+    if backend == "pygame":
+        ok, info = init_pygame_mixer()
+        STATE["probe"]["pygame"] = (ok, info)
+        print(f"[audio] sortie son SDL / pygame : {'OK' if ok else 'ÉCHEC'} ({info})")
+        if ok:
+            STATE["backend"] = "pygame"
+            # Panda3D n'ouvre pas de second périphérique son
+            loadPrcFileData("", "audio-library-name null")
+            return "pygame"
+        backend = "openal"                            # repli sur les moteurs de Panda3D
+    if backend == "openal" and forced is None and pref == "auto":
         ok, info = probe("openal")
         STATE["probe"]["openal"] = (ok, info)
         print(f"[audio] test OpenAL avant ouverture de la fenêtre : {'OK' if ok else 'ÉCHEC'} ({info})")
@@ -139,8 +189,11 @@ def choose_audio_backend():
 
 
 def switch_backend_and_restart():
-    """Maj+F8 : passe à l'autre moteur audio, le mémorise et relance le jeu."""
-    other = "fmod" if STATE["backend"] == "openal" else "openal"
+    """Maj+F8 : passe au moteur audio suivant (pygame -> OpenAL -> FMOD), le mémorise et relance le jeu."""
+    i = ORDER.index(STATE["backend"]) if STATE["backend"] in ORDER else 0
+    other = ORDER[(i + 1) % len(ORDER)]
+    if other == "fmod" and not fmod_available():
+        other = ORDER[(i + 2) % len(ORDER)]
     save_choice(other)
     env = dict(os.environ)
     env.pop(ENV_KEY, None)

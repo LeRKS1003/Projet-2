@@ -1143,14 +1143,7 @@ class Creature:
     def update(self, dt):
         g = self.game
         p = g.player
-        if self.suspended or p is None:
-            if self.visible or self.vent_eyes.enabled:
-                self._hide_model(quiet=True, retreat=False)
-            self.growl.set(0)
-            self.hum.set(0)
-            return
         self.clock += dt
-        self.alert_t = max(0.0, self.alert_t - dt)
         due = [e for e in self.events if e[0] <= self.clock]
         if due:
             self.events = [e for e in self.events if e[0] > self.clock]
@@ -1159,6 +1152,14 @@ class Creature:
                     fn()
                 except Exception as exc:
                     print("[créature] action différée :", exc)
+        if self.suspended or p is None:
+            if self.visible or self.vent_eyes.enabled:
+                self._hide_model(quiet=True, retreat=False)
+            self.growl.set(0)
+            self.hum.set(0)
+            g.lights.flashlight.creature_mult = 1.0
+            return
+        self.alert_t = max(0.0, self.alert_t - dt)
         # cachée de l'extérieur (révélation, cinématique) : on termine proprement l'apparition
         if self.visible and not self.root.enabled:
             self._hide_model(quiet=True, retreat=False)
@@ -1460,10 +1461,10 @@ class Creature:
         k = self.dread
         lt.disturb = (self.x, 1.5, self.z, 7.5, k) if k > .05 else None
         fl = lt.flashlight
-        if k > .2:
+        if k > .45:
             self.flicker_t -= dt
             if self.flicker_t <= 0:
-                if random.random() < k * .6:
+                if random.random() < (k - .3) * .5:
                     fl.creature_mult = random.choice((.05, .2, .45))
                     self.flicker_t = random.uniform(.04, .16)
                 else:

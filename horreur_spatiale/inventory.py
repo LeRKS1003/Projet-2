@@ -17,8 +17,8 @@ from loot import ITEM_NAMES
 DESCRIPTIONS = {
     "ammo": "Balles de 9 mm pour le pistolet.",
     "rifle_ammo": "Cartouches subsoniques pour le fusil d'assaut silencieux. Rares.",
-    "battery": "Recharge la lampe torche (+{:.0f} %) ou, casque allumé, le casque (+{:.0f} %).".format(
-        C.BATTERY_PICKUP, C.NVG_BATTERY_RECHARGE),
+    "battery": "Pile neuve : remplit la lampe torche (insérée automatiquement quand la lampe est vide). "
+               "Lampe déjà pleine : recharge le casque de vision nocturne (+{:.0f} %).".format(C.NVG_BATTERY_RECHARGE),
     "bandage": "Soigne {} points de santé. {:.0f} s pour l'appliquer : tu es vulnérable (H / flèche haut)."
                .format(C.BANDAGE_HEAL, C.BANDAGE_TIME),
     "knife": "Silencieux. S'use à chaque coup porté.",
@@ -140,8 +140,8 @@ class Inventory:
             return True
         if kind == "battery":
             lt = g.lights
-            # casque en marche (ou lampe pleine) : la pile recharge en partie le casque de vision nocturne
-            to_nv = self.nv_equipped and lt.nv_battery < 99 and (lt.nightvision or lt.battery >= C.BATTERY_MAX - 1)
+            # la lampe d'abord ; le casque de vision nocturne seulement si la lampe est déjà pleine
+            to_nv = self.nv_equipped and lt.nv_battery < 99 and lt.battery >= C.BATTERY_MAX - 1
             if to_nv:
                 self.remove("battery")
                 lt.nv_battery = min(100.0, lt.nv_battery + C.NVG_BATTERY_RECHARGE)
@@ -154,7 +154,8 @@ class Inventory:
             self.remove("battery")
             lt.battery = min(C.BATTERY_MAX, lt.battery + C.BATTERY_PICKUP)
             g.audio.play("pickup", .6)
-            g.hud.message("Pile insérée dans la lampe", color.lime)
+            lt.flashlight_on = True
+            g.hud.message(f"Pile insérée dans la lampe ({lt.battery:.0f} %)", color.lime)
             return True
         if kind == "nv_helmet":
             g.toggle_nightvision()

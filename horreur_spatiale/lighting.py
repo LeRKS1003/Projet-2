@@ -615,10 +615,8 @@ class Flashlight:
             return max(.6, min(1.0, battery / C.FLASHLIGHT_LOW)) if battery > 0 else .55
         if battery <= 0:
             return 0.0
-        if battery > C.FLASHLIGHT_LOW:
-            return 1.0
         if battery > C.FLASHLIGHT_FLICKER:
-            return .45 + .55 * (battery - C.FLASHLIGHT_FLICKER) / (C.FLASHLIGHT_LOW - C.FLASHLIGHT_FLICKER)
+            return 1.0                       # tant qu'il y a du jus : pleine lumière
         # sous le seuil : coupures et sursauts aléatoires
         self.flick_timer -= dt
         if self.flick_timer <= 0:

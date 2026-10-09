@@ -1390,6 +1390,87 @@ def gen_all(force=False):
 # ============================================================================
 # LECTURE
 # ============================================================================
+_PLAYING, _READY = 2, 1          # mêmes valeurs que AudioSound.PLAYING / READY de Panda3D
+
+
+class PgSound:
+    """
+    Son joué par pygame (SDL2), avec la même interface que les AudioSound de
+    Panda3D utilisés par le jeu : setVolume, setBalance, setPlayRate, setLoop,
+    play, stop, status, length, getTime.
+    """
+    __slots__ = ("sound", "ch", "vol", "bal", "rate", "loop", "t0", "len", "fixed", "fixed_id")
+
+    def __init__(self, sound, fixed=None):
+        self.sound = sound
+        self.ch = None
+        self.vol = 1.0
+        self.bal = 0.0
+        self.rate = 1.0
+        self.loop = False
+        self.t0 = 0.0
+        self.len = sound.get_length()
+        self.fixed = fixed           # voie réservée (boucles)
+        self.fixed_id = None
+
+    def _mine(self):
+        return self.ch is not None and self.ch.get_sound() is self.sound
+
+    def _apply(self):
+        if self._mine():
+            v = max(0.0, min(1.0, self.vol))
+            b = max(-1.0, min(1.0, self.bal))
+            self.ch.set_volume(v * min(1.0, 1.0 - b), v * min(1.0, 1.0 + b))
+
+    def setVolume(self, v):
+        self.vol = v
+        self._apply()
+
+    def getVolume(self):
+        return self.vol
+
+    def setBalance(self, b):
+        self.bal = b
+        self._apply()
+
+    def setPlayRate(self, r):
+        self.rate = r                # (pygame ne change pas la hauteur en direct : voir AudioSystem.play)
+
+    def setLoop(self, v):
+        self.loop = bool(v)
+
+    def play(self):
+        import time
+        import pygame
+        loops = -1 if self.loop else 0
+        ch = self.fixed
+        if ch is None:
+            ch = pygame.mixer.find_channel(True)       # voie libre (sinon la plus ancienne est reprise)
+        if ch is None:
+            return
+        ch.play(self.sound, loops=loops)
+        self.ch = ch
+        self.t0 = time.perf_counter()
+        self._apply()
+
+    def stop(self):
+        if self._mine():
+            self.ch.stop()
+
+    def status(self):
+        return _PLAYING if (self._mine() and self.ch.get_busy()) else _READY
+
+    def length(self):
+        return self.len
+
+    def getTime(self):
+        import time
+        if not self._mine():
+            return 0.0
+        t = time.perf_counter() - self.t0
+        return t % self.len if (self.loop and self.len > 0) else min(t, self.len)
+
+
 class LoopSound:
     """Son en boucle dont on règle volume / hauteur / balance en continu."""
 
@@ -1443,12 +1524,21 @@ class AudioSystem:
     def __init__(self):
         from ursina import application
         from panda3d.core import Filename, AudioSound
+        import startup
         self.base = application.base
-        # gestionnaire audio de Panda3D (OpenAL) : on s'assure qu'il est actif et à plein volume
-        mgrs = list(getattr(self.base, "sfxManagerList", None) or [])
+        self.pg = startup.STATE["backend"] == "pygame"     # sons joués par pygame (SDL2)
+        self._pitched = {}
+        self._loop_channels = list(range(C.AUDIO_LOOP_CHANNELS))
+        self._silent_t = 0.0
+        # gestionnaire audio de Panda3D (OpenAL / FMOD) : on s'assure qu'il est actif et à plein volume
+        mgrs = [] if self.pg else list(getattr(self.base, "sfxManagerList", None) or [])
         self.mgr = mgrs[0] if mgrs else None
-        self.ok = self.mgr is not None and self.mgr.isValid()
-        for m in mgrs + [getattr(self.base, "musicManager", None)]:
+        if self.pg:
+            import pygame
+            self.ok = bool(pygame.mixer.get_init())
+        else:
+            self.ok = self.mgr is not None and self.mgr.isValid()
+        for m in mgrs + ([] if self.pg else [getattr(self.base, "musicManager", None)]):
             if m is not None:
                 try:
                     m.setActive(True)
@@ -1481,18 +1571,57 @@ class AudioSystem:
             lst = []
             for _ in range(n):
                 try:
-                    s = self.base.loader.loadSfx(Filename.fromOsSpecific(path))
+                    s = self._load(path)
                     # un fichier illisible donne un « son nul » (statut BAD, durée 0) sans exception
-                    if s is not None and (s.status() == AudioSound.BAD or s.length() <= 0):
+                    if s is not None and not self.pg and (s.status() == AudioSound.BAD or s.length() <= 0):
+                        s = None
+                    if s is not None and self.pg and s.length() <= 0:
                         s = None
                 except Exception:
                     s = None
                 lst.append(s)
+                if self.pg:
+                    # pygame joue un même son sur plusieurs voies à la fois : une copie suffit
+                    lst = lst * n
+                    break
             if all(x is None for x in lst):
                 self.failed.append(name)
             self.pool[name] = lst
             self.cursor[name] = 0
         self.report()
+
+    def _load(self, path, fixed=None):
+        """Charge un son avec le moteur actif (pygame ou Panda3D)."""
+        if self.pg:
+            import pygame
+            return PgSound(pygame.mixer.Sound(path), fixed)
+        from panda3d.core import Filename
+        return self.base.loader.loadSfx(Filename.fromOsSpecific(path))
+
+    def _pitched_variant(self, name, s, pitch):
+        """pygame : copie du son rééchantillonnée pour changer la hauteur (mise en cache)."""
+        key = (name, round(pitch / .04) * .04)
+        v = self._pitched.get(key)
+        if v is not None:
+            return v
+        if s.length() > 4.0 or len(self._pitched) > 500:
+            return s
+        try:
+            import pygame
+            arr = pygame.sndarray.array(s.sound)
+            n = arr.shape[0]
+            m = max(2, int(n / key[1]))
+            idx = np.linspace(0, n - 1, m)
+            src = np.arange(n)
+            if arr.ndim == 1:
+                out = np.interp(idx, src, arr)
+            else:
+                out = np.stack([np.interp(idx, src, arr[:, c]) for c in range(arr.shape[1])], axis=1)
+            v = PgSound(pygame.sndarray.make_sound(np.ascontiguousarray(out.astype(arr.dtype))))
+        except Exception:
+            v = s
+        self._pitched[key] = v
+        return v
 
     # ------------------------------------------------------------------
     def backend_name(self):
@@ -1516,7 +1645,7 @@ class AudioSystem:
         loaded = len(self.pool) - len(self.failed)
         lines = [f"moteur audio : {self.backend_name()}"
                  + (" (relance automatique : OpenAL ne fonctionnait pas)" if startup.STATE["auto_switched"] else ""),
-                 f"gestionnaire : {type(self.mgr).__name__ if self.mgr is not None else 'aucun'}"
+                 f"gestionnaire : {('pygame.mixer, pilote ' + str(startup.STATE.get('sdl_driver'))) if self.pg else (type(self.mgr).__name__ if self.mgr is not None else 'aucun')}"
                  f"  valide={self.ok}",
                  f"sons chargés : {loaded} / {len(self.pool)}  (dossier {SOUND_DIR})",
                  f"volumes config : MASTER {C.MASTER_VOLUME} SFX {C.SFX_VOLUME} MUSIC {C.MUSIC_VOLUME}"
@@ -1532,7 +1661,7 @@ class AudioSystem:
             print("[audio]   -> vérifie qu'une sortie son est active dans Windows (icône haut-parleur),")
             print("[audio]      débranche/rebranche le casque, ou appuie sur Maj+F8 pour essayer l'autre moteur.")
         else:
-            vol = self.mgr.getVolume() if self.mgr is not None else 0
+            vol = self.mgr.getVolume() if self.mgr is not None else (1.0 if self.pg else 0)
             print(f"[audio] OK : {self.backend_name()} initialisé, {loaded} sons chargés sur {len(self.pool)}"
                   f" (volume général {self.master:.2f}, gestionnaire {vol:.2f}, dossier {SOUND_DIR})")
         if self.failed and self.ok:
@@ -1560,7 +1689,7 @@ class AudioSystem:
         for name in ("beep", "ui_select", "gunshot"):
             if self.play(name, 1.0, ignore_duck=True) is not None:
                 ok = True
-        vol = self.mgr.getVolume() if self.mgr is not None else 0
+        vol = self.mgr.getVolume() if self.mgr is not None else (1.0 if self.pg else 0)
         msg = (f"Test audio : {'OK' if (ok and self.ok) else 'ÉCHEC'} — périphérique {'valide' if self.ok else 'INVALIDE'}, "
                f"{len(self.pool) - len(self.failed)} sons, volume {self.master:.2f}, gestionnaire {vol:.2f}")
         print("[audio]", msg)
@@ -1609,6 +1738,8 @@ class AudioSystem:
             vol *= self.duck
             if name not in self.muffle_exempt:
                 vol *= self.muffle
+        if self.pg and abs(pitch - 1.0) > .03:
+            s = self._pitched_variant(name, s, pitch)
         s.setVolume(max(0.0, min(1.0, vol)))
         s.setPlayRate(pitch)
         s.setBalance(max(-1, min(1, balance)))
@@ -1660,12 +1791,20 @@ class AudioSystem:
         """Crée (ou récupère) une boucle nommée 'key'."""
         if key in self.loops:
             return self.loops[key]
-        from panda3d.core import Filename
         snd = None
         path = self.paths.get(name)
         if path:
             try:
-                snd = self.base.loader.loadSfx(Filename.fromOsSpecific(path))
+                fixed = None
+                if self.pg:
+                    import pygame
+                    if not self._loop_channels:
+                        self._loop_channels = list(range(C.AUDIO_LOOP_CHANNELS))
+                    fid = self._loop_channels.pop(0)
+                    fixed = pygame.mixer.Channel(fid)
+                snd = self._load(path, fixed)
+                if fixed is not None:
+                    snd.fixed_id = fid
             except Exception:
                 snd = None
         mult = C.MUSIC_VOLUME if music else (C.AMBIENT_VOLUME if ambient else C.SFX_VOLUME)
@@ -1677,12 +1816,22 @@ class AudioSystem:
         lp = self.loops.pop(key, None)
         if lp:
             lp.stop()
+            if self.pg and lp.snd is not None and lp.snd.fixed_id is not None:
+                if lp.snd.fixed_id not in self._loop_channels:
+                    self._loop_channels.append(lp.snd.fixed_id)     # la voie réservée redevient libre
 
     def stop_all_loops(self):
         for k in list(self.loops):
             self.stop_loop(k)
 
     def update(self, dt):
+        # filet de sécurité : un « silence » oublié (événement interrompu) est levé au bout de 15 s
+        if self.duck_target < 1.0:
+            self._silent_t += dt
+            if self._silent_t > 15.0:
+                self.restore(2.0)
+        else:
+            self._silent_t = 0.0
         if self.duck != self.duck_target:
             step = self.duck_rate * dt
             d = self.duck_target - self.duck
