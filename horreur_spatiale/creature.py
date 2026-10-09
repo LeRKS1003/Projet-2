@@ -713,7 +713,7 @@ class Creature:
         lamp = g.lights.flashlight.effective > .25
         cands, eye = self._cands(d0, d1, 0, 38)
         best = None
-        for c, cx, cz, d, a in cands[:80]:
+        for c, cx, cz, d, a in cands[:40]:
             if lamp and a < 26 and d < C.CREATURE_LIGHT_RANGE:
                 continue                       # pas en plein faisceau
             if not self._dark_cell(c):
@@ -815,7 +815,7 @@ class Creature:
             d0, d1 = C.CREATURE_PASS_DIST
             cands, eye = self._cands(max(C.CREATURE_MIN_DIST, d0 * k), d1, 0, 28)
         _, (fx, fz), _ = self._view()
-        for c, cx, cz, d, a in cands[:80]:
+        for c, cx, cz, d, a in cands[:40]:
             if not L.line_of_sight(eye, (cx, 1.6, cz)):
                 continue
             path = self._perp_path(c, fx, fz, extra=1)
@@ -1563,6 +1563,7 @@ class AIDirector:
         self.attack_check = 5.0
         self.preview = None
         self.preview_t = 0.0
+        self.trying = []             # types restant à essayer pour l'apparition en cours de préparation
         self.calm = 0.0
 
     def on_noise(self):
@@ -1697,11 +1698,16 @@ class AIDirector:
             order = self.choose()
             self.preview = order[0] if order else None
         if self.cooldown <= 0:
-            for kind in self.choose():
-                if cr.stage(kind):
-                    self._record(kind)
-                    return
-            self.cooldown = 4.0                 # aucun endroit crédible : on réessaie bientôt
+            # un seul essai par image (la recherche d'un emplacement coûte quelques millisecondes)
+            if not self.trying:
+                self.trying = self.choose()
+            kind = self.trying.pop(0) if self.trying else None
+            if kind is not None and cr.stage(kind):
+                self.trying = []
+                self._record(kind)
+                return
+            if not self.trying:
+                self.cooldown = 4.0             # aucun endroit crédible : on réessaie bientôt
 
     def debug_lines(self):
         nxt = KIND_LABELS.get(self.preview, self.preview or "—")
